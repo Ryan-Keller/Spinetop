@@ -1,0 +1,14 @@
+{
+  "record_name": "dispatch_hermes-laptop_20260403_043712.json",
+  "agent_id": "hermes-laptop",
+  "workspace": "spinelab",
+  "source": "dispatch_petition",
+  "timestamp_created": "2026-04-03T04:37:12",
+  "summary": "Multiple anomaly signals in item world.",
+  "task": "Review clustered anomalies",
+  "confidence": 0.5,
+  "promotion_candidate": false,
+  "payload_type": "pattern",
+  "urgency": "normal",
+  "requires_emissary": true
+}

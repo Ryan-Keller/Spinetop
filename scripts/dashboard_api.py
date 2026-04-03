@@ -10,6 +10,7 @@ from flask import Flask, jsonify, request
 ROOT = Path(__file__).resolve().parents[1]
 EVENT_LOG = ROOT / "logs" / "topology" / "events.jsonl"
 MEMORY_DIR = ROOT / "memory"
+DISPATCH_DIR = MEMORY_DIR / "dispatch"
 HONCHO_BASE = "http://127.0.0.1:8000"
 WORKSPACE_ID = "shared-coordination"
 IN_MEMORY_EVENTS: list[dict[str, Any]] = []
@@ -37,6 +38,8 @@ def normalize_event(raw: dict[str, Any]) -> dict[str, Any]:
         "hopper_clean",
         "honcho_bridge_file",
         "honcho_bridge_watcher",
+        "dispatch_petition",
+        "item_world_nanny",
     }
     allowed_statuses = {
         "created",
@@ -47,6 +50,13 @@ def normalize_event(raw: dict[str, Any]) -> dict[str, Any]:
         "partial",
         "archived",
         "quarantined",
+        "pending",
+        "approved",
+        "deferred",
+        "rejected",
+        "cool",
+        "warm",
+        "hot",
     }
     raw_type = raw.get("event_type") or "watcher_scan"
     raw_status = raw.get("status") or "created"
@@ -155,6 +165,96 @@ def get_events(limit: int = 50) -> list[dict]:
     return read_recent_events(limit)
 
 
+def log_topology_event(event_type: str, record_name: str, status: str, detail: str) -> None:
+    EVENT_LOG.parent.mkdir(parents=True, exist_ok=True)
+    event = {
+        "timestamp": iso_now(),
+        "machine": "Spinetop",
+        "event_type": event_type,
+        "record_name": record_name,
+        "status": status,
+        "detail": detail,
+    }
+    with EVENT_LOG.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def read_dispatch_petitions() -> list[dict]:
+    folders = [
+        ("pending", DISPATCH_DIR / "pending"),
+        ("approved", DISPATCH_DIR / "approved"),
+        ("deferred", DISPATCH_DIR / "deferred"),
+        ("rejected", DISPATCH_DIR / "rejected"),
+    ]
+    petitions: list[dict] = []
+    seen_names: dict[str, int] = {}
+    logged_duplicates: set[str] = set()
+    for status, folder in folders:
+        if not folder.exists():
+            continue
+        for path in sorted(folder.glob("*.json")):
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                log_topology_event(
+                    "dispatch_petition",
+                    path.name,
+                    "error",
+                    "malformed json",
+                )
+                continue
+            record_name = str(raw.get("record_name") or path.name)
+            if record_name in seen_names:
+                seen_names[record_name] += 1
+                suffix = seen_names[record_name]
+                record_name = f"{record_name}#{suffix}"
+                if record_name not in logged_duplicates:
+                    log_topology_event(
+                        "dispatch_petition",
+                        path.name,
+                        "error",
+                        "duplicate record_name across dispatch folders",
+                    )
+                    logged_duplicates.add(record_name)
+            else:
+                seen_names[record_name] = 1
+
+            petitions.append({
+                "record_name": record_name,
+                "agent_id": str(raw.get("agent_id") or "unknown"),
+                "workspace": str(raw.get("workspace") or "unknown"),
+                "source": str(raw.get("source") or "dispatch"),
+                "timestamp_created": str(raw.get("timestamp_created") or iso_now()),
+                "summary": str(raw.get("summary") or ""),
+                "task": str(raw.get("task") or ""),
+                "confidence": float(raw.get("confidence") or 0.0),
+                "promotion_candidate": bool(raw.get("promotion_candidate", False)),
+                "payload_type": str(raw.get("payload_type") or "pattern"),
+                "urgency": str(raw.get("urgency") or "normal"),
+                "requires_emissary": bool(raw.get("requires_emissary", True)),
+                "petition_status": status,
+            })
+    return petitions
+
+
+def read_item_world_status() -> dict[str, Any]:
+    status_path = ROOT / "logs" / "nanny" / "item_world_status.json"
+    if status_path.exists():
+        try:
+            return json.loads(status_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {
+        "ok": True,
+        "temperature": "cool",
+        "burst_score": 0,
+        "error_score": 0,
+        "active_agent_warnings": [],
+        "recommended_actions": [],
+        "global_cooldown_seconds": 0,
+    }
+
+
 @app.get("/api/status")
 def api_status():
     sessions_total, sessions_items = get_sessions(10)
@@ -177,6 +277,19 @@ def api_events():
         "ok": True,
         "items": get_events(200)
     })
+
+
+@app.get("/api/dispatch")
+def api_dispatch():
+    return jsonify({
+        "ok": True,
+        "petitions": read_dispatch_petitions(),
+    })
+
+
+@app.get("/api/item-world-status")
+def api_item_world_status():
+    return jsonify(read_item_world_status())
 
 
 @app.post("/api/event")
