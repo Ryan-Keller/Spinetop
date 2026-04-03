@@ -34,10 +34,20 @@ def normalize_event(raw: dict[str, Any]) -> dict[str, Any]:
         "promote",
         "approve",
         "honcho_bridge",
+        "hopper_clean",
         "honcho_bridge_file",
         "honcho_bridge_watcher",
     }
-    allowed_statuses = {"created", "promotable", "success", "error", "skipped", "partial"}
+    allowed_statuses = {
+        "created",
+        "promotable",
+        "success",
+        "error",
+        "skipped",
+        "partial",
+        "archived",
+        "quarantined",
+    }
     raw_type = raw.get("event_type") or "watcher_scan"
     raw_status = raw.get("status") or "created"
     return {
