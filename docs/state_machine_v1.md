@@ -231,6 +231,8 @@ Hermes may:
 - classify
 - petition
 
+Hermes-Spinetop v1 does not validate or promote. It may only observe, classify, and petition into those governed paths. Validation, promotion, approval, and admission remain system functions outside Hermes authority.
+
 Hermes may not:
 - approve
 - admit

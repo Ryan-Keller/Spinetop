@@ -9,6 +9,18 @@ Goal:
 - Avoid fabricated governance
 - Keep non-destructive behavior
 
+## Migration Note
+
+Legacy collective records can fail the modern strict schema even when they are valid historical artifacts. That is expected during normalization because the modern contract requires canonical IDs, explicit lineage, and fully governed admission fields that older files may never have carried.
+
+The checker separates legacy records into three practical buckets:
+
+- `modern`: the record satisfies the current strict contract and carries governed lineage
+- `grandfatherable`: the record is legacy historical memory, should stay stored as-is, and must remain explicitly marked legacy
+- `operator_review_needed`: the record is too thin, ambiguous, or under-linked to safely normalize or grandfather
+
+Normalization is allowed to explain a record, not to invent one. If a file is missing modern governance evidence, that absence is preserved rather than backfilled.
+
 ## Classification
 
 Legacy collective records should be classified as one of:
@@ -152,6 +164,13 @@ Based on the current collective directory:
   - `hermes_20260402_212107.json`
   - `spinelab_20260403_015746.json`
   - `spinelab_20260403_015746_20260403_015949.json`
+
+Known legacy final petition case:
+
+- `memory/dispatch/deferred/dispatch_hermes-desktop_20260403_043712_deferred.json`
+- This file is intentionally still `operator_review_needed` because it lacks a matching governance decision record.
+- It should not be auto-fixed, silently upgraded, or reclassified as modern.
+- If it is migrated at all, it should remain an operator review task unless a real matching governance decision is recovered.
 
 ## Smallest Safe Next Patch
 
