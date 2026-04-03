@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-ROOT = Path("/mnt/d/spine_desk/Spinetop")
+ROOT = Path(__file__).resolve().parents[1]
 COLLECTIVE = ROOT / "memory" / "collective"
 STATE_DIR = ROOT / "logs" / "honcho_bridge"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -43,9 +43,9 @@ def log_event(event_type: str, record_name: str, status: str, detail: str = "") 
         f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 
-def run_bridge() -> tuple[int, str]:
+def run_bridge_file(path: Path) -> tuple[int, str]:
     proc = subprocess.run(
-        ["python3", "scripts/honcho_bridge.py"],
+        ["python3", "scripts/honcho_bridge.py", str(path)],
         capture_output=True,
         text=True,
         cwd=str(ROOT),
@@ -60,8 +60,8 @@ def main() -> None:
 
     while True:
         current_files = sorted(COLLECTIVE.glob("*.json"))
-        current_map = {}
-        changed = False
+        next_seen: dict[str, float] = {}
+        changed_files: list[tuple[Path, float]] = []
 
         for path in current_files:
             try:
@@ -69,20 +69,54 @@ def main() -> None:
             except FileNotFoundError:
                 continue
 
-            current_map[path.name] = mtime
             previous = seen.get(path.name)
+            if previous is not None:
+                next_seen[path.name] = previous
             if previous is None or mtime > previous:
-                changed = True
+                changed_files.append((path, mtime))
 
-        if changed:
-            code, out = run_bridge()
-            if code == 0:
-                log_event("honcho_bridge_watcher", "collective", "success", out[:500])
-            else:
-                log_event("honcho_bridge_watcher", "collective", "error", out[:500])
+        if changed_files:
+            processed_count = 0
+            success_count = 0
+            error_count = 0
 
-        seen = current_map
-        save_seen(seen)
+            for path, mtime in changed_files:
+                processed_count += 1
+                started = time.monotonic()
+                code, out = run_bridge_file(path)
+                duration_ms = int((time.monotonic() - started) * 1000)
+                if code == 0:
+                    success_count += 1
+                    next_seen[path.name] = mtime
+                    detail = out[:500] if out else "mirrored to honcho"
+                    detail = f"{detail} duration_ms={duration_ms}"
+                    log_event("honcho_bridge_file", path.name, "success", detail)
+                else:
+                    error_count += 1
+                    detail = out[:500] if out else "bridge error"
+                    detail = f"{detail} duration_ms={duration_ms}"
+                    log_event("honcho_bridge_file", path.name, "error", detail)
+
+            if processed_count > 0:
+                if error_count == 0:
+                    summary_status = "success"
+                elif success_count == 0:
+                    summary_status = "error"
+                else:
+                    summary_status = "partial"
+                summary_detail = (
+                    f"processed={processed_count} success={success_count} error={error_count}"
+                )
+                log_event("honcho_bridge_watcher", "collective", summary_status, summary_detail)
+
+        if not changed_files:
+            for path in current_files:
+                previous = seen.get(path.name)
+                if previous is not None:
+                    next_seen[path.name] = previous
+
+        seen = next_seen
+        save_seen(next_seen)
         time.sleep(POLL_SECONDS)
 
 

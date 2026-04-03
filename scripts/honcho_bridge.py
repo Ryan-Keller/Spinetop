@@ -4,14 +4,16 @@ import json
 import urllib.error
 import urllib.request
 from pathlib import Path
+import sys
 from datetime import datetime
 
 BASE_URL = "http://127.0.0.1:8000"
 WORKSPACE_ID = "shared-coordination"
 DEFAULT_PEER_ID = "peer-hermes-desktop"
 
-ROOT = Path("/mnt/d/spine_desk/Spinetop")
+ROOT = Path(__file__).resolve().parents[1]
 COLLECTIVE = ROOT / "memory" / "collective"
+QUARANTINE_DIR = COLLECTIVE / "_quarantine"
 STATE_DIR = ROOT / "logs" / "honcho_bridge"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 SENT_FILE = STATE_DIR / "sent_files.json"
@@ -170,13 +172,14 @@ def send_record(path: Path) -> None:
         raise RuntimeError(f"message send failed: {status} {body[:500]}")
 
 
-def main() -> None:
+def process_files(files: list[Path]) -> tuple[int, int]:
     sent = load_sent()
-    files = sorted(COLLECTIVE.glob("*.json"))
+    success_count = 0
+    error_count = 0
 
     if not files:
         print("[honcho-bridge] no collective files")
-        return
+        return success_count, error_count
 
     for path in files:
         try:
@@ -194,11 +197,45 @@ def main() -> None:
             save_sent(sent)
             print(f"[honcho-bridge] sent {path.name}")
             log_event("honcho_bridge", path.name, "success", "mirrored to honcho")
+            success_count += 1
         except Exception as exc:
             print(f"[honcho-bridge] ERROR {path.name}: {exc}")
             print("[honcho-bridge] detail:", str(exc)[:1000])
-            log_event("honcho_bridge", path.name, "error", str(exc)[:500])
+            detail = str(exc)[:500]
+            if "missing session_id" in detail:
+                try:
+                    QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
+                    target = QUARANTINE_DIR / path.name
+                    if target.exists():
+                        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        target = QUARANTINE_DIR / f"{path.stem}_{stamp}{path.suffix}"
+                    path.rename(target)
+                    reason_path = target.with_suffix(target.suffix + ".reason.txt")
+                    reason_path.write_text(
+                        "missing session_id\n",
+                        encoding="utf-8",
+                    )
+                    detail = f"missing session_id; quarantined to {target.name}"
+                except Exception as move_exc:
+                    detail = f"missing session_id; quarantine failed: {move_exc}"
+            log_event("honcho_bridge", path.name, "error", detail)
+            error_count += 1
+
+    return success_count, error_count
+
+
+def main() -> int:
+    args = [arg for arg in sys.argv[1:] if arg.strip()]
+    if args:
+        files = [Path(arg) for arg in args]
+    else:
+        files = sorted(COLLECTIVE.glob("*.json"))
+
+    success_count, error_count = process_files(files)
+    if error_count > 0:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
