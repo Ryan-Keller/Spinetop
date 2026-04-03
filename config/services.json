@@ -1,0 +1,21 @@
+{
+  "ollama": {
+    "type": "http",
+    "host": "172.19.0.1",
+    "port": 11434,
+    "endpoint": "/api/version",
+    "ownership": "windows_managed"
+  },
+  "webui": {
+    "type": "http",
+    "host": "127.0.0.1",
+    "port": 8080,
+    "endpoint": "/"
+  },
+  "honcho": {
+    "type": "http",
+    "host": "127.0.0.1",
+    "port": 8000,
+    "endpoint": "/"
+  }
+}

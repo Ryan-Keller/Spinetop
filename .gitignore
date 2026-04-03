@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environments
+.venv*
+env/
+
+# Logs
+logs/
+*.log
+*.jsonl
+
+# Runtime state
+memory/inbox/*
+memory/promotion/*
+memory/collective/*
+!memory/**/README.md
+
+# OS
+.DS_Store
+Thumbs.db

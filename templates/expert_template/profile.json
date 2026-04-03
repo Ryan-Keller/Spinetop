@@ -1,0 +1,10 @@
+{
+  "name": "expert_name",
+  "display_name": "Expert Name",
+  "role": "specialist",
+  "description": "Short description of this expert.",
+  "created_at": "",
+  "version": "1.0",
+  "status": "active",
+  "tags": []
+}
