@@ -135,17 +135,18 @@ def _find_petition(petition_id: str) -> tuple[str | None, Path | None, dict[str,
 
 
 def _find_governance_decision(decision_id: str | None = None, petition_id: str | None = None) -> tuple[Path | None, dict[str, Any] | None]:
-    approved = DISPATCH_DIR / "approved"
-    if not approved.exists():
-        return None, None
-    for path in sorted(approved.glob("decision_*.json")):
-        payload = _load_json(path)
-        if str(payload.get("record_type") or "").strip() != "governance_decision":
+    for status in ("approved", "deferred", "rejected"):
+        folder = DISPATCH_DIR / status
+        if not folder.exists():
             continue
-        if decision_id and str(payload.get("decision_id") or "").strip() == decision_id:
-            return path, payload
-        if petition_id and str(payload.get("petition_id") or "").strip() == petition_id:
-            return path, payload
+        for path in sorted(folder.glob("decision_*.json")):
+            payload = _load_json(path)
+            if str(payload.get("record_type") or "").strip() != "governance_decision":
+                continue
+            if decision_id and str(payload.get("decision_id") or "").strip() == decision_id:
+                return path, payload
+            if petition_id and str(payload.get("petition_id") or "").strip() == petition_id:
+                return path, payload
     return None, None
 
 
@@ -287,6 +288,7 @@ def can_bridge_to_honcho(
         return GovernanceGate(False, "deferred", "record_type must be collective_memory")
 
     record_id = str(record.get("record_id") or "").strip()
+    collective_record_id = str(record.get("collective_record_id") or "").strip()
     candidate_id = str(record.get("candidate_id") or "").strip()
     related_petition_id = str(record.get("related_petition_id") or "").strip()
     governance_decision_id = str(record.get("governance_decision_id") or "").strip()
@@ -296,12 +298,15 @@ def can_bridge_to_honcho(
     governance_review_state = str(record.get("governance_review_state") or "").strip()
     legacy_compatibility = bool(record.get("legacy_compatibility") is True)
 
-    full_lineage = bool(record_id and candidate_id and related_petition_id and governance_decision_id)
+    full_lineage = bool(record_id and collective_record_id and candidate_id and related_petition_id and governance_decision_id)
 
     if not full_lineage:
         if legacy_compatibility and str(record.get("approval_timestamp") or "").strip() and governance_approval_ref.startswith("legacy:"):
             return GovernanceGate(True, "allowed", "explicitly grandfathered legacy collective record")
         return GovernanceGate(False, "deferred", "missing full collective lineage")
+
+    if collective_record_id != record_id:
+        return GovernanceGate(False, "deferred", "collective_record_id does not match record_id")
 
     if governance_approval_ref != f"decision:{governance_decision_id}":
         return GovernanceGate(False, "deferred", "governance_approval_ref does not match decision")
@@ -331,7 +336,10 @@ def can_bridge_to_honcho(
         return GovernanceGate(False, "deferred", "governance decision does not approve collective")
     if str(decision.get("review_state") or "").strip() != "final":
         return GovernanceGate(False, "deferred", "governance decision not final")
-    if str(decision.get("related_collective_id") or "").strip() not in {"", record_id}:
+    decision_collective_id = str(decision.get("related_collective_id") or "").strip()
+    if not legacy_compatibility and decision_collective_id != record_id:
+        return GovernanceGate(False, "deferred", "governance decision not linked to this collective")
+    if legacy_compatibility and decision_collective_id and decision_collective_id != record_id:
         return GovernanceGate(False, "deferred", "governance decision linked to a different collective")
 
     return GovernanceGate(True, "allowed", f"collective {record_id} approved with decision {governance_decision_id}")

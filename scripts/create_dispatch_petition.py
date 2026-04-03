@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from governance_utils import can_create_dispatch, read_nanny_state, read_return_all_state
-from record_schemas import build_dispatch_petition_record, utc_now_iso
+from record_schemas import build_dispatch_petition_record, build_governance_decision_record, utc_now_iso
 from repo_paths import repo_root
 
 
@@ -48,7 +48,7 @@ def build_petition_payload(
     dispatch_mode: str = "normal",
     operator_id: str = "",
     entry_class: str = "normal",
-) -> tuple[dict[str, Any], Path, str]:
+) -> tuple[dict[str, Any], Path, str, dict[str, Any] | None, Path | None]:
     status = status.strip().lower()
     if status not in {"pending", "approved", "deferred", "rejected"}:
         raise ValueError(f"Unsupported petition status: {status}")
@@ -138,8 +138,44 @@ def build_petition_payload(
         },
     )
     payload["record_name"] = record_name
+    decision_record: dict[str, Any] | None = None
+    decision_path: Path | None = None
+    if status in {"approved", "deferred", "rejected"}:
+        decision_outcome = {
+            "approved": "approve_collective",
+            "deferred": "defer",
+            "rejected": "reject",
+        }[status]
+        decision = build_governance_decision_record(
+            petition_id=petition_id,
+            petition_kind=petition_kind,
+            decision_outcome=decision_outcome,
+            created_by=agent_id,
+            summary=summary,
+            reason=reason,
+            evidence_refs=evidence_refs or [],
+            risk_level=risk_level,
+            requires_operator_review=status != "approved",
+            review_state="final",
+            operator_id=operator_id,
+            source_host=source_host,
+            legacy_compatibility=False,
+        )
+        decision["governance_decision_ref"] = f"decision:{decision['decision_id']}"
+        decision["governance_review_state"] = "approved" if status == "approved" else status
+        decision["governance_review_timestamp"] = now_iso
+        decision["governance_review_reason"] = reason or summary
+        payload["governance_decision_id"] = decision["decision_id"]
+        payload["governance_decision_ref"] = f"decision:{decision['decision_id']}"
+        payload["governance_decision_outcome"] = decision_outcome
+        payload["governance_review_state"] = status
+        payload["governance_review_reason"] = reason or summary
+        payload["governance_review_timestamp"] = now_iso
     path = target_dir / record_name
-    return payload, path, petition_id
+    if status in {"approved", "deferred", "rejected"}:
+        decision_path = target_dir / f"decision_{decision['decision_id']}.json"
+        decision_record = decision
+    return payload, path, petition_id, decision_record, decision_path
 
 
 def create_dispatch_petition_from_fields(
@@ -164,7 +200,7 @@ def create_dispatch_petition_from_fields(
     operator_id: str = "",
     entry_class: str = "normal",
 ) -> tuple[dict[str, Any], Path, str]:
-    payload, path, petition_id = build_petition_payload(
+    payload, path, petition_id, decision_record, decision_path = build_petition_payload(
         status=status,
         agent_id=_normalize_text(agent_id, "unknown"),
         workspace=_normalize_text(workspace, "unknown"),
@@ -186,6 +222,8 @@ def create_dispatch_petition_from_fields(
         entry_class=_normalize_text(entry_class, "normal"),
     )
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    if decision_record and decision_path:
+        decision_path.write_text(json.dumps(decision_record, indent=2) + "\n", encoding="utf-8")
     return payload, path, petition_id
 
 

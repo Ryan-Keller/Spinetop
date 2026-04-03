@@ -76,7 +76,7 @@ A transition is valid only if:
 | dispatch/pending | Operator | dispatch/approved | Yes | `approved_at`, `approved_by`, `approval_reason`, `governance_decision_ref` | Yes | Warm/Hot may still allow if manual | Human approval path |
 | dispatch/pending | Operator | dispatch/deferred | Yes | `deferred_at`, `deferred_by`, `defer_reason` | No | Yes | Safe fallback |
 | dispatch/pending | Operator | dispatch/rejected | Yes | `rejected_at`, `rejected_by`, `rejection_reason` | No | No | Terminal denial |
-| dispatch/approved | Governed Admission Script | collective | Yes | `admitted_at`, `candidate_id`, `governance_approval_ref`, `related_petition_id`, `governance_decision_id`, `admission_actor`, `durability_class` | Yes | Warm/Hot may defer | Must verify governance trail |
+| dispatch/approved | Governed Admission Script | collective | Yes | `admitted_at`, `collective_record_id`, `candidate_id`, `governance_approval_ref`, `related_petition_id`, `governance_decision_id`, `admission_actor`, `durability_class` | Yes | Warm/Hot may defer | Must verify governance trail |
 | collective | Honcho Bridge | mirrored/honcho | Yes | `mirrored_at`, `mirrored_by`, optional `honcho_ref` | Yes | Hot may pause | Mirror only, no mutation |
 | collective | Any actor except bridge | honcho | No | - | - | - | Prevents bypass |
 
@@ -153,7 +153,7 @@ Before committing the move, were the required transition fields added?
 Examples:
 - inbox → promotion: `promotion_timestamp`, `validated_by`, `validation_result`
 - pending → approved: `approved_at`, `approved_by`, `approval_reason`, `governance_decision_ref`
-- approved → collective: `admitted_at`, `candidate_id`, `governance_approval_ref`, `related_petition_id`, `governance_decision_id`, `admission_actor`, `durability_class`
+- approved → collective: `admitted_at`, `collective_record_id`, `candidate_id`, `governance_approval_ref`, `related_petition_id`, `governance_decision_id`, `admission_actor`, `durability_class`
 
 ### 7. Governance Trail Check
 For any truth-adjacent transition:

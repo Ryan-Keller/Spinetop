@@ -110,7 +110,6 @@ def main() -> int:
         print(f"Deferred: {source} ({exc})", file=sys.stderr)
         return 0
 
-    collective_record["approval_timestamp"] = collective_record["admitted_at"]
     collective_record["governance_review_state"] = "approved"
     collective_record["governance_review_reason"] = gate.reason
     collective_record["admission_actor"] = "governed_admission_script"

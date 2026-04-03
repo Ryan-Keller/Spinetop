@@ -99,6 +99,7 @@ Rule:
 
 - A governance decision is the judgment record.
 - It records the reason a petition did or did not move toward collective admission.
+- Final petition states (`approved`, `deferred`, `rejected`) must each have a matching governance decision record.
 - It does not itself become collective memory.
 
 ## 3. Candidate Memory
@@ -138,6 +139,7 @@ A collective record is trusted memory.
 Required fields:
 
 - `record_id`
+- `collective_record_id`
 - `record_type`: `collective_memory`
 - `created_at`
 - `admitted_at`

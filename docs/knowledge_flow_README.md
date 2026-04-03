@@ -40,6 +40,7 @@ Optional governance and timestamp fields are added by scripts:
 - `approval_reason`
 - `governance_decision_ref`
 - `admitted_at`
+- `collective_record_id`
 - `candidate_id`
 - `admission_actor`
 - `durability_class`
@@ -87,6 +88,6 @@ python scripts/check_memory_schema_migration.py
 1. Drop JSON files into `memory/inbox`.
 2. Run validation to ensure required fields and types.
 3. If suitable and `promotion_candidate` is true, promote to `memory/promotion` and open a dispatch petition in `memory/dispatch/pending`.
-4. Governance review decides whether the petition may move to `memory/dispatch/approved`.
+4. Governance review writes a `governance_decision` record and decides whether the petition may move to `memory/dispatch/approved`, `memory/dispatch/deferred`, or `memory/dispatch/rejected`.
 5. Governed admission moves the approved record into `memory/collective`.
 6. If rejected at any stage, archive to `memory/archive`.

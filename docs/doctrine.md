@@ -98,6 +98,7 @@ Minimal record shape:
 
 - candidate fields
 - `record_id`
+- `collective_record_id`
 - `record_type`
 - `candidate_id`
 - `created_at`

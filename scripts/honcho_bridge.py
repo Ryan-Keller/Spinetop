@@ -131,6 +131,7 @@ def build_message(record: dict, peer_id: str) -> dict:
     content = {
         "record_type": record.get("record_type"),
         "record_id": record.get("record_id"),
+        "collective_record_id": record.get("collective_record_id"),
         "candidate_id": record.get("candidate_id"),
         "related_petition_id": record.get("related_petition_id"),
         "governance_decision_id": record.get("governance_decision_id"),
@@ -153,6 +154,7 @@ def build_message(record: dict, peer_id: str) -> dict:
             "bridge_source": "filesystem_collective",
             "record_name": record.get("_record_name"),
             "record_id": record.get("record_id"),
+            "collective_record_id": record.get("collective_record_id"),
             "candidate_id": record.get("candidate_id"),
             "related_petition_id": record.get("related_petition_id"),
             "governance_decision_id": record.get("governance_decision_id"),

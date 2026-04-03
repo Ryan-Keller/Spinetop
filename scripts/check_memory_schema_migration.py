@@ -8,19 +8,31 @@ from typing import Any
 
 from record_schemas import (
     normalize_candidate_memory_record,
+    normalize_dispatch_petition_record,
     normalize_governance_decision_record,
     normalize_collective_memory_record,
     validate_candidate_memory_record,
+    validate_dispatch_petition_record,
     validate_governance_decision_record,
     validate_collective_memory_record,
 )
+from governance_utils import find_governance_decision_for_petition
 from repo_paths import repo_root
 
 
 ROOT = repo_root()
 PROMOTION_DIR = ROOT / "memory" / "promotion"
 COLLECTIVE_DIR = ROOT / "memory" / "collective"
-DECISION_DIR = ROOT / "memory" / "dispatch" / "approved"
+FINAL_PETITION_DIRS = [
+    ROOT / "memory" / "dispatch" / "approved",
+    ROOT / "memory" / "dispatch" / "deferred",
+    ROOT / "memory" / "dispatch" / "rejected",
+]
+DECISION_DIRS = [
+    ROOT / "memory" / "dispatch" / "approved",
+    ROOT / "memory" / "dispatch" / "deferred",
+    ROOT / "memory" / "dispatch" / "rejected",
+]
 
 
 @dataclass(frozen=True)
@@ -155,6 +167,47 @@ def check_collective_file(path: Path) -> CheckResult:
         return CheckResult(path, "collective", status, detail or f"legacy-compatible but not strict: {strict_exc}")
 
 
+def check_final_petition_file(path: Path) -> CheckResult:
+    try:
+        payload = load_json(path)
+    except Exception as exc:
+        return CheckResult(path, "petition", "invalid", f"malformed json: {exc}")
+
+    try:
+        normalized = normalize_dispatch_petition_record(payload, path=path, legacy_ok=False)
+        validate_dispatch_petition_record(normalized, path=path)
+    except Exception as strict_exc:
+        try:
+            normalize_dispatch_petition_record(payload, path=path, legacy_ok=True)
+        except Exception as legacy_exc:
+            return CheckResult(path, "petition", "invalid", f"{legacy_exc}")
+        petition_id = _first_text(payload, "petition_id")
+        decision = None
+        if petition_id:
+            _, decision = find_governance_decision_for_petition(petition_id)
+        if not decision:
+            return CheckResult(path, "petition", "operator_review_needed", "legacy final petition missing matching governance decision")
+        return CheckResult(path, "petition", "legacy", f"legacy-compatible but not strict: {strict_exc}")
+
+    petition_id = _first_text(payload, "petition_id")
+    decision_id = _first_text(payload, "governance_decision_id")
+    decision_ref = _first_text(payload, "governance_decision_ref")
+    decision = None
+    if not decision_id:
+        return CheckResult(path, "petition", "operator_review_needed", "final petition missing governance_decision_id")
+    if decision_ref and not decision_ref.startswith("decision:"):
+        return CheckResult(path, "petition", "invalid", "governance_decision_ref must point to a decision")
+    if petition_id:
+        _, decision = find_governance_decision_for_petition(petition_id)
+    if not decision:
+        return CheckResult(path, "petition", "operator_review_needed", "final petition missing matching governance decision")
+    if decision_id and _first_text(decision, "decision_id") != decision_id:
+        return CheckResult(path, "petition", "operator_review_needed", "final petition decision reference mismatch")
+    if _first_text(decision, "decision_id"):
+        return CheckResult(path, "petition", "strict", "final petition has matching governance decision")
+    return CheckResult(path, "petition", "operator_review_needed", "matching governance decision is not strict")
+
+
 def check_decision_file(path: Path) -> CheckResult:
     try:
         payload = load_json(path)
@@ -200,7 +253,12 @@ def print_results(title: str, results: list[CheckResult]) -> Counter[str]:
 def main() -> int:
     promotion_results = scan_dir(PROMOTION_DIR, check_promotion_file)
     collective_results = scan_dir(COLLECTIVE_DIR, check_collective_file)
-    decision_results = scan_dir(DECISION_DIR, check_decision_file, "decision_*.json")
+    petition_results: list[CheckResult] = []
+    for directory in FINAL_PETITION_DIRS:
+        petition_results.extend(scan_dir(directory, check_final_petition_file, "dispatch_*.json"))
+    decision_results: list[CheckResult] = []
+    for directory in DECISION_DIRS:
+        decision_results.extend(scan_dir(directory, check_decision_file, "decision_*.json"))
 
     print("Spinetop memory migration check")
     print("")
@@ -208,10 +266,12 @@ def main() -> int:
     print("")
     coll_counts = print_results("collective", collective_results)
     print("")
+    petition_counts = print_results("final_petition", petition_results)
+    print("")
     decision_counts = print_results("governance_decision", decision_results)
     print("")
 
-    totals = promo_counts + coll_counts + decision_counts
+    totals = promo_counts + coll_counts + petition_counts + decision_counts
 
     overall = " ".join(f"{key}={value}" for key, value in sorted(totals.items()))
     print(f"Overall: {overall or 'none'}")
