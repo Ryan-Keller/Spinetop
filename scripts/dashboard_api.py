@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EVENT_LOG = ROOT / "logs" / "topology" / "events.jsonl"
 MEMORY_DIR = ROOT / "memory"
 DISPATCH_DIR = MEMORY_DIR / "dispatch"
+GOVERNANCE_DIR = ROOT / "logs" / "governance"
 HONCHO_BASE = "http://127.0.0.1:8000"
 WORKSPACE_ID = "shared-coordination"
 IN_MEMORY_EVENTS: list[dict[str, Any]] = []
@@ -57,6 +58,7 @@ def normalize_event(raw: dict[str, Any]) -> dict[str, Any]:
         "cool",
         "warm",
         "hot",
+        "paused",
     }
     raw_type = raw.get("event_type") or "watcher_scan"
     raw_status = raw.get("status") or "created"
@@ -179,6 +181,113 @@ def log_topology_event(event_type: str, record_name: str, status: str, detail: s
         f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 
+def read_return_all_state() -> dict[str, Any]:
+    path = GOVERNANCE_DIR / "return_all.json"
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return {
+                "ok": True,
+                "enabled": bool(data.get("enabled", False)),
+                "issued_by": str(data.get("issued_by") or "operator"),
+                "issued_at": str(data.get("issued_at") or ""),
+                "reason": str(data.get("reason") or ""),
+                "allow_custodial_bypass": bool(data.get("allow_custodial_bypass", False)),
+            }
+        except Exception:
+            pass
+    return {
+        "ok": True,
+        "enabled": False,
+        "issued_by": "operator",
+        "issued_at": "",
+        "reason": "",
+        "allow_custodial_bypass": False,
+    }
+
+
+def parse_iso(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+
+def is_bypass_allowed(petition: dict[str, Any], return_all: dict[str, Any]) -> bool:
+    if not return_all.get("allow_custodial_bypass"):
+        return False
+    spawn_authority = str(petition.get("spawn_authority") or "")
+    dispatch_mode = str(petition.get("dispatch_mode") or "")
+    entry_class = str(petition.get("entry_class") or "")
+    return (
+        spawn_authority == "custodial"
+        and dispatch_mode == "rapid"
+        and entry_class in {"self_heal", "repair"}
+    )
+
+
+def normalize_petition(raw: dict[str, Any], status: str, filename: str, return_all: dict[str, Any]) -> dict[str, Any]:
+    petition_id = str(raw.get("petition_id") or "").strip()
+    if not petition_id:
+        petition_id = f"legacy:{filename}"
+        log_topology_event("dispatch_petition", filename, "error", "missing petition_id")
+
+    ask_count = raw.get("ask_count")
+    if ask_count is None:
+        asks = raw.get("asks")
+        if isinstance(asks, list):
+            ask_count = len(asks)
+        else:
+            ask_count = 1
+    ask_count = int(ask_count)
+
+    requires_operator_approval = raw.get("requires_operator_approval")
+    if requires_operator_approval is None:
+        requires_operator_approval = ask_count > 1
+
+    spawn_authority = str(raw.get("spawn_authority") or "emissary")
+    dispatch_mode = str(raw.get("dispatch_mode") or "normal")
+    operator_id = str(raw.get("operator_id") or "")
+    status_updated_at = str(raw.get("status_updated_at") or raw.get("timestamp_created") or iso_now())
+    source_host = str(raw.get("source_host") or "unknown")
+    entry_class = str(raw.get("entry_class") or "normal")
+
+    petition_status = status
+    if return_all.get("enabled") and status == "pending" and not is_bypass_allowed(raw, return_all):
+        issued_at = parse_iso(str(return_all.get("issued_at") or ""))
+        updated_at = parse_iso(status_updated_at) or datetime.now(timezone.utc)
+        if not issued_at or updated_at >= issued_at:
+            petition_status = "deferred"
+            requires_operator_approval = True
+
+    return {
+        "petition_id": petition_id,
+        "record_name": str(raw.get("record_name") or filename),
+        "agent_id": str(raw.get("agent_id") or "unknown"),
+        "workspace": str(raw.get("workspace") or "unknown"),
+        "source": str(raw.get("source") or "dispatch"),
+        "timestamp_created": str(raw.get("timestamp_created") or iso_now()),
+        "summary": str(raw.get("summary") or ""),
+        "task": str(raw.get("task") or ""),
+        "confidence": float(raw.get("confidence") or 0.0),
+        "promotion_candidate": bool(raw.get("promotion_candidate", False)),
+        "payload_type": str(raw.get("payload_type") or "pattern"),
+        "urgency": str(raw.get("urgency") or "normal"),
+        "requires_emissary": bool(raw.get("requires_emissary", True)),
+        "petition_status": petition_status,
+        "ask_count": ask_count,
+        "requires_operator_approval": bool(requires_operator_approval),
+        "spawn_authority": spawn_authority,
+        "dispatch_mode": dispatch_mode,
+        "operator_id": operator_id,
+        "status_updated_at": status_updated_at,
+        "source_host": source_host,
+        "entry_class": entry_class,
+    }
+
+
 def read_dispatch_petitions() -> list[dict]:
     folders = [
         ("pending", DISPATCH_DIR / "pending"),
@@ -187,8 +296,9 @@ def read_dispatch_petitions() -> list[dict]:
         ("rejected", DISPATCH_DIR / "rejected"),
     ]
     petitions: list[dict] = []
-    seen_names: dict[str, int] = {}
+    seen_ids: dict[str, int] = {}
     logged_duplicates: set[str] = set()
+    return_all = read_return_all_state()
     for status, folder in folders:
         if not folder.exists():
             continue
@@ -203,37 +313,21 @@ def read_dispatch_petitions() -> list[dict]:
                     "malformed json",
                 )
                 continue
-            record_name = str(raw.get("record_name") or path.name)
-            if record_name in seen_names:
-                seen_names[record_name] += 1
-                suffix = seen_names[record_name]
-                record_name = f"{record_name}#{suffix}"
-                if record_name not in logged_duplicates:
+            petition = normalize_petition(raw, status, path.name, return_all)
+            pid = petition["petition_id"]
+            if pid in seen_ids:
+                seen_ids[pid] += 1
+                if pid not in logged_duplicates:
                     log_topology_event(
                         "dispatch_petition",
                         path.name,
                         "error",
-                        "duplicate record_name across dispatch folders",
+                        "duplicate petition_id across dispatch folders",
                     )
-                    logged_duplicates.add(record_name)
+                    logged_duplicates.add(pid)
             else:
-                seen_names[record_name] = 1
-
-            petitions.append({
-                "record_name": record_name,
-                "agent_id": str(raw.get("agent_id") or "unknown"),
-                "workspace": str(raw.get("workspace") or "unknown"),
-                "source": str(raw.get("source") or "dispatch"),
-                "timestamp_created": str(raw.get("timestamp_created") or iso_now()),
-                "summary": str(raw.get("summary") or ""),
-                "task": str(raw.get("task") or ""),
-                "confidence": float(raw.get("confidence") or 0.0),
-                "promotion_candidate": bool(raw.get("promotion_candidate", False)),
-                "payload_type": str(raw.get("payload_type") or "pattern"),
-                "urgency": str(raw.get("urgency") or "normal"),
-                "requires_emissary": bool(raw.get("requires_emissary", True)),
-                "petition_status": status,
-            })
+                seen_ids[pid] = 1
+            petitions.append(petition)
     return petitions
 
 
@@ -285,6 +379,11 @@ def api_dispatch():
         "ok": True,
         "petitions": read_dispatch_petitions(),
     })
+
+
+@app.get("/api/governance/return-all")
+def api_governance_return_all():
+    return jsonify(read_return_all_state())
 
 
 @app.get("/api/item-world-status")
