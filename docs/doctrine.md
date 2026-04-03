@@ -99,6 +99,7 @@ Minimal record shape:
 - candidate fields
 - `record_id`
 - `record_type`
+- `candidate_id`
 - `created_at`
 - `admitted_at`
 - `governance_approval_ref`

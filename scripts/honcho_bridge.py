@@ -131,6 +131,10 @@ def build_message(record: dict, peer_id: str) -> dict:
     content = {
         "record_type": record.get("record_type"),
         "record_id": record.get("record_id"),
+        "candidate_id": record.get("candidate_id"),
+        "related_petition_id": record.get("related_petition_id"),
+        "governance_decision_id": record.get("governance_decision_id"),
+        "admission_actor": record.get("admission_actor"),
         "source": record.get("source"),
         "expert_name": record.get("expert_name"),
         "task": record.get("task"),
@@ -149,6 +153,10 @@ def build_message(record: dict, peer_id: str) -> dict:
             "bridge_source": "filesystem_collective",
             "record_name": record.get("_record_name"),
             "record_id": record.get("record_id"),
+            "candidate_id": record.get("candidate_id"),
+            "related_petition_id": record.get("related_petition_id"),
+            "governance_decision_id": record.get("governance_decision_id"),
+            "admission_actor": record.get("admission_actor"),
             "agent_id": record.get("agent_id"),
             "workspace": record.get("workspace"),
             "timestamp_created": created_at,
@@ -160,6 +168,8 @@ def build_message(record: dict, peer_id: str) -> dict:
 
 
 def send_record(path: Path) -> None:
+    if COLLECTIVE not in path.resolve().parents and path.resolve() != COLLECTIVE:
+        raise RuntimeError(f"transport-only bridge accepts collective files only: {path}")
     record = json.loads(path.read_text(encoding="utf-8"))
     record["_record_name"] = path.name
 

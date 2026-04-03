@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from governance_utils import read_nanny_state, read_return_all_state
+from governance_utils import can_bridge_to_honcho, read_nanny_state, read_return_all_state
 from repo_paths import repo_root
 
 
@@ -48,6 +48,19 @@ def log_event(event_type: str, record_name: str, status: str, detail: str = "") 
 
 
 def run_bridge_file(path: Path) -> tuple[int, str]:
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return 1, f"invalid json: {exc}"
+
+    gate = can_bridge_to_honcho(
+        record,
+        return_all=read_return_all_state(),
+        nanny=read_nanny_state(),
+    )
+    if not gate.allowed:
+        return 1, f"preflight deferred: {gate.reason}"
+
     proc = subprocess.run(
         ["python3", "scripts/honcho_bridge.py", str(path)],
         capture_output=True,

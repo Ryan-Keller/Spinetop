@@ -113,6 +113,7 @@ def main() -> int:
     collective_record["approval_timestamp"] = collective_record["admitted_at"]
     collective_record["governance_review_state"] = "approved"
     collective_record["governance_review_reason"] = gate.reason
+    collective_record["admission_actor"] = "governed_admission_script"
     write_json(source, collective_record)
 
     destination = safe_destination(source, collective)

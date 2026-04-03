@@ -40,6 +40,7 @@ Optional governance and timestamp fields are added by scripts:
 - `approval_reason`
 - `governance_decision_ref`
 - `admitted_at`
+- `candidate_id`
 - `admission_actor`
 - `durability_class`
 - `archive_timestamp`

@@ -91,7 +91,9 @@ def _has_new_governance_markers(record: dict[str, Any]) -> bool:
     return any(
         str(record.get(field) or "").strip()
         for field in (
+            "candidate_id",
             "related_petition_id",
+            "governance_decision_id",
             "governance_review_state",
             "governance_review_reason",
             "governance_review_timestamp",
@@ -281,21 +283,58 @@ def can_bridge_to_honcho(
         cooldown = int(nanny.get("global_cooldown_seconds") or 0)
         return GovernanceGate(False, "paused", f"nanny {temperature} or cooldown {cooldown}s active")
 
+    if str(record.get("record_type") or "").strip() != "collective_memory":
+        return GovernanceGate(False, "deferred", "record_type must be collective_memory")
+
+    record_id = str(record.get("record_id") or "").strip()
+    candidate_id = str(record.get("candidate_id") or "").strip()
+    related_petition_id = str(record.get("related_petition_id") or "").strip()
+    governance_decision_id = str(record.get("governance_decision_id") or "").strip()
+    governance_approval_ref = str(record.get("governance_approval_ref") or "").strip()
+    admitted_at = str(record.get("admitted_at") or "").strip()
+    admission_actor = str(record.get("admission_actor") or "").strip()
+    governance_review_state = str(record.get("governance_review_state") or "").strip()
+    legacy_compatibility = bool(record.get("legacy_compatibility") is True)
+
+    full_lineage = bool(record_id and candidate_id and related_petition_id and governance_decision_id)
+
+    if not full_lineage:
+        if legacy_compatibility and str(record.get("approval_timestamp") or "").strip() and governance_approval_ref.startswith("legacy:"):
+            return GovernanceGate(True, "allowed", "explicitly grandfathered legacy collective record")
+        return GovernanceGate(False, "deferred", "missing full collective lineage")
+
+    if governance_approval_ref != f"decision:{governance_decision_id}":
+        return GovernanceGate(False, "deferred", "governance_approval_ref does not match decision")
+    if not admitted_at:
+        return GovernanceGate(False, "deferred", "missing admitted_at")
+    if not admission_actor:
+        return GovernanceGate(False, "deferred", "missing admission_actor")
+    if governance_review_state != "approved":
+        return GovernanceGate(False, "deferred", "collective not marked approved")
     if not _has_governance_trail(record):
         return GovernanceGate(False, "deferred", "missing governance trail")
 
-    related_petition_id = _resolve_related_petition_id(record)
-    if related_petition_id:
-        status, _, petition = _find_petition(related_petition_id)
-        if petition and status == "approved":
-            return GovernanceGate(True, "allowed", f"dispatch petition {related_petition_id} approved")
-        if petition and status in {"pending", "deferred"}:
-            return GovernanceGate(False, "deferred", f"dispatch petition {related_petition_id} not approved")
+    status, _, petition = _find_petition(related_petition_id)
+    if not petition:
+        return GovernanceGate(False, "deferred", f"missing dispatch petition {related_petition_id}")
+    if status != "approved":
+        return GovernanceGate(False, "deferred", f"dispatch petition {related_petition_id} not approved")
 
-    if _is_legacy_collective_record(record) and str(record.get("approval_timestamp") or "").strip():
-        return GovernanceGate(True, "allowed", "legacy approval trail present")
+    decision_path, decision = _find_governance_decision(decision_id=governance_decision_id, petition_id=related_petition_id)
+    if not decision:
+        return GovernanceGate(False, "deferred", f"missing governance decision {governance_decision_id}")
+    if str(decision.get("record_type") or "").strip() != "governance_decision":
+        return GovernanceGate(False, "deferred", "governance decision record_type invalid")
+    if str(decision.get("petition_id") or "").strip() != related_petition_id:
+        return GovernanceGate(False, "deferred", "governance decision petition mismatch")
+    if str(decision.get("decision_outcome") or "").strip() != "approve_collective":
+        return GovernanceGate(False, "deferred", "governance decision does not approve collective")
+    if str(decision.get("review_state") or "").strip() != "final":
+        return GovernanceGate(False, "deferred", "governance decision not final")
+    if str(decision.get("related_collective_id") or "").strip() not in {"", record_id}:
+        return GovernanceGate(False, "deferred", "governance decision linked to a different collective")
 
-    return GovernanceGate(False, "deferred", "missing approved petition trail")
+    return GovernanceGate(True, "allowed", f"collective {record_id} approved with decision {governance_decision_id}")
 
 
 def should_require_operator_review(

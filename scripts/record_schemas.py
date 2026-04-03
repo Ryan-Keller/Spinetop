@@ -530,6 +530,7 @@ def validate_collective_memory_record(data: Any, *, path: Path | None = None) ->
     _ts(record.get("admitted_at"), "admitted_at", path=path)
     _s(record, "source_workspace", path=path, allow_empty=False)
     _s(record, "submitted_by", path=path, allow_empty=False)
+    _s(record, "candidate_id", path=path, allow_empty=False)
     _s(record, "governance_approval_ref", path=path, allow_empty=False)
     _s(record, "related_petition_id", path=path, allow_empty=False)
     _s(record, "governance_decision_id", path=path, allow_empty=False)
@@ -564,6 +565,7 @@ def normalize_collective_memory_record(data: Any, *, path: Path | None = None, l
     )
     record["source_workspace"] = _pick(record, "source_workspace", "workspace", default="spinetop")
     record["submitted_by"] = _pick(record, "submitted_by", "agent_id", "expert_name", default="unknown")
+    record["candidate_id"] = _pick(record, "candidate_id", default="")
     record["summary"] = _pick(record, "summary", "task", default="")
     record["key_findings"] = _li({"key_findings": record.get("key_findings") or []}, "key_findings", path=path, allow_empty=False)
     record["recommended_action"] = _pick(record, "recommended_action", default="review")
@@ -652,6 +654,7 @@ def build_collective_record_from_candidate(
     candidate = normalize_candidate_memory_record(candidate_record, legacy_ok=True)
     related_petition_id = related_petition_id.strip() or candidate.get("related_petition_id", "")
     governance_decision_id = governance_decision_id.strip()
+    candidate_id = str(candidate.get("record_id") or "").strip()
     record = dict(candidate)
     record.update(
         {
@@ -660,6 +663,7 @@ def build_collective_record_from_candidate(
             "admitted_at": admitted_at or utc_now_iso(),
             "source_workspace": candidate["source_workspace"],
             "submitted_by": candidate["submitted_by"],
+            "candidate_id": candidate_id,
             "governance_approval_ref": f"decision:{governance_decision_id}",
             "related_petition_id": related_petition_id,
             "governance_decision_id": governance_decision_id,
