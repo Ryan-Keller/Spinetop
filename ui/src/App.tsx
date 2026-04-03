@@ -2,8 +2,9 @@ import { useState } from "react";
 import Dashboard from "./pages/Dashboard";
 import HonchoItemWorld from "./pages/HonchoItemWorld";
 import AgentMemoryTriadPage from "./pages/AgentMemoryTriadPage";
+import EmissaryReturnGatePage from "./pages/EmissaryReturnGatePage";
 
-type Page = "dashboard" | "honcho" | "triad";
+type Page = "dashboard" | "honcho" | "triad" | "emissary";
 
 const styles = {
   app: {
@@ -97,11 +98,29 @@ function App() {
             >
               Agent Memory Triad
             </button>
+            <button
+              type="button"
+              onClick={() => setPage("emissary")}
+              style={{
+                ...styles.button,
+                ...(page === "emissary" ? styles.buttonActive : null),
+              }}
+            >
+              Emissary Return Gate
+            </button>
           </div>
         </div>
       </nav>
 
-      {page === "dashboard" ? <Dashboard /> : page === "honcho" ? <HonchoItemWorld /> : <AgentMemoryTriadPage />}
+      {page === "dashboard" ? (
+        <Dashboard />
+      ) : page === "honcho" ? (
+        <HonchoItemWorld />
+      ) : page === "triad" ? (
+        <AgentMemoryTriadPage />
+      ) : (
+        <EmissaryReturnGatePage />
+      )}
     </div>
   );
 }
