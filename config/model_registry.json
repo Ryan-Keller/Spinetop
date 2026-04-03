@@ -1,0 +1,32 @@
+{
+  "notes": [
+    "Registry only; no runtime execution.",
+    "Model names may require operator confirmation in the current environment."
+  ],
+  "models": {
+    "local_fast": {
+      "provider": "ollama",
+      "model": "qwen2.5-coder:14b",
+      "class": "fast_local",
+      "intended_use": ["triage", "summaries", "light analysis"]
+    },
+    "local_deep": {
+      "provider": "ollama",
+      "model": "qwen3-coder:30b",
+      "class": "deep_local",
+      "intended_use": ["deeper reasoning", "repair analysis", "complex summaries"]
+    },
+    "api_reasoning": {
+      "provider": "api",
+      "model": "gpt-5-reasoning",
+      "class": "deep_api",
+      "intended_use": ["high-stakes planning", "multi-step reasoning"]
+    },
+    "api_research": {
+      "provider": "api",
+      "model": "gpt-5-research",
+      "class": "research_api",
+      "intended_use": ["comparative research", "model scouting", "market scan"]
+    }
+  }
+}

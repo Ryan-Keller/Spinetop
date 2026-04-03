@@ -1,0 +1,30 @@
+{
+  "notes": {
+    "allowed_models": "Hard boundary; models outside this list are not permitted.",
+    "default_model": "Routine work model.",
+    "escalation_model": "Bounded upgrade path; requires explicit policy approval."
+  },
+  "experts": {
+    "hermes-spinetop": {
+      "allowed_models": ["local_fast", "local_deep"],
+      "default_model": "local_fast",
+      "escalation_model": "local_deep",
+      "api_allowed": false,
+      "lane": "operational_stewardship"
+    },
+    "hermes-spinelab": {
+      "allowed_models": ["local_fast", "local_deep", "api_reasoning"],
+      "default_model": "local_fast",
+      "escalation_model": "api_reasoning",
+      "api_allowed": true,
+      "lane": "exploration_and_control"
+    },
+    "linguist": {
+      "allowed_models": ["local_fast", "local_deep", "api_research"],
+      "default_model": "local_deep",
+      "escalation_model": "api_research",
+      "api_allowed": true,
+      "lane": "model_analysis_and_research"
+    }
+  }
+}

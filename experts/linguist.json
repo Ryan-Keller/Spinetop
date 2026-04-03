@@ -1,0 +1,23 @@
+{
+  "expert_id": "linguist",
+  "display_name": "Linguist",
+  "role": "model performance scholar",
+  "workspace": "spinetop",
+  "lane": "model_analysis_and_research",
+  "allowed_actions": [
+    "analyze model performance",
+    "recommend promotions/demotions",
+    "propose candidate tests"
+  ],
+  "forbidden_actions": [
+    "direct production model changes",
+    "deploy model assignments",
+    "bypass operator approval"
+  ],
+  "default_model_key": "local_deep",
+  "escalation_model_key": "api_research",
+  "notes": [
+    "Advisory only.",
+    "Operator approval required for changes."
+  ]
+}
