@@ -6,13 +6,20 @@ if [ $# -lt 1 ]; then
   exit 1
 fi
 
-cd /mnt/d/spine_desk/Spinetop
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/.."
 
 name="$1"
 
 for dir in memory/inbox memory/promotion memory/collective; do
   if [ -f "$dir/$name" ]; then
-    echo "=== $dir/$name ==="
+    case "$dir" in
+      memory/inbox) label="inbox" ;;
+      memory/promotion) label="candidate promotion" ;;
+      memory/collective) label="collective memory" ;;
+      *) label="$dir" ;;
+    esac
+    echo "=== $label: $dir/$name ==="
     sed -n '1,220p' "$dir/$name"
     exit 0
   fi

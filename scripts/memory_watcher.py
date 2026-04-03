@@ -6,7 +6,10 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-ROOT = Path("/mnt/d/spine_desk/Spinetop")
+from repo_paths import repo_root
+
+
+ROOT = repo_root()
 INBOX = ROOT / "memory" / "inbox"
 STATE_DIR = ROOT / "logs" / "watcher"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -62,19 +65,13 @@ def process_file(path: Path) -> None:
             log_event("watcher_scan", name, "skipped", "promotion_candidate!=true")
             return
 
-        log_event("watcher_scan", name, "promotable", "starting promotion flow")
+        log_event("watcher_scan", name, "promotable", "starting candidate promotion flow")
 
         code, out = run_cmd(["python3", "scripts/promote_to_promotion.py", name])
         if code != 0:
             log_event("promote", name, "error", out[:500])
             return
         log_event("promote", name, "success", out[:500])
-
-        code, out = run_cmd(["python3", "scripts/approve_to_collective.py", name])
-        if code != 0:
-            log_event("approve", name, "error", out[:500])
-            return
-        log_event("approve", name, "success", out[:500])
 
     except Exception as exc:
         log_event("watcher_scan", name, "error", str(exc)[:500])

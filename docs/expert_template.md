@@ -1,6 +1,8 @@
-﻿# Expert Template
+# Expert Template
 
 This template defines how experts operate within Spinetop. Experts are scoped specialists who inherit shared knowledge but do not redefine canonical memory.
+
+The canonical world contract lives in [`docs/doctrine.md`](./doctrine.md).
 
 ## Role
 
@@ -22,7 +24,7 @@ This template defines how experts operate within Spinetop. Experts are scoped sp
 
 3. Review and Promotion
 - Proposed changes are reviewed for doctrine alignment and blast radius.
-- Approved changes are promoted into Spinetop.
+- Approved changes are admitted into collective only through dispatch review and governed admission.
 
 4. Retirement or Re-scope
 - Expert is retired when redundant or merged.
@@ -30,16 +32,17 @@ This template defines how experts operate within Spinetop. Experts are scoped sp
 
 ## Memory Layers Reference
 
-- Canonical memory (Spinetop): read-only unless promoted.
+- Canonical memory (Spinetop): read-only unless admitted through governance.
 - Project memory: scoped notes that may be promoted.
 - Experimental memory (Spinelab): temporary and non-canonical.
 - Local scratch: task-bound and disposable.
 
 ## Memory Handling
 
-- Shared knowledge is read-only unless promoted.
+- Shared knowledge is read-only unless admitted through governance.
 - Expert memory stays local until reviewed.
 - Avoid rewriting collective memory without approval.
+- New truth requires a governance trail.
 
 ## Promotion Pipeline (Expert View)
 
@@ -47,10 +50,10 @@ This template defines how experts operate within Spinetop. Experts are scoped sp
 - Work begins in Spinelab or local expert space.
 
 2. Review
-- Check doctrine alignment, scope, dependencies, and blast radius.
+- Check doctrine alignment, scope, dependencies, blast radius, and governance trail requirements.
 
 3. Promotion
-- Merge into Spinetop when approved.
+- Admit into Spinetop collective when approved through the governed path.
 
 4. Adoption
 - Experts inherit updates on next sync.
@@ -65,7 +68,7 @@ This template defines how experts operate within Spinetop. Experts are scoped sp
 
 - Contain impact before repair.
 - Prefer reversible steps and explicit scripts.
-- Promote fixes to Spinetop only after stability is verified.
+- Admit fixes to canonical memory only after stability is verified and governance allows it.
 
 ## Promotion Checklist
 
@@ -77,9 +80,9 @@ This template defines how experts operate within Spinetop. Experts are scoped sp
 ## Coordination Notes
 
 - Use Spinelab for experimental reasoning.
-- Use Spinetop for canonical updates only after review.
+- Use Spinetop for canonical updates only after dispatch review and governed admission.
 - Codex may implement changes, but does not define identity.
 
 ## Why One Canonical Workspace
 
-Spinetop is the single source of truth to prevent identity drift and conflicting policies. Experts inherit shared knowledge but do not automatically rewrite collective memory.
+Spinetop is the single source of truth to prevent identity drift and conflicting policies. Experts inherit shared knowledge but do not automatically write to collective memory.

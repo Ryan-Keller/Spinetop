@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd /mnt/d/spine_desk/Spinetop
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/.."
+echo "[run] honcho bridge: collective -> mirrored/honcho"
 python3 scripts/honcho_bridge.py

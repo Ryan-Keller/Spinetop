@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import json
+import sys
 import urllib.error
 import urllib.request
-from pathlib import Path
-import sys
 from datetime import datetime
+from pathlib import Path
+
+from governance_utils import can_bridge_to_honcho, read_nanny_state, read_return_all_state
+from repo_paths import repo_root
+
 
 BASE_URL = "http://127.0.0.1:8000"
 WORKSPACE_ID = "shared-coordination"
 DEFAULT_PEER_ID = "peer-hermes-desktop"
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = repo_root()
 COLLECTIVE = ROOT / "memory" / "collective"
 QUARANTINE_DIR = COLLECTIVE / "_quarantine"
 STATE_DIR = ROOT / "logs" / "honcho_bridge"
@@ -123,7 +127,10 @@ def ensure_session(session_id: str, peer_id: str, record: dict) -> None:
 
 
 def build_message(record: dict, peer_id: str) -> dict:
+    created_at = record.get("admitted_at") or record.get("created_at") or record.get("timestamp_created")
     content = {
+        "record_type": record.get("record_type"),
+        "record_id": record.get("record_id"),
         "source": record.get("source"),
         "expert_name": record.get("expert_name"),
         "task": record.get("task"),
@@ -132,6 +139,7 @@ def build_message(record: dict, peer_id: str) -> dict:
         "confidence": record.get("confidence"),
         "recommended_action": record.get("recommended_action"),
         "promotion_candidate": record.get("promotion_candidate"),
+        "governance_approval_ref": record.get("governance_approval_ref"),
     }
 
     return {
@@ -140,18 +148,28 @@ def build_message(record: dict, peer_id: str) -> dict:
         "metadata": {
             "bridge_source": "filesystem_collective",
             "record_name": record.get("_record_name"),
+            "record_id": record.get("record_id"),
             "agent_id": record.get("agent_id"),
             "workspace": record.get("workspace"),
-            "timestamp_created": record.get("timestamp_created"),
+            "timestamp_created": created_at,
+            "governance_approval_ref": record.get("governance_approval_ref"),
         },
         "configuration": {},
-        "created_at": record.get("timestamp_created"),
+        "created_at": created_at,
     }
 
 
 def send_record(path: Path) -> None:
     record = json.loads(path.read_text(encoding="utf-8"))
     record["_record_name"] = path.name
+
+    gate = can_bridge_to_honcho(
+        record,
+        return_all=read_return_all_state(),
+        nanny=read_nanny_state(),
+    )
+    if not gate.allowed:
+        raise RuntimeError(f"governance deferred: {gate.reason}")
 
     peer_id = infer_peer_id(record)
     session_id = str(record.get("session_id", "")).strip()
@@ -198,6 +216,10 @@ def process_files(files: list[Path]) -> tuple[int, int]:
             print(f"[honcho-bridge] sent {path.name}")
             log_event("honcho_bridge", path.name, "success", "mirrored to honcho")
             success_count += 1
+        except RuntimeError as exc:
+            detail = str(exc)[:500]
+            print(f"[honcho-bridge] deferred {path.name}: {detail}")
+            log_event("honcho_bridge", path.name, "skipped", detail)
         except Exception as exc:
             print(f"[honcho-bridge] ERROR {path.name}: {exc}")
             print("[honcho-bridge] detail:", str(exc)[:1000])

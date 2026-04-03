@@ -5,14 +5,16 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+from governance_utils import read_nanny_state, read_return_all_state
+from repo_paths import repo_root
+
+
+ROOT = repo_root()
 COLLECTIVE_DIR = ROOT / "memory" / "collective"
 COMPACTED_DIR = ROOT / "memory" / "compacted"
 ARCHIVE_DIR = ROOT / "memory" / "archive" / "compacted_sources"
 EVENT_LOG = ROOT / "logs" / "topology" / "events.jsonl"
 RUN_LOG_DIR = ROOT / "logs" / "compactor"
-RETURN_ALL_FILE = ROOT / "logs" / "governance" / "return_all.json"
-NANNY_STATUS = ROOT / "logs" / "nanny" / "item_world_status.json"
 
 GROUP_MIN_SIZE = 3
 
@@ -142,23 +144,16 @@ def write_run_summary(groups_scanned: int, groups_compacted: int, records_compac
     path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 
 
-def read_return_all_enabled() -> bool:
-    data = load_json(RETURN_ALL_FILE)
-    if not data:
-        return False
-    return bool(data.get("enabled", False))
-
-
-def read_nanny_temperature() -> tuple[str, int]:
-    data = load_json(NANNY_STATUS) or {}
-    return str(data.get("temperature") or "cool"), int(data.get("global_cooldown_seconds") or 0)
-
-
 def main() -> None:
     COMPACTED_DIR.mkdir(parents=True, exist_ok=True)
 
-    return_all = read_return_all_enabled()
-    temperature, cooldown = read_nanny_temperature()
+    return_all = read_return_all_state()
+    nanny = read_nanny_state()
+    if return_all.get("enabled") or nanny.get("temperature") in {"warm", "hot"} or int(nanny.get("global_cooldown_seconds") or 0) > 0:
+        reason = "return_all active" if return_all.get("enabled") else f"nanny {nanny.get('temperature', 'cool')} or cooldown {nanny.get('global_cooldown_seconds', 0)}s active"
+        log_compaction_event("memory_compaction", "none", "skipped", reason)
+        write_run_summary(0, 0, 0, 0)
+        return
 
     records = load_collective_records()
     groups = group_records(records)

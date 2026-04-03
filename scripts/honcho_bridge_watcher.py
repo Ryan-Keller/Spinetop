@@ -6,13 +6,16 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+from governance_utils import read_nanny_state, read_return_all_state
+from repo_paths import repo_root
+
+
+ROOT = repo_root()
 COLLECTIVE = ROOT / "memory" / "collective"
 STATE_DIR = ROOT / "logs" / "honcho_bridge"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 SEEN_FILE = STATE_DIR / "seen_collective_files.json"
 EVENT_LOG = ROOT / "logs" / "topology" / "events.jsonl"
-RETURN_ALL_FILE = ROOT / "logs" / "governance" / "return_all.json"
 
 POLL_SECONDS = 5
 
@@ -55,28 +58,27 @@ def run_bridge_file(path: Path) -> tuple[int, str]:
     return proc.returncode, output
 
 
-def read_return_all_state() -> bool:
-    if not RETURN_ALL_FILE.exists():
-        return False
-    try:
-        data = json.loads(RETURN_ALL_FILE.read_text(encoding="utf-8"))
-        return bool(data.get("enabled", False))
-    except Exception:
-        return False
-
-
 def main() -> None:
     print(f"[honcho-bridge-watcher] watching {COLLECTIVE}")
     seen = load_seen()
     paused_logged = False
 
     while True:
-        if read_return_all_state():
+        return_all = read_return_all_state()
+        nanny = read_nanny_state()
+        paused_reason = ""
+        if return_all.get("enabled"):
+            paused_reason = "return_all active"
+        elif nanny.get("temperature") in {"warm", "hot"} or int(nanny.get("global_cooldown_seconds") or 0) > 0:
+            paused_reason = f"nanny {nanny.get('temperature', 'cool')} or cooldown {nanny.get('global_cooldown_seconds', 0)}s active"
+
+        if paused_reason:
             if not paused_logged:
-                log_event("honcho_bridge_watcher", "collective", "paused", "return_all active")
+                log_event("honcho_bridge_watcher", "collective", "paused", paused_reason)
                 paused_logged = True
             time.sleep(POLL_SECONDS)
             continue
+
         paused_logged = False
         current_files = sorted(COLLECTIVE.glob("*.json"))
         next_seen: dict[str, float] = {}

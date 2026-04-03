@@ -3,10 +3,14 @@
 This folder receives incoming results from Spinelab and expert agents.
 
 ## Rules
+
 - All entries must be structured JSON
 - No direct writes to collective memory
 - Entries must include summary, findings, and recommendation
 - Each file represents one completed task or experiment
+- Inbox records are candidates, not truth
+- Promotion does not mean acceptance into collective
 
 ## Flow
-inbox → promotion → collective OR archive
+
+`inbox -> promotion -> dispatch review -> collective or archive`

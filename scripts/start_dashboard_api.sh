@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd /mnt/d/spine_desk/Spinetop
-/mnt/d/spine_desk/Spinetop/.venv_dashboard/bin/python scripts/dashboard_api.py
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/.."
+echo "[start] dashboard api: read-only view over candidate promotion, dispatch/pending, collective, and honcho"
+"$SCRIPT_DIR/../.venv_dashboard/bin/python" scripts/dashboard_api.py

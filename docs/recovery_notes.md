@@ -1,20 +1,26 @@
-﻿# Recovery Notes
+# Recovery Notes
 
 This document captures recovery philosophy and practical steps. It favors containment, diagnosis, and safe rollback over aggressive automation.
 
+The canonical world contract lives in [`docs/doctrine.md`](./doctrine.md).
+
 ## Roles In Recovery
 
-Spinetop
+### Spinetop
+
 - Canonical workspace for recovery doctrine and approved fixes.
 
-Spinelab
+### Spinelab
+
 - Reflective and experimental workspace for trial fixes and diagnostics.
 
-Experts
-- Provide scoped recovery procedures and proposals.
-- Inherit shared knowledge but do not rewrite collective memory.
+### Experts
 
-Codex
+- Provide scoped recovery procedures and proposals.
+- Inherit shared knowledge but do not write to collective memory without governed admission.
+
+### Codex
+
 - Executes recovery steps and repairs.
 - Does not define identity or policy.
 
@@ -23,7 +29,8 @@ Codex
 - Contain blast radius before attempting repairs.
 - Prefer reversible actions and explicit scripts.
 - Keep recovery local-first and observable.
-- Promote fixes only after they are stable and reviewed.
+- Admit fixes to canonical memory only after they are stable, reviewed, and the dispatch path allows it.
+- During degraded or hot states, prefer defer and operator review.
 
 ## Expert Lifecycle During Recovery
 
@@ -37,7 +44,7 @@ Codex
 
 3. Review and Promotion
 - Recovery proposals are checked for doctrine alignment and blast radius.
-- Approved changes are promoted into Spinetop.
+- Approved changes are admitted into collective only through dispatch review and governed admission.
 
 4. Retirement or Re-scope
 - Recovery experts may be retired or merged after stabilization.
@@ -65,7 +72,7 @@ Codex
 - Confirm system behavior is normal.
 
 6. Promote
-- Document the fix and promote to Spinetop only after review.
+- Document the fix and prepare governed admission only after review.
 
 ## Memory Layers During Recovery
 
@@ -73,11 +80,11 @@ Codex
 - Experimental memory can be discarded if it increases risk.
 - Local scratch should be captured before shutdown if relevant.
 
-## Promotion Pipeline (Recovery Changes)
+## Admission Pipeline (Recovery Changes)
 
 1. Proposal in Spinelab or expert workspace.
-2. Review for blast radius, reversibility, and doctrine alignment.
-3. Promotion into Spinetop when stable.
+2. Review for blast radius, reversibility, doctrine alignment, and governance trail requirements.
+3. Dispatch review and admission into collective when stable and governed.
 4. Adoption by experts on next sync.
 
 ## Blast-Radius Containment

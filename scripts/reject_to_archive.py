@@ -16,7 +16,7 @@ from memory_flow_utils import (
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print("Usage: python scripts/reject_to_archive.py <inbox-or-promotion-json> [--reason REASON]", file=sys.stderr)
+        print("Usage: python scripts/reject_to_archive.py <inbox-or-candidate-json> [--reason REASON]", file=sys.stderr)
         return 1
 
     reason = None

@@ -1,36 +1,43 @@
-﻿# Service Map
+# Service Map
 
 This document describes how services are tracked and validated in Spinetop. It is intentionally local-first and avoids hardcoded ports or internet dependencies.
 
+The canonical world contract lives in [`docs/doctrine.md`](./doctrine.md).
+
 ## Roles In This Doc
 
-Spinetop
+### Spinetop
+
 - Canonical workspace for service definitions and approved health checks.
 
-Spinelab
+### Spinelab
+
 - Reflective and experimental workspace for proposed service changes.
 
-Experts
-- Maintain scoped service knowledge and propose updates.
-- Do not rewrite collective memory without promotion.
+### Experts
 
-Codex
+- Maintain scoped service knowledge and propose updates.
+- Do not write to collective memory without governed admission.
+
+### Codex
+
 - Implements service changes and repair steps.
 - Does not define identity or policy.
 
 ## Principles
 
 - Local-first: services are validated on the local machine.
-- Explicit config: host/port values live in config or service map files.
+- Explicit config: host and port values live in config or service map files.
 - Conservative control: no automatic installs or system service changes.
 
 ## Service Registry
 
 Each service should have:
+
 - Name and role
 - Local host and port placeholders
-- Health check method (process or HTTP)
-- Start helper (optional, conservative)
+- Health check method, such as process or HTTP
+- Start helper, optional and conservative
 
 ## In-Scope Services
 
@@ -46,7 +53,7 @@ Each service should have:
 
 ## Workflow
 
-1. Update the services map/config with local host and port values.
+1. Update the services map or config with local host and port values.
 2. Run the status script to get a readable summary.
 3. Use optional start helpers only when you explicitly choose to.
 
@@ -57,24 +64,24 @@ Each service should have:
 - Experimental memory (Spinelab): trial configs or checks.
 - Local scratch: temporary commands and test output.
 
-## Promotion Pipeline For Service Changes
+## Governed Admission Pipeline For Service Changes
 
 1. Proposal in Spinelab or expert workspace.
-2. Review for doctrine alignment, dependencies, and blast radius.
-3. Promotion into Spinetop if approved.
+2. Review for doctrine alignment, dependencies, blast radius, and governance trail requirements.
+3. Dispatch review and governed admission into collective if approved.
 4. Adoption by experts on next sync.
 
 ## Blast-Radius Containment
 
 - Health checks do not mutate system state.
 - Start helpers are opt-in and minimal.
-- Changes to configs are reviewed before promotion.
+- Changes to configs are reviewed before dispatch and governed admission.
 
 ## Recovery Philosophy (Service Context)
 
 - Prefer reversible changes and explicit scripts.
 - Stabilize before attempting repairs.
-- Promote only after service behavior is stable.
+- Admit only after service behavior is stable and governance allows it.
 
 ## Why One Canonical Workspace
 

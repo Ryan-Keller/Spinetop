@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd /mnt/d/spine_desk/Spinetop
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/.."
+echo "[start] honcho bridge watcher: collective -> mirrored/honcho, governed admission only"
 python3 scripts/honcho_bridge_watcher.py

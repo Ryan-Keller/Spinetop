@@ -1,25 +1,31 @@
-﻿# Architecture
+# Architecture
 
-This system is organized around one canonical workspace called Spinetop. Spinetop is the source of truth for identity, policy, and promotion decisions. Other workspaces exist to explore, reflect, or test changes, but they do not redefine the core system.
+This system is organized around one canonical workspace called Spinetop. Spinetop is the governed environment the agent lives inside. Other workspaces exist to explore, reflect, or test changes, but they do not redefine the core system.
+
+The canonical world contract lives in [`docs/doctrine.md`](./doctrine.md).
 
 ## Roles
 
-Spinetop
-- Canonical workspace for system identity and shared doctrine.
-- Owns promotion decisions, shared policy, and durable memory layers.
-- Accepts changes only after review and alignment checks.
+### Spinetop
 
-Spinelab
+- Canonical workspace for system identity and shared doctrine.
+- Owns governed state transitions, shared policy, and durable memory layers.
+- Accepts changes only after review, alignment checks, and governance trail validation.
+
+### Spinelab
+
 - Reflective and experimental workspace.
 - Used for prototyping, critiques, and alternative approaches.
 - Outputs are proposals and experiments, not canonical truth.
 
-Experts
-- Specialists with scoped responsibility (e.g., tooling, recovery, service ops).
-- Inherit shared knowledge from Spinetop.
-- Do not automatically rewrite collective memory; they propose changes.
+### Experts
 
-Codex
+- Specialists with scoped responsibility, such as tooling, recovery, or service operations.
+- Inherit shared knowledge from Spinetop.
+- Do not automatically write to collective memory; they propose changes through governed state-machine transitions.
+
+### Codex
+
 - Builds and repairs systems.
 - Executes tasks and implements changes.
 - Does not define identity; it follows Spinetop doctrine.
@@ -35,8 +41,8 @@ Codex
 - Proposals are captured as draft notes or PRs.
 
 3. Review and Promotion
-- Proposals are checked for doctrine alignment and blast radius.
-- Approved changes are promoted into Spinetop.
+- Proposals are checked for doctrine alignment, blast radius, and governance trail requirements.
+- Approved changes enter collective only through explicit governance and dispatch review.
 
 4. Retirement or Re-scope
 - Experts are retired when redundant or merged.
@@ -50,7 +56,7 @@ Codex
 
 2. Project memory (Spinetop or subspaces)
 - Task- or domain-specific notes.
-- May be promoted to canonical memory if validated.
+- May be admitted to canonical memory if validated through governance.
 
 3. Experimental memory (Spinelab)
 - Temporary or exploratory notes.
@@ -66,10 +72,10 @@ Codex
 - Changes are drafted in Spinelab or an expert workspace.
 
 2. Review
-- Proposals are assessed for doctrine alignment and blast radius.
+- Proposals are assessed for doctrine alignment, blast radius, and governance trail requirements.
 
 3. Promotion
-- Approved changes are merged into Spinetop.
+- Approved changes enter collective only through dispatch review and governed admission.
 
 4. Adoption
 - Experts inherit the updated shared knowledge on next sync.
@@ -78,7 +84,7 @@ Codex
 
 - Experiments are isolated to Spinelab or a scoped expert workspace.
 - Changes must declare scope, dependencies, and rollback steps.
-- Canonical memory updates require explicit promotion.
+- Canonical memory updates require candidate promotion, dispatch review, and governed admission.
 - Service and recovery changes follow the same containment rules.
 
 ## Why One Canonical Workspace

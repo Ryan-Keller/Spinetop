@@ -210,7 +210,7 @@ def parse_iso(value: str) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value)
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except Exception:
         return None
 
@@ -250,9 +250,26 @@ def normalize_petition(raw: dict[str, Any], status: str, filename: str, return_a
     spawn_authority = str(raw.get("spawn_authority") or "emissary")
     dispatch_mode = str(raw.get("dispatch_mode") or "normal")
     operator_id = str(raw.get("operator_id") or "")
-    status_updated_at = str(raw.get("status_updated_at") or raw.get("timestamp_created") or iso_now())
-    source_host = str(raw.get("source_host") or "unknown")
     entry_class = str(raw.get("entry_class") or "normal")
+    created_at = str(raw.get("created_at") or raw.get("timestamp_created") or iso_now())
+    created_by = str(raw.get("created_by") or raw.get("agent_id") or "unknown")
+    petition_kind = str(raw.get("petition_kind") or "").strip()
+    if not petition_kind:
+        petition_kind = "repair_request" if entry_class == "repair" else "self_heal_request" if entry_class == "self_heal" else "anomaly_review" if entry_class == "anomaly_review" else "memory_admission"
+    requested_action = str(raw.get("requested_action") or "").strip()
+    if not requested_action:
+        requested_action = "repair" if petition_kind in {"repair_request", "self_heal_request"} else "operator_review" if petition_kind == "anomaly_review" else "admit_to_collective"
+    risk_level = str(raw.get("risk_level") or ("high" if petition_kind in {"anomaly_review", "repair_request"} else "medium"))
+    reason = str(raw.get("reason") or raw.get("task") or raw.get("summary") or "")
+    evidence_refs = raw.get("evidence_refs")
+    if not isinstance(evidence_refs, list):
+        evidence_refs = []
+    related_record_id = str(raw.get("related_record_id") or "")
+    related_petition_id = str(raw.get("related_petition_id") or "")
+    cooldown_observed = raw.get("cooldown_observed")
+    governance_notes = str(raw.get("governance_notes") or "")
+    status_updated_at = str(raw.get("status_updated_at") or created_at or iso_now())
+    source_host = str(raw.get("source_host") or "unknown")
 
     petition_status = status
     if return_all.get("enabled") and status == "pending" and not is_bypass_allowed(raw, return_all):
@@ -263,12 +280,15 @@ def normalize_petition(raw: dict[str, Any], status: str, filename: str, return_a
             requires_operator_approval = True
 
     return {
+        "record_type": str(raw.get("record_type") or "dispatch_petition"),
         "petition_id": petition_id,
         "record_name": str(raw.get("record_name") or filename),
         "agent_id": str(raw.get("agent_id") or "unknown"),
+        "created_by": created_by,
         "workspace": str(raw.get("workspace") or "unknown"),
         "source": str(raw.get("source") or "dispatch"),
-        "timestamp_created": str(raw.get("timestamp_created") or iso_now()),
+        "timestamp_created": str(raw.get("timestamp_created") or created_at),
+        "created_at": created_at,
         "summary": str(raw.get("summary") or ""),
         "task": str(raw.get("task") or ""),
         "confidence": float(raw.get("confidence") or 0.0),
@@ -277,6 +297,7 @@ def normalize_petition(raw: dict[str, Any], status: str, filename: str, return_a
         "urgency": str(raw.get("urgency") or "normal"),
         "requires_emissary": bool(raw.get("requires_emissary", True)),
         "petition_status": petition_status,
+        "status": petition_status,
         "ask_count": ask_count,
         "requires_operator_approval": bool(requires_operator_approval),
         "spawn_authority": spawn_authority,
@@ -285,6 +306,15 @@ def normalize_petition(raw: dict[str, Any], status: str, filename: str, return_a
         "status_updated_at": status_updated_at,
         "source_host": source_host,
         "entry_class": entry_class,
+        "petition_kind": petition_kind,
+        "reason": reason,
+        "evidence_refs": evidence_refs,
+        "requested_action": requested_action,
+        "risk_level": risk_level,
+        "related_record_id": related_record_id,
+        "related_petition_id": related_petition_id,
+        "cooldown_observed": cooldown_observed,
+        "governance_notes": governance_notes,
     }
 
 

@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import sys
 from datetime import datetime
-from pathlib import Path
+
+from repo_paths import repo_root
+
 
 if len(sys.argv) < 4:
     print("Usage: log_topology_event.py <event_type> <record_name> <status> [detail]", file=sys.stderr)
@@ -14,7 +16,7 @@ record_name = sys.argv[2]
 status = sys.argv[3]
 detail = sys.argv[4] if len(sys.argv) >= 5 else ""
 
-root = Path("/mnt/d/spine_desk/Spinetop")
+root = repo_root()
 log_dir = root / "logs" / "topology"
 log_dir.mkdir(parents=True, exist_ok=True)
 log_file = log_dir / "events.jsonl"
