@@ -1,8 +1,9 @@
 import { useState } from "react";
 import Dashboard from "./pages/Dashboard";
 import HonchoItemWorld from "./pages/HonchoItemWorld";
+import AgentMemoryTriadPage from "./pages/AgentMemoryTriadPage";
 
-type Page = "dashboard" | "honcho";
+type Page = "dashboard" | "honcho" | "triad";
 
 const styles = {
   app: {
@@ -86,11 +87,21 @@ function App() {
             >
               Honcho Item World
             </button>
+            <button
+              type="button"
+              onClick={() => setPage("triad")}
+              style={{
+                ...styles.button,
+                ...(page === "triad" ? styles.buttonActive : null),
+              }}
+            >
+              Agent Memory Triad
+            </button>
           </div>
         </div>
       </nav>
 
-      {page === "dashboard" ? <Dashboard /> : <HonchoItemWorld />}
+      {page === "dashboard" ? <Dashboard /> : page === "honcho" ? <HonchoItemWorld /> : <AgentMemoryTriadPage />}
     </div>
   );
 }
