@@ -58,6 +58,7 @@ Output contract:
 - Return exactly one JSON object that matches `hermes_v1_run_schema.md`.
 - `mode` must be the exact operator-selected mode token: `observe`, `anomaly_review`, `repair_check`, or `repetition_review`.
 - `status` must be one of `summary_only`, `no_action`, `petition_recommended`, or `blocked`; do not use synonyms like `ok`, `review`, or `active`.
+- `status` and `recommended_action` must stay paired: `summary_only` and `no_action` use `none` or `defer`; `petition_recommended` uses `operator_review` or `create_dispatch_petition`; `blocked` uses `none` or `defer`.
 - `recommended_action` must be one of `none`, `operator_review`, `create_dispatch_petition`, or `defer`; when no action is recommended, use `none` rather than `null`.
 - Include every required top-level field: `run_id`, `mode`, `status`, `summary`, `evidence_refs`, `recommended_action`, `petition_kind`, and `confidence`.
 - If no classification applies, set `classification` to `null`.
@@ -85,6 +86,7 @@ Task:
 2. Call out bounded anomalies only.
 3. Avoid speculation.
 4. If no bounded issue is present, return no_action.
+5. If you only summarize, use `status=summary_only` with `recommended_action=none` or `defer`. If you recommend `operator_review` or `create_dispatch_petition`, use `status=petition_recommended`.
 
 Output:
 - return exactly one JSON object matching the run schema
@@ -117,6 +119,7 @@ Task:
 3. State severity and boundedness.
 4. Prefer operator review when the evidence is weak or the blast radius is unclear.
 5. Recommend a dispatch petition only if the anomaly is sufficiently bounded and the petition is the safest next step.
+6. If you only summarize, use `status=summary_only` with `recommended_action=none` or `defer`. If you recommend `operator_review` or `create_dispatch_petition`, use `status=petition_recommended`.
 
 Output:
 - return exactly one JSON object matching the run schema
@@ -150,6 +153,7 @@ Task:
 3. Do not plan execution steps beyond a governed petition.
 4. If repair is not clearly bounded and reversible, or the cause is not clear enough, stop and recommend no_action/none rather than operator review.
 5. In the summary, focus on repairability, whether the cause is clear enough, and whether the path is reversible or low-risk; avoid promotion, backlog, or unrelated workflow commentary unless it directly affects repairability.
+6. If you only summarize, use `status=summary_only` with `recommended_action=none` or `defer`. If you recommend `operator_review` or `create_dispatch_petition`, use `status=petition_recommended`.
 
 Output:
 - return exactly one JSON object matching the run schema
@@ -181,7 +185,9 @@ Task:
 2. Distinguish noise from a real repeatable anomaly.
 3. Recommend operator review if the pattern is not yet bounded enough for a petition.
 4. Recommend a dispatch petition only when repetition is clear, bounded, and reviewable.
-5. If no repeatable pattern is found, keep the summary to 1-2 sentences, name the source or repeat-check examined, include at least one concrete evidence ref when available, and describe what was checked rather than saying nothing was found.
+5. If no repeatable pattern is found, keep the summary to 1-2 sentences, name the source or repeat-check examined, include at least one concrete evidence ref when available, and describe what was checked without recommending operator review or any stronger action than the structured fields.
+6. If you only summarize, use `status=summary_only` with `recommended_action=none` or `defer`. If you recommend `operator_review` or `create_dispatch_petition`, use `status=petition_recommended`.
+7. Always emit `evidence_refs` as a list of non-empty strings, never objects.
 
 Output:
 - return exactly one JSON object matching the run schema

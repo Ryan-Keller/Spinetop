@@ -12,7 +12,7 @@ It is intentionally narrow so a manual runner can print, store, or inspect it wi
   "mode": "observe | anomaly_review | repair_check | repetition_review",
   "status": "summary_only | no_action | petition_recommended | blocked",
   "summary": "string",
-  "evidence_refs": ["string"],
+  "evidence_refs": ["non-empty string"],
   "classification": {
     "kind": "observation | anomaly | repair_candidate",
     "title": "string",
@@ -31,8 +31,9 @@ It is intentionally narrow so a manual runner can print, store, or inspect it wi
 - `run_id` is the canonical identity for the Hermes run.
 - `mode` is the operator-selected review mode.
 - `status` tells the operator whether Hermes only summarized, took no action, recommends a petition, or was blocked.
+- `status` and `recommended_action` must stay paired: `summary_only` or `no_action` use `none` or `defer`; `petition_recommended` uses `operator_review` or `create_dispatch_petition`; `blocked` uses `none` or `defer`.
 - `summary` should be concise and operator-facing.
-- `evidence_refs` should point to the exact state or records Hermes used.
+- `evidence_refs` must be a list of non-empty strings that point to the exact state or records Hermes used.
 - `classification` is optional in practice, but if present it must stay bounded and diagnostic.
 - `repetition_review` should usually classify as `anomaly` or `repair_candidate`, not a new class.
 - `recommended_action` must never imply direct repair execution.
