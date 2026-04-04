@@ -17,10 +17,11 @@
     "ignore recall or nanny",
     "unbounded API use"
   ],
-  "default_model_key": "local_fast",
-  "escalation_model_key": "local_deep",
+  "default_model_key": "local_production_qwen2_5_coder_14b",
+  "escalation_model_key": "local_production_qwen2_5_coder_14b",
   "notes": [
     "Local-first by default.",
+    "Onboarding models are operator-selected only.",
     "Escalation must stay within policy bounds."
   ]
 }

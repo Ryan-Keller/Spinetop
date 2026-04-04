@@ -8,9 +8,9 @@ payload = {
   "recommendations": [
     {
       "task_class": "dispatch_triage",
-      "current_model": "local_deep",
-      "suggested_model": "local_fast",
-      "reason": "lower latency with sufficient quality",
+      "current_model": "local_production_qwen2_5_coder_14b",
+      "suggested_model": "local_onboarding_gemma4_e4b_4k",
+      "reason": "candidate onboarding check against a lighter local model",
       "confidence": 0.74
     }
   ],

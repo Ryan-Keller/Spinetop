@@ -114,6 +114,78 @@ type MirrorDoorTestStatus = {
   error?: string;
 };
 
+type StripTone = "good" | "watch" | "off";
+
+type StorageAreaSummary = {
+  name: string;
+  path: string;
+  available: boolean;
+  file_count: number;
+  json_file_count: number;
+  total_bytes: number;
+  total_bytes_label: string;
+  oldest_modified_at: string;
+  newest_modified_at: string;
+  newest_age_minutes?: number | null;
+  largest_file?: {
+    name: string;
+    bytes: number;
+    bytes_label: string;
+  } | null;
+  pressure_score: number;
+  pressure_label: string;
+  notes: string[];
+};
+
+type StorageFootprint = {
+  group_names: string[];
+  total_bytes: number;
+  total_bytes_label: string;
+  total_files: number;
+  groups: StorageAreaSummary[];
+};
+
+type CollectiveDoorFootprint = {
+  path: string;
+  total_files: number;
+  total_bytes: number;
+  total_bytes_label: string;
+  admitted_count: number;
+  admitted_bytes: number;
+  admitted_bytes_label: string;
+  blocked_count: number;
+  blocked_bytes: number;
+  blocked_bytes_label: string;
+  malformed_count: number;
+  legacy_count: number;
+  admitted_ratio: number;
+  door_reasons: Record<string, number>;
+};
+
+type StorageOverview = {
+  available: boolean;
+  generated_at?: string;
+  areas: StorageAreaSummary[];
+  hotspots: StorageAreaSummary[];
+  collective_door: CollectiveDoorFootprint;
+  footprints: {
+    active: StorageFootprint;
+    archive: StorageFootprint;
+    compaction: StorageFootprint;
+    all_observed_bytes: string;
+  };
+  compactor_last_run?: CompactorLastRunSummary | Record<string, unknown>;
+};
+
+type CompactorLastRunSummary = {
+  ok?: boolean;
+  timestamp?: string;
+  groups_scanned?: number;
+  groups_compacted?: number;
+  records_compacted?: number;
+  records_skipped?: number;
+};
+
 type HermesRun = {
   ok?: boolean;
   source_path?: string;
@@ -180,6 +252,7 @@ type StatusResponse = {
   dispatch_counts: DispatchCounts;
   support_helper_activity?: SupportHelperActivity;
   mirror_door_test: MirrorDoorTestStatus;
+  storage_overview?: StorageOverview;
 };
 
 const fallbackData: StatusResponse = {
@@ -318,6 +391,53 @@ const fallbackData: StatusResponse = {
     unexpected_accept: 0,
     unexpected_error: 0,
     recent_failures: [],
+  },
+  storage_overview: {
+    available: false,
+    generated_at: "",
+    areas: [],
+    hotspots: [],
+    collective_door: {
+      path: "memory/collective",
+      total_files: 0,
+      total_bytes: 0,
+      total_bytes_label: "0 B",
+      admitted_count: 0,
+      admitted_bytes: 0,
+      admitted_bytes_label: "0 B",
+      blocked_count: 0,
+      blocked_bytes: 0,
+      blocked_bytes_label: "0 B",
+      malformed_count: 0,
+      legacy_count: 0,
+      admitted_ratio: 0,
+      door_reasons: {},
+    },
+    footprints: {
+      active: {
+        group_names: [],
+        total_bytes: 0,
+        total_bytes_label: "0 B",
+        total_files: 0,
+        groups: [],
+      },
+      archive: {
+        group_names: [],
+        total_bytes: 0,
+        total_bytes_label: "0 B",
+        total_files: 0,
+        groups: [],
+      },
+      compaction: {
+        group_names: [],
+        total_bytes: 0,
+        total_bytes_label: "0 B",
+        total_files: 0,
+        groups: [],
+      },
+      all_observed_bytes: "0 B",
+    },
+    compactor_last_run: {},
   },
 };
 
@@ -613,14 +733,41 @@ function statusPill(status: string) {
   return stylesMap[status] ?? "#94a3b8";
 }
 
-function statusStripCard(title: string, value: string, detail: string) {
+const statusStripToneStyles: Record<StripTone, React.CSSProperties> = {
+  good: {
+    border: "1px solid rgba(52,211,153,0.38)",
+    background: "linear-gradient(180deg, rgba(6,78,59,0.32), rgba(2,6,23,0.78))",
+    boxShadow: "inset 0 3px 0 rgba(52,211,153,0.65)",
+  },
+  watch: {
+    border: "1px solid rgba(251,191,36,0.38)",
+    background: "linear-gradient(180deg, rgba(120,53,15,0.32), rgba(2,6,23,0.78))",
+    boxShadow: "inset 0 3px 0 rgba(251,191,36,0.65)",
+  },
+  off: {
+    border: "1px solid rgba(148,163,184,0.24)",
+    background: "linear-gradient(180deg, rgba(15,23,42,0.9), rgba(2,6,23,0.78))",
+    boxShadow: "inset 0 3px 0 rgba(148,163,184,0.35)",
+  },
+};
+
+function statusStripCard(title: string, value: string, detail: string, tone: StripTone = "off") {
   return (
-    <div style={styles.statusCard}>
+    <div style={{ ...styles.statusCard, ...statusStripToneStyles[tone] }}>
       <div style={styles.statusLabel}>{title}</div>
       <div style={styles.statusValue}>{value}</div>
       <div style={styles.statusDetail}>{detail}</div>
     </div>
   );
+}
+
+function formatAgeMinutes(value?: number | null): string {
+  if (value == null || !Number.isFinite(value)) return "unknown";
+  if (value < 60) return `${value.toFixed(value < 10 ? 1 : 0)} min ago`;
+  const hours = value / 60;
+  if (hours < 24) return `${hours.toFixed(hours < 10 ? 1 : 0)} h ago`;
+  const days = hours / 24;
+  return `${days.toFixed(days < 10 ? 1 : 0)} d ago`;
 }
 
 export default function Dashboard() {
@@ -742,6 +889,33 @@ export default function Dashboard() {
     fixture_categories: [],
     fixture_files: 0,
   };
+  const helperLaneSummary = [
+    ["orchestration", supportActivity.lane_counts["orchestration"] ?? 0],
+    ["retrieval", supportActivity.lane_counts["retrieval"] ?? 0],
+  ]
+    .filter(([, count]) => count > 0)
+    .map(([lane, count]) => `${count} ${lane}`)
+    .join(", ") || "no helper records";
+  const helperTone: StripTone = !supportActivity.available
+    ? "off"
+    : (supportActivity.status_counts.blocked ?? 0) > 0
+      ? "watch"
+      : "good";
+  const dispatchTone: StripTone = (dispatchCounts.pending ?? 0) === 0 ? "good" : "watch";
+  const nannyTone: StripTone =
+    nanny.ok && nanny.temperature === "cool" && (nanny.burst_score ?? 0) === 0 && (nanny.error_score ?? 0) === 0 ? "good" : "watch";
+  const returnAllTone: StripTone = returnAll.enabled ? "watch" : "off";
+  const mirrorDoorBlocked = mirrorDoorTest.correctly_blocked ?? 0;
+  const mirrorDoorAccepted = mirrorDoorTest.validly_accepted ?? 0;
+  const mirrorDoorUnexpected = (mirrorDoorTest.unexpected_accept ?? 0) + (mirrorDoorTest.unexpected_error ?? 0);
+  const mirrorDoorHealth = mirrorDoorTest.available
+    ? mirrorDoorUnexpected === 0
+      ? "healthy"
+      : "attention"
+    : "unavailable";
+  const storageOverview = (data.storage_overview ?? fallbackData.storage_overview) as StorageOverview;
+  const compactorLastRun = (storageOverview.compactor_last_run ?? {}) as CompactorLastRunSummary;
+  const storageHotspots = storageOverview.hotspots?.length ? storageOverview.hotspots : (storageOverview.areas || []).slice(0, 6);
 
   return (
     <div style={styles.page}>
@@ -759,7 +933,7 @@ export default function Dashboard() {
             <div>
               <h1 style={styles.headline}>Memory Netherworld Command</h1>
               <p style={styles.subtext}>
-                Watch packets move through inbox, promotion, collective truth, and Honcho mirror gates using live backend data.
+                Read-only control plane for governance, operator activity, drafts, helper lanes, and mirror-door health.
               </p>
             </div>
 
@@ -776,8 +950,14 @@ export default function Dashboard() {
         </div>
 
         <div style={styles.panel}>
-          <div style={{ marginBottom: 14, fontSize: 20, fontWeight: 600, color: "#f5d0fe" }}>
-            Stable system strip
+          <div style={styles.sectionTitleRow}>
+            <div>
+              <h2 style={styles.sectionTitle}>Control plane overview</h2>
+              <div style={styles.sectionSubtitle}>
+                Read-only status for the live system, with the safety gates kept visible instead of hidden.
+              </div>
+            </div>
+            <span style={{ ...styles.badge, ...styles.badgeGood }}>read-only</span>
           </div>
           <div style={styles.statusStrip}>
             {statusStripCard(
@@ -785,22 +965,34 @@ export default function Dashboard() {
               returnAll.enabled ? "ENABLED" : "off",
               returnAll.enabled
                 ? `issued by ${returnAll.issued_by || "operator"}${returnAll.issued_at ? ` at ${returnAll.issued_at}` : ""}`
-                : "No active return-all gate is recorded."
+                : "No active return-all gate is recorded.",
+              returnAllTone
             )}
             {statusStripCard(
               "Nanny",
               `${nanny.temperature || "unknown"} / cooldown ${nanny.global_cooldown_seconds ?? 0}s`,
-              `burst ${nanny.burst_score ?? 0}, error ${nanny.error_score ?? 0}`
+              `burst ${nanny.burst_score ?? 0}, error ${nanny.error_score ?? 0}`,
+              nannyTone
             )}
             {statusStripCard(
               "Dispatch",
               `${dispatchCounts.pending ?? 0} pending`,
-              `${dispatchCounts.approved ?? 0} approved, ${dispatchCounts.deferred ?? 0} deferred, ${dispatchCounts.rejected ?? 0} rejected, total ${dispatchCounts.total ?? 0}`
+              `${dispatchCounts.approved ?? 0} approved, ${dispatchCounts.deferred ?? 0} deferred, ${dispatchCounts.rejected ?? 0} rejected, total ${dispatchCounts.total ?? 0}`,
+              dispatchTone
             )}
             {statusStripCard(
-              "Mirror-door test",
-              mirrorDoorTest.available ? `${mirrorDoorTest.total ?? 0} cases` : "unavailable",
-              `${mirrorDoorTest.correctly_blocked ?? 0} blocked, ${mirrorDoorTest.validly_accepted ?? 0} accepted, ${mirrorDoorTest.unexpected_accept ?? 0} unexpected accept`
+              "Helpers",
+              `${supportActivity.total ?? 0} helpers`,
+              helperLaneSummary,
+              helperTone
+            )}
+            {statusStripCard(
+              "Mirror-door",
+              mirrorDoorHealth,
+              mirrorDoorTest.available
+                ? `${mirrorDoorTest.total ?? 0} cases, ${mirrorDoorBlocked} blocked, ${mirrorDoorAccepted} accepted${mirrorDoorUnexpected ? `, ${mirrorDoorUnexpected} unexpected` : ""}`
+                : "Mirror-door summary not available.",
+              mirrorDoorHealth === "healthy" ? "good" : mirrorDoorHealth === "attention" ? "watch" : "off"
             )}
           </div>
         </div>
@@ -816,6 +1008,237 @@ export default function Dashboard() {
             selectedPacket?.recordName || "no packet selected",
             CircleDot
           )}
+        </div>
+
+        <div style={styles.panel}>
+          <div style={styles.sectionTitleRow}>
+            <div>
+              <h2 style={styles.sectionTitle}>Storage visibility</h2>
+              <div style={styles.sectionSubtitle}>
+                Read-only disk usage from <span style={styles.mono}>memory/</span> and <span style={styles.mono}>logs/</span>, including governed collective records that made it through the door.
+              </div>
+            </div>
+            <span style={{ ...styles.badge, ...(storageOverview.available ? styles.badgeGood : styles.badgeWarn) }}>
+              {storageOverview.available ? "measured" : "unavailable"}
+            </span>
+          </div>
+
+          <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
+            {[
+              [
+                "Active footprint",
+                storageOverview.footprints.active.total_bytes_label,
+                `${storageOverview.footprints.active.total_files} files across ${storageOverview.footprints.active.group_names.length} areas`,
+              ],
+              [
+                "Archive footprint",
+                storageOverview.footprints.archive.total_bytes_label,
+                `${storageOverview.footprints.archive.total_files} files across ${storageOverview.footprints.archive.group_names.length} areas`,
+              ],
+              [
+                "Collective door admitted",
+                storageOverview.collective_door.admitted_bytes_label,
+                `${storageOverview.collective_door.admitted_count} admitted, ${storageOverview.collective_door.blocked_count} blocked`,
+              ],
+              [
+                "Compactor history",
+                storageOverview.footprints.compaction.total_bytes_label,
+                `${compactorLastRun.groups_compacted ?? 0} groups compacted in the last run`,
+              ],
+            ].map(([label, value, detail]) => (
+              <div key={label} style={{ ...styles.recordCard, padding: 12 }}>
+                <div style={styles.subtleText}>{label}</div>
+                <div style={{ marginTop: 6, fontSize: 24, fontWeight: 600, color: "#f5d0fe" }}>{value as string}</div>
+                <div style={{ marginTop: 6, fontSize: 12, color: "#94a3b8" }}>{detail as string}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ marginTop: 10, fontSize: 12, color: "#94a3b8" }}>
+            observed total {storageOverview.footprints.all_observed_bytes} across {storageOverview.areas.length} measured areas
+          </div>
+
+          <div style={{ marginTop: 16, display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))" }}>
+            <div>
+              <div style={{ marginBottom: 10, fontSize: 16, fontWeight: 600, color: "#f5d0fe" }}>Storage hotspots</div>
+              <div style={styles.stack}>
+                {storageHotspots.length ? (
+                  storageHotspots.map((area) => {
+                    const pressureTone =
+                      area.pressure_label === "high"
+                        ? styles.badgeBad
+                        : area.pressure_label === "elevated"
+                          ? styles.badgeWarn
+                          : styles.badgeGood;
+
+                    return (
+                      <div key={area.name} style={styles.recordCard}>
+                        <div style={styles.recordMetaRow}>
+                          <div>
+                            <div style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0" }}>{area.name}</div>
+                            <div style={styles.subtleText}>{area.path}</div>
+                          </div>
+                          <span style={{ ...styles.badge, ...pressureTone }}>{area.pressure_label}</span>
+                        </div>
+                        <div style={{ marginTop: 10, display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))" }}>
+                          <div>
+                            <div style={styles.subtleText}>bytes</div>
+                            <div style={{ marginTop: 4, color: "#f5d0fe", fontSize: 13, fontWeight: 600 }}>
+                              {area.total_bytes_label}
+                            </div>
+                          </div>
+                          <div>
+                            <div style={styles.subtleText}>files</div>
+                            <div style={{ marginTop: 4, color: "#f5d0fe", fontSize: 13, fontWeight: 600 }}>
+                              {area.file_count}
+                            </div>
+                          </div>
+                          <div>
+                            <div style={styles.subtleText}>freshness</div>
+                            <div style={{ marginTop: 4, color: "#f5d0fe", fontSize: 13, fontWeight: 600 }}>
+                              {formatAgeMinutes(area.newest_age_minutes)}
+                            </div>
+                          </div>
+                        </div>
+                        <div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8" }}>
+                          oldest {area.oldest_modified_at || "unknown"} | newest {area.newest_modified_at || "unknown"}
+                        </div>
+                        {area.largest_file ? (
+                          <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5" }}>
+                            largest <span style={styles.mono}>{area.largest_file.name}</span> ({area.largest_file.bytes_label})
+                          </div>
+                        ) : null}
+                        {area.notes.length ? (
+                          <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 8 }}>
+                            {area.notes.map((note) => (
+                              <span key={`${area.name}-${note}`} style={styles.badge}>
+                                {note}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div style={styles.recordCard}>No storage areas were measured yet.</div>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <div style={{ marginBottom: 10, fontSize: 16, fontWeight: 600, color: "#f5d0fe" }}>
+                Governed collective footprint
+              </div>
+              <div style={styles.recordCard}>
+                <div style={styles.recordMetaRow}>
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0" }}>memory/collective</div>
+                    <div style={styles.subtleText}>admitted records are measured through the same governance gate used by the mirror door</div>
+                  </div>
+                  <span style={{ ...styles.badge, ...styles.badgeGood }}>
+                    {Math.round((storageOverview.collective_door.admitted_ratio ?? 0) * 100)}% admitted
+                  </span>
+                </div>
+
+                <div style={{ marginTop: 12, display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))" }}>
+                  <div>
+                    <div style={styles.subtleText}>total bytes</div>
+                    <div style={{ marginTop: 4, color: "#f5d0fe", fontSize: 13, fontWeight: 600 }}>
+                      {storageOverview.collective_door.total_bytes_label}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={styles.subtleText}>admitted bytes</div>
+                    <div style={{ marginTop: 4, color: "#bbf7d0", fontSize: 13, fontWeight: 600 }}>
+                      {storageOverview.collective_door.admitted_bytes_label}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={styles.subtleText}>blocked bytes</div>
+                    <div style={{ marginTop: 4, color: "#fecdd3", fontSize: 13, fontWeight: 600 }}>
+                      {storageOverview.collective_door.blocked_bytes_label}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={styles.subtleText}>legacy</div>
+                    <div style={{ marginTop: 4, color: "#f5d0fe", fontSize: 13, fontWeight: 600 }}>
+                      {storageOverview.collective_door.legacy_count}
+                    </div>
+                  </div>
+                </div>
+
+                <div style={styles.previewBox}>
+                  <div style={styles.subtleText}>door reasons</div>
+                  <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {Object.entries(storageOverview.collective_door.door_reasons || {}).length ? (
+                      Object.entries(storageOverview.collective_door.door_reasons).map(([reason, count]) => (
+                        <span key={reason} style={styles.badge}>
+                          {reason}: {count}
+                        </span>
+                      ))
+                    ) : (
+                      <span style={styles.subtleText}>No gate rejections recorded.</span>
+                    )}
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 12, fontSize: 12, color: "#94a3b8" }}>
+                  path <span style={styles.mono}>{storageOverview.collective_door.path}</span> | files{" "}
+                  {storageOverview.collective_door.total_files}
+                </div>
+              </div>
+
+              <div style={{ ...styles.recordCard, marginTop: 16 }}>
+                <div style={styles.recordMetaRow}>
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0" }}>Compactor state</div>
+                    <div style={styles.subtleText}>latest run log and compaction pressure signals</div>
+                  </div>
+                  <span style={{ ...styles.badge, ...(compactorLastRun.ok ? styles.badgeGood : styles.badgeWarn) }}>
+                    {compactorLastRun.ok ? "ok" : "unknown"}
+                  </span>
+                </div>
+                <div style={{ marginTop: 10, display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))" }}>
+                  <div>
+                    <div style={styles.subtleText}>groups scanned</div>
+                    <div style={{ marginTop: 4, color: "#f5d0fe", fontSize: 13, fontWeight: 600 }}>
+                      {compactorLastRun.groups_scanned ?? 0}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={styles.subtleText}>groups compacted</div>
+                    <div style={{ marginTop: 4, color: "#f5d0fe", fontSize: 13, fontWeight: 600 }}>
+                      {compactorLastRun.groups_compacted ?? 0}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={styles.subtleText}>records compacted</div>
+                    <div style={{ marginTop: 4, color: "#f5d0fe", fontSize: 13, fontWeight: 600 }}>
+                      {compactorLastRun.records_compacted ?? 0}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={styles.subtleText}>records skipped</div>
+                    <div style={{ marginTop: 4, color: "#f5d0fe", fontSize: 13, fontWeight: 600 }}>
+                      {compactorLastRun.records_skipped ?? 0}
+                    </div>
+                  </div>
+                </div>
+                <div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8" }}>
+                  last run {compactorLastRun.timestamp || "unknown"}
+                </div>
+                <div style={{ marginTop: 8, fontSize: 12, color: "#cbd5f5" }}>
+                  active footprint {storageOverview.footprints.active.total_bytes_label} across {storageOverview.footprints.active.total_files} files
+                </div>
+                <div style={{ marginTop: 4, fontSize: 12, color: "#cbd5f5" }}>
+                  archive footprint {storageOverview.footprints.archive.total_bytes_label} across {storageOverview.footprints.archive.total_files} files
+                </div>
+                <div style={{ marginTop: 4, fontSize: 12, color: "#cbd5f5" }}>
+                  compaction metadata {storageOverview.footprints.compaction.total_bytes_label}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div style={styles.gridSplit}>

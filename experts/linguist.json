@@ -14,7 +14,7 @@
     "deploy model assignments",
     "bypass operator approval"
   ],
-  "default_model_key": "local_deep",
+  "default_model_key": "local_production_qwen2_5_coder_14b",
   "escalation_model_key": "api_research",
   "notes": [
     "Advisory only.",

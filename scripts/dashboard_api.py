@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from flask import Flask, jsonify, request
 
-from governance_utils import read_nanny_state
+from governance_utils import can_bridge_to_honcho, read_nanny_state
 from review_and_submit_petition import build_review_payload, validate_draft_petition
 from run_hermes_v1 import validate_response_object
 
@@ -20,6 +20,13 @@ DISPATCH_DIR = MEMORY_DIR / "dispatch"
 GOVERNANCE_DIR = ROOT / "logs" / "governance"
 SUPPORT_ORCHESTRATION_DIR = ROOT / "logs" / "support" / "orchestration"
 SUPPORT_RETRIEVAL_DIR = ROOT / "logs" / "support" / "retrieval"
+SUPPORT_ORCHESTRATION_INSTANCES_DIR = SUPPORT_ORCHESTRATION_DIR / "instances"
+SUPPORT_RETRIEVAL_INSTANCES_DIR = SUPPORT_RETRIEVAL_DIR / "instances"
+COMPACTOR_LOG_DIR = ROOT / "logs" / "compactor"
+ARCHIVE_DIR = MEMORY_DIR / "archive"
+COMPACTED_DIR = MEMORY_DIR / "compacted"
+PROMOTION_DIR = MEMORY_DIR / "promotion"
+INBOX_DIR = MEMORY_DIR / "inbox"
 HONCHO_BASE = "http://127.0.0.1:8000"
 WORKSPACE_ID = "shared-coordination"
 IN_MEMORY_EVENTS: list[dict[str, Any]] = []
@@ -485,6 +492,255 @@ def _mtime_iso(path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
 
 
+def _format_bytes(value: int) -> str:
+    value = max(0, int(value or 0))
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    size = float(value)
+    for unit in units:
+        if size < 1024.0 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(size)} {unit}"
+            return f"{size:.1f} {unit}"
+        size /= 1024.0
+    return f"{value} B"
+
+
+def _iter_files(root: Path) -> list[Path]:
+    if not root.exists():
+        return []
+    files = [path for path in root.rglob("*") if path.is_file()]
+    files.sort(key=lambda path: path.stat().st_mtime_ns, reverse=True)
+    return files
+
+
+def _storage_area_summary(
+    name: str,
+    root: Path,
+    *,
+    notes: list[str] | None = None,
+) -> dict[str, Any]:
+    files = _iter_files(root)
+    total_bytes = 0
+    json_count = 0
+    oldest_path: Path | None = None
+    oldest_mtime_ns: int | None = None
+    newest_path: Path | None = None
+    newest_mtime_ns: int | None = None
+    largest_path: Path | None = None
+    largest_size = 0
+
+    for path in files:
+        try:
+            stat = path.stat()
+        except Exception:
+            continue
+        total_bytes += stat.st_size
+        if path.suffix.lower() == ".json":
+            json_count += 1
+        if oldest_mtime_ns is None or stat.st_mtime_ns < oldest_mtime_ns:
+            oldest_path = path
+            oldest_mtime_ns = stat.st_mtime_ns
+        if newest_mtime_ns is None or stat.st_mtime_ns > newest_mtime_ns:
+            newest_path = path
+            newest_mtime_ns = stat.st_mtime_ns
+        if stat.st_size > largest_size:
+            largest_size = stat.st_size
+            largest_path = path
+
+    newest_age_minutes: float | None = None
+    if newest_path is not None:
+        newest_age_minutes = max(0.0, (datetime.now(timezone.utc) - datetime.fromtimestamp(newest_path.stat().st_mtime, tz=timezone.utc)).total_seconds() / 60.0)
+
+    pressure_score = 0
+    if total_bytes >= 50 * 1024 * 1024:
+        pressure_score += 60
+    elif total_bytes >= 10 * 1024 * 1024:
+        pressure_score += 40
+    elif total_bytes >= 1 * 1024 * 1024:
+        pressure_score += 20
+    elif total_bytes >= 250 * 1024:
+        pressure_score += 10
+
+    if len(files) >= 500:
+        pressure_score += 25
+    elif len(files) >= 100:
+        pressure_score += 15
+    elif len(files) >= 25:
+        pressure_score += 5
+
+    if newest_age_minutes is not None and newest_age_minutes <= 30:
+        pressure_score += 5
+    if "collective" in name:
+        pressure_score += 5
+
+    if pressure_score >= 70:
+        pressure_label = "high"
+    elif pressure_score >= 35:
+        pressure_label = "elevated"
+    elif pressure_score >= 15:
+        pressure_label = "watch"
+    else:
+        pressure_label = "low"
+
+    return {
+        "name": name,
+        "path": _safe_relative_path(root),
+        "available": root.exists(),
+        "file_count": len(files),
+        "json_file_count": json_count,
+        "total_bytes": total_bytes,
+        "total_bytes_label": _format_bytes(total_bytes),
+        "oldest_modified_at": _mtime_iso(oldest_path) if oldest_path else "",
+        "newest_modified_at": _mtime_iso(newest_path) if newest_path else "",
+        "newest_age_minutes": round(newest_age_minutes, 1) if newest_age_minutes is not None else None,
+        "largest_file": {
+            "name": _safe_relative_path(largest_path) if largest_path else "",
+            "bytes": largest_size,
+            "bytes_label": _format_bytes(largest_size),
+        } if largest_path else None,
+        "pressure_score": pressure_score,
+        "pressure_label": pressure_label,
+        "notes": notes or [],
+    }
+
+
+def _collective_door_footprint() -> dict[str, Any]:
+    root = MEMORY_DIR / "collective"
+    files = _iter_files(root)
+    total_bytes = 0
+    admitted_count = 0
+    admitted_bytes = 0
+    blocked_count = 0
+    blocked_bytes = 0
+    malformed_count = 0
+    legacy_count = 0
+    door_reasons: Counter[str] = Counter()
+
+    for path in files:
+        try:
+            stat = path.stat()
+        except Exception:
+            continue
+        total_bytes += stat.st_size
+
+        payload = _load_json_object(path)
+        if not payload:
+            malformed_count += 1
+            door_reasons["malformed json"] += 1
+            continue
+
+        if bool(payload.get("legacy_compatibility")):
+            legacy_count += 1
+
+        gate = can_bridge_to_honcho(payload)
+        if gate.allowed:
+            admitted_count += 1
+            admitted_bytes += stat.st_size
+        else:
+            blocked_count += 1
+            blocked_bytes += stat.st_size
+            door_reasons[str(gate.reason or gate.status or "blocked")] += 1
+
+    admitted_ratio = round(admitted_count / total_files, 3) if (total_files := admitted_count + blocked_count + malformed_count) else 0.0
+
+    return {
+        "path": _safe_relative_path(root),
+        "total_files": total_files,
+        "total_bytes": total_bytes,
+        "total_bytes_label": _format_bytes(total_bytes),
+        "admitted_count": admitted_count,
+        "admitted_bytes": admitted_bytes,
+        "admitted_bytes_label": _format_bytes(admitted_bytes),
+        "blocked_count": blocked_count,
+        "blocked_bytes": blocked_bytes,
+        "blocked_bytes_label": _format_bytes(blocked_bytes),
+        "malformed_count": malformed_count,
+        "legacy_count": legacy_count,
+        "admitted_ratio": admitted_ratio,
+        "door_reasons": dict(door_reasons.most_common(6)),
+    }
+
+
+def _storage_footprint(groups: list[dict[str, Any]], selected_names: set[str]) -> dict[str, Any]:
+    selected = [group for group in groups if group["name"] in selected_names]
+    total_bytes = sum(group["total_bytes"] for group in selected)
+    total_files = sum(group["file_count"] for group in selected)
+    return {
+        "group_names": sorted(selected_names),
+        "total_bytes": total_bytes,
+        "total_bytes_label": _format_bytes(total_bytes),
+        "total_files": total_files,
+        "groups": selected,
+    }
+
+
+def read_storage_overview() -> dict[str, Any]:
+    areas = [
+        _storage_area_summary("memory/collective", MEMORY_DIR / "collective", notes=["governed collective records"]),
+        _storage_area_summary("memory/dispatch", DISPATCH_DIR, notes=["dispatch petition queue"]),
+        _storage_area_summary("memory/drafts", MEMORY_DIR / "drafts", notes=["petition drafts"]),
+        _storage_area_summary("memory/inbox", INBOX_DIR, notes=["raw intake"]),
+        _storage_area_summary("memory/promotion", PROMOTION_DIR, notes=["promotion candidates"]),
+        _storage_area_summary("memory/compacted", COMPACTED_DIR, notes=["compaction outputs"]),
+        _storage_area_summary("memory/archive", ARCHIVE_DIR, notes=["archived source records"]),
+        _storage_area_summary("logs/support", ROOT / "logs" / "support", notes=["support helper records"]),
+        _storage_area_summary("logs/compactor", COMPACTOR_LOG_DIR, notes=["compactor run history"]),
+        _storage_area_summary("logs/governance", GOVERNANCE_DIR, notes=["governance status records"]),
+        _storage_area_summary("logs/nanny", ROOT / "logs" / "nanny", notes=["nanny and weather state"]),
+    ]
+
+    collective = _collective_door_footprint()
+    compactor_last_run = _load_json_object(COMPACTOR_LOG_DIR / "last_run.json")
+
+    active_footprint = _storage_footprint(
+        areas,
+        {
+            "memory/collective",
+            "memory/dispatch",
+            "memory/drafts",
+            "memory/inbox",
+            "memory/promotion",
+            "logs/support",
+            "logs/governance",
+            "logs/nanny",
+        },
+    )
+    archive_footprint = _storage_footprint(
+        areas,
+        {
+            "memory/archive",
+            "memory/compacted",
+        },
+    )
+    compaction_metadata_footprint = _storage_footprint(
+        areas,
+        {
+            "logs/compactor",
+        },
+    )
+
+    hotspots = sorted(
+        areas,
+        key=lambda item: (item["pressure_score"], item["total_bytes"], item["file_count"]),
+        reverse=True,
+    )[:6]
+
+    return {
+        "available": True,
+        "generated_at": iso_now(),
+        "areas": areas,
+        "hotspots": hotspots,
+        "collective_door": collective,
+        "footprints": {
+            "active": active_footprint,
+            "archive": archive_footprint,
+            "compaction": compaction_metadata_footprint,
+            "all_observed_bytes": _format_bytes(sum(area["total_bytes"] for area in areas)),
+        },
+        "compactor_last_run": compactor_last_run or {},
+    }
+
+
 def read_hermes_runs(limit: int = 8) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for path in _latest_json_files(HERMES_RUNS_DIR, limit):
@@ -700,6 +956,7 @@ def api_status():
         "dispatch_counts": read_dispatch_counts(),
         "support_helper_activity": read_support_helper_activity(),
         "mirror_door_test": read_mirror_door_test_status(),
+        "storage_overview": read_storage_overview(),
     })
 
 

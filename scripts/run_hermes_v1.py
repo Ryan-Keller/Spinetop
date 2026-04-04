@@ -449,11 +449,68 @@ def load_model_registry() -> dict[str, Any]:
     return models
 
 
-def resolve_runtime_model_key(runtime_policy: Any, runtime_config: dict[str, Any], requested_model_key: str | None) -> str:
+def load_model_lifecycle(runtime_config: dict[str, Any]) -> dict[str, Any]:
+    model_profiles = runtime_config.get("model_profiles", {})
+    if model_profiles and not isinstance(model_profiles, dict):
+        raise ValueError("hermes_runtime.json model_profiles must be an object")
+
+    production_model_key = str(runtime_config.get("production_model_key") or runtime_config.get("default_model_key") or "").strip()
+    if not production_model_key:
+        raise ValueError("hermes_runtime.json production_model_key is required")
+
+    onboarding_raw = runtime_config.get("onboarding_model_keys", [])
+    if onboarding_raw and not isinstance(onboarding_raw, list):
+        raise ValueError("hermes_runtime.json onboarding_model_keys must be an array")
+
+    onboarding_model_keys: list[str] = []
+    seen: set[str] = set()
+    if isinstance(onboarding_raw, list):
+        for item in onboarding_raw:
+            key = str(item or "").strip()
+            if not key:
+                raise ValueError("hermes_runtime.json onboarding_model_keys must not contain blank entries")
+            if key in seen:
+                raise ValueError(f"hermes_runtime.json onboarding_model_keys contains duplicate key: {key}")
+            seen.add(key)
+            onboarding_model_keys.append(key)
+
+    selected_onboarding_model_key = str(runtime_config.get("selected_onboarding_model_key") or "").strip()
+    if selected_onboarding_model_key and selected_onboarding_model_key not in onboarding_model_keys:
+        allowed = ", ".join(onboarding_model_keys) or "none"
+        raise ValueError(
+            f"hermes_runtime.json selected_onboarding_model_key '{selected_onboarding_model_key}' is not in onboarding_model_keys. Allowed: {allowed}"
+        )
+
+    if production_model_key in onboarding_model_keys:
+        raise ValueError("hermes_runtime.json production_model_key must not also appear in onboarding_model_keys")
+
+    return {
+        "production_model_key": production_model_key,
+        "onboarding_model_keys": onboarding_model_keys,
+        "selected_onboarding_model_key": selected_onboarding_model_key,
+        "model_profiles": model_profiles if isinstance(model_profiles, dict) else {},
+    }
+
+
+def resolve_runtime_model_key(
+    runtime_policy: Any,
+    runtime_config: dict[str, Any],
+    requested_model_key: str | None,
+    requested_onboarding_model_key: str | None,
+) -> str:
+    lifecycle = load_model_lifecycle(runtime_config)
+    if requested_model_key and requested_onboarding_model_key and requested_model_key != requested_onboarding_model_key:
+        raise ValueError("Choose either --model-key or --onboarding-model-key, not both")
+    if requested_onboarding_model_key:
+        key = requested_onboarding_model_key.strip()
+        if key not in lifecycle["onboarding_model_keys"]:
+            allowed = ", ".join(lifecycle["onboarding_model_keys"]) or "none"
+            raise ValueError(f"Onboarding model key '{key}' is not in onboarding_model_keys. Allowed: {allowed}")
+        return resolve_model_key(runtime_policy, key)
     if requested_model_key:
         return resolve_model_key(runtime_policy, requested_model_key)
 
-    configured_default = str(runtime_config.get("default_model_key") or "").strip()
+    configured_default = lifecycle["production_model_key"] or str(runtime_config.get("default_model_key") or "").strip()
     if configured_default:
         if configured_default not in runtime_policy.allowed_model_keys:
             allowed = ", ".join(runtime_policy.allowed_model_keys)
@@ -463,6 +520,76 @@ def resolve_runtime_model_key(runtime_policy: Any, runtime_config: dict[str, Any
         return configured_default
 
     return runtime_policy.default_model_key
+
+
+def validate_model_lifecycle(runtime_policy: Any, models: dict[str, Any], lifecycle: dict[str, Any]) -> None:
+    production_model_key = lifecycle["production_model_key"]
+    onboarding_model_keys = lifecycle["onboarding_model_keys"]
+    selected_onboarding_model_key = lifecycle["selected_onboarding_model_key"]
+    model_profiles = lifecycle["model_profiles"]
+
+    missing = [key for key in [production_model_key, *onboarding_model_keys] if key not in models]
+    if missing:
+        raise ValueError(f"Unknown lifecycle model key(s): {', '.join(sorted(set(missing)))}")
+
+    missing_allowed = [key for key in [production_model_key, *onboarding_model_keys] if key not in runtime_policy.allowed_model_keys]
+    if missing_allowed:
+        allowed = ", ".join(runtime_policy.allowed_model_keys)
+        raise ValueError(f"Lifecycle model key(s) not allowed for {runtime_policy.expert_id}: {', '.join(sorted(set(missing_allowed)))}. Allowed: {allowed}")
+
+    if selected_onboarding_model_key and selected_onboarding_model_key not in onboarding_model_keys:
+        allowed = ", ".join(onboarding_model_keys) or "none"
+        raise ValueError(
+            f"selected_onboarding_model_key '{selected_onboarding_model_key}' must be one of onboarding_model_keys. Allowed: {allowed}"
+        )
+
+    for key in [production_model_key, *onboarding_model_keys]:
+        profile = model_profiles.get(key)
+        if profile is None:
+            raise ValueError(f"hermes_runtime.json missing model_profiles entry for {key}")
+        if not isinstance(profile, dict):
+            raise ValueError(f"hermes_runtime.json model_profiles.{key} must be an object")
+        if str(profile.get("model_key") or "").strip() != key:
+            raise ValueError(f"hermes_runtime.json model_profiles.{key}.model_key must match the profile key")
+
+
+def print_model_lifecycle(runtime_config: dict[str, Any], models: dict[str, Any], lifecycle: dict[str, Any]) -> None:
+    model_profiles = lifecycle["model_profiles"]
+    print("=== MODEL LIFECYCLE ===")
+    print(f"production_model_key={lifecycle['production_model_key']}")
+    print(
+        "onboarding_model_keys="
+        + (", ".join(lifecycle["onboarding_model_keys"]) if lifecycle["onboarding_model_keys"] else "none")
+    )
+    print(
+        "selected_onboarding_model_key="
+        + (lifecycle["selected_onboarding_model_key"] or "none")
+    )
+    for key in [lifecycle["production_model_key"], *lifecycle["onboarding_model_keys"]]:
+        model_cfg = models.get(key, {})
+        profile = model_profiles.get(key, {})
+        if not isinstance(model_cfg, dict):
+            model_cfg = {}
+        if not isinstance(profile, dict):
+            profile = {}
+        model_name = str(model_cfg.get("model") or "unknown")
+        role = str(profile.get("role") or "unknown")
+        readiness = str(profile.get("readiness") or "unknown")
+        promotion_ready = bool(profile.get("promotion_ready", False))
+        intended_use = str(profile.get("intended_use") or "")
+        print(f"- {key}")
+        print(f"  role={role}")
+        print(f"  readiness={readiness}")
+        print(f"  promotion_ready={str(promotion_ready).lower()}")
+        print(f"  provider_model={model_name}")
+        if intended_use:
+            print(f"  intended_use={intended_use}")
+        criteria = profile.get("promotion_criteria")
+        if isinstance(criteria, list) and criteria:
+            print("  promotion_criteria:")
+            for item in criteria:
+                print(f"    - {item}")
+    print("")
 
 
 def load_provider_profile(runtime_config: dict[str, Any], provider: str) -> dict[str, Any]:
@@ -754,20 +881,42 @@ def merge_snapshot(live_snapshot: dict[str, Any], input_snapshot: dict[str, Any]
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run a single Hermes-Spinetop v1 review pass.")
-    parser.add_argument("mode", choices=sorted(ALLOWED_MODES))
+    parser.add_argument("mode", nargs="?", choices=sorted(ALLOWED_MODES))
     parser.add_argument("--dry-run", action="store_true", help="Render the prompt and exit without calling a model.")
     parser.add_argument("--input-file", type=Path, help="Load a JSON snapshot override from a file.")
     parser.add_argument("--model-key", help="Override the policy default model key, if allowed.")
+    parser.add_argument(
+        "--onboarding-model-key",
+        help="Run a specific onboarding candidate explicitly, if it is listed in onboarding_model_keys.",
+    )
+    parser.add_argument(
+        "--list-models",
+        action="store_true",
+        help="Print the current production and onboarding lifecycle configuration and exit.",
+    )
     args = parser.parse_args()
+
+    if not args.mode and not args.list_models:
+        parser.error("mode is required unless --list-models is set")
 
     runtime_policy = load_runtime_policy(EXPERT_ID)
     runtime_config = load_hermes_runtime_config()
-    model_key = resolve_runtime_model_key(runtime_policy, runtime_config, args.model_key)
     models = load_model_registry()
+    lifecycle = load_model_lifecycle(runtime_config)
+    validate_model_lifecycle(runtime_policy, models, lifecycle)
+
+    if args.list_models:
+        print_model_lifecycle(runtime_config, models, lifecycle)
+        return 0
+
+    model_key = resolve_runtime_model_key(runtime_policy, runtime_config, args.model_key, args.onboarding_model_key)
     model_cfg = models.get(model_key, {})
     provider = str(model_cfg.get("provider") or "").strip().lower() if isinstance(model_cfg, dict) else ""
     model_name = str(model_cfg.get("model") or "").strip() if isinstance(model_cfg, dict) else ""
     provider_profile = load_provider_profile(runtime_config, provider) if provider else {}
+    selected_profile = lifecycle["model_profiles"].get(model_key, {}) if isinstance(lifecycle["model_profiles"], dict) else {}
+    if not isinstance(selected_profile, dict):
+        selected_profile = {}
     live_snapshot = build_snapshot()
     input_snapshot = read_input_snapshot(args.input_file) if args.input_file else {}
     snapshot = merge_snapshot(live_snapshot, input_snapshot)
@@ -779,6 +928,11 @@ def main() -> int:
     print(f"model_key={model_key}")
     print(f"provider={provider or 'unknown'}")
     print(f"model={model_name or 'unknown'}")
+    print(f"role={str(selected_profile.get('role') or 'unknown')}")
+    print(f"readiness={str(selected_profile.get('readiness') or 'unknown')}")
+    print(f"promotion_ready={str(bool(selected_profile.get('promotion_ready', False))).lower()}")
+    selected_target = str(runtime_config.get("selected_onboarding_model_key") or "").strip() or "none"
+    print(f"selected_onboarding_model_key={selected_target}")
     if provider_profile:
         base_url = str(provider_profile.get("base_url") or "").strip()
         if not base_url and provider == "ollama":

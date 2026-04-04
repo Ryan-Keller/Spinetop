@@ -6,22 +6,22 @@
   },
   "experts": {
     "hermes-spinetop": {
-      "allowed_models": ["local_fast", "local_deep"],
-      "default_model": "local_fast",
-      "escalation_model": "local_deep",
+      "allowed_models": ["local_production_qwen2_5_coder_14b", "local_onboarding_gemma4_e4b_4k"],
+      "default_model": "local_production_qwen2_5_coder_14b",
+      "escalation_model": "local_production_qwen2_5_coder_14b",
       "api_allowed": false,
       "lane": "operational_stewardship"
     },
     "hermes-spinelab": {
-      "allowed_models": ["local_fast", "local_deep", "api_reasoning"],
-      "default_model": "local_fast",
+      "allowed_models": ["local_onboarding_gemma4_e4b_4k", "local_production_qwen2_5_coder_14b", "api_reasoning"],
+      "default_model": "local_onboarding_gemma4_e4b_4k",
       "escalation_model": "api_reasoning",
       "api_allowed": true,
       "lane": "exploration_and_control"
     },
     "linguist": {
-      "allowed_models": ["local_fast", "local_deep", "api_research"],
-      "default_model": "local_deep",
+      "allowed_models": ["local_onboarding_gemma4_e4b_4k", "local_production_qwen2_5_coder_14b", "api_research"],
+      "default_model": "local_production_qwen2_5_coder_14b",
       "escalation_model": "api_research",
       "api_allowed": true,
       "lane": "model_analysis_and_research"

@@ -13,6 +13,7 @@ Start here:
 - [Helper Catalog](helper_catalog_v1.md)
 - [Support Channel Schema](support_channel_schema_v1.md)
 - [Hermes v1 Contract](hermes_v1_contract.md)
+- [Hermes Model Lifecycle](hermes_model_lifecycle_v1.md)
 - [Knowledge Flow](knowledge_flow_README.md)
 - [Architecture](architecture.md)
 
