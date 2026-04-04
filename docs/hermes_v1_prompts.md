@@ -9,6 +9,8 @@ They are intentionally narrow:
 - no UI assumptions
 - no direct execution powers
 
+Hermes-Spinetop v1 may still be petition-capable in governed execution paths, but the manual runner that uses these prompts is recommendation-only and never writes petitions.
+
 If prompt text conflicts with [`hermes_v1_contract.md`](./hermes_v1_contract.md) or [`state_machine_v1.md`](./state_machine_v1.md), the governed contract wins.
 
 ## Base System Prompt
@@ -51,6 +53,15 @@ Governance posture:
 - nanny hot means prefer no action or operator review
 
 Use only the model policy already approved for this expert. Do not switch models on your own.
+
+Output contract:
+- Return exactly one JSON object that matches `hermes_v1_run_schema.md`.
+- `mode` must be the exact operator-selected mode token: `observe`, `anomaly_review`, `repair_check`, or `repetition_review`.
+- `status` must be one of `summary_only`, `no_action`, `petition_recommended`, or `blocked`; do not use synonyms like `ok`, `review`, or `active`.
+- `recommended_action` must be one of `none`, `operator_review`, `create_dispatch_petition`, or `defer`; when no action is recommended, use `none` rather than `null`.
+- Include every required top-level field: `run_id`, `mode`, `status`, `summary`, `evidence_refs`, `recommended_action`, `petition_kind`, and `confidence`.
+- If no classification applies, set `classification` to `null`.
+- Do not rename fields, invent aliases, or add prose before or after the JSON.
 ```
 
 ## Observe Prompt
@@ -76,11 +87,14 @@ Task:
 4. If no bounded issue is present, return no_action.
 
 Output:
+- return exactly one JSON object matching the run schema
 - concise operator-facing summary
 - evidence_refs
 - optional classification
 - recommended_action
 - confidence
+
+Classification expectation: optional.
 ```
 
 ## Anomaly Review Prompt
@@ -105,12 +119,15 @@ Task:
 5. Recommend a dispatch petition only if the anomaly is sufficiently bounded and the petition is the safest next step.
 
 Output:
+- return exactly one JSON object matching the run schema
 - anomaly classification
 - summary
 - evidence_refs
 - recommended_action
 - petition_kind if a petition is recommended
 - confidence
+
+Classification expectation: expected.
 ```
 
 ## Repair Check Prompt
@@ -131,15 +148,19 @@ Task:
 1. Check whether the issue is plausibly repairable.
 2. Prefer review over repair when uncertain.
 3. Do not plan execution steps beyond a governed petition.
-4. If repair is not clearly bounded and reversible, stop and recommend operator review or no action.
+4. If repair is not clearly bounded and reversible, or the cause is not clear enough, stop and recommend no_action/none rather than operator review.
+5. In the summary, focus on repairability, whether the cause is clear enough, and whether the path is reversible or low-risk; avoid promotion, backlog, or unrelated workflow commentary unless it directly affects repairability.
 
 Output:
+- return exactly one JSON object matching the run schema
 - repair candidate classification or no_action
 - summary
 - evidence_refs
 - recommended_action
 - petition_kind if applicable
 - confidence
+
+Classification expectation: expected.
 ```
 
 ## Repetition Review Prompt
@@ -160,14 +181,18 @@ Task:
 2. Distinguish noise from a real repeatable anomaly.
 3. Recommend operator review if the pattern is not yet bounded enough for a petition.
 4. Recommend a dispatch petition only when repetition is clear, bounded, and reviewable.
+5. If no repeatable pattern is found, keep the summary to 1-2 sentences, name the source or repeat-check examined, include at least one concrete evidence ref when available, and describe what was checked rather than saying nothing was found.
 
 Output:
+- return exactly one JSON object matching the run schema
 - anomaly classification or no_action
 - summary
 - evidence_refs
 - recommended_action
 - petition_kind if applicable
 - confidence
+
+Classification expectation: expected.
 ```
 
 ## Prompting Notes

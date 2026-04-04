@@ -1,0 +1,212 @@
+{
+  "run_id": "hermes-fixture-20260403-001",
+  "world_state": {
+    "return_all_active": false,
+    "nanny_temperature": "cool",
+    "nanny_cooldown_seconds": 0,
+    "dispatch_counts": {
+      "approved": 1,
+      "deferred": 0,
+      "pending": 1,
+      "rejected": 0
+    },
+    "promotion_backlog_count": 1,
+    "collective_recent_count": 1
+  },
+  "nanny_state": {
+    "ok": true,
+    "temperature": "cool",
+    "burst_score": 0,
+    "error_score": 0,
+    "active_agent_warnings": [],
+    "recommended_actions": [],
+    "global_cooldown_seconds": 0
+  },
+  "return_all_state": {
+    "ok": true,
+    "enabled": false,
+    "issued_by": "operator",
+    "issued_at": "2026-04-03T00:00:00Z",
+    "reason": "fixture",
+    "allow_custodial_bypass": false
+  },
+  "dispatch_status": {
+    "counts": {
+      "approved": 1,
+      "deferred": 0,
+      "pending": 1,
+      "rejected": 0
+    },
+    "recent_items": [
+      {
+        "file": "memory/dispatch/pending/fixture_pending.json",
+        "petition_id": "fixture_pending_001",
+        "petition_kind": "memory_admission",
+        "requested_action": "admit_to_collective",
+        "status": "pending",
+        "summary": "Fixture pending review candidate",
+        "created_at": "2026-04-03T00:00:00Z"
+      }
+    ]
+  },
+  "promotion_backlog": {
+    "count": 1,
+    "recent_items": [
+      {
+        "file": "memory/promotion/fixture_candidate.json",
+        "record_id": "fixture_candidate_001",
+        "summary": "Fixture promotion candidate",
+        "promotion_candidate": true,
+        "confidence": 0.6,
+        "governance_review_state": "deferred"
+      }
+    ]
+  },
+  "collective_summaries": [
+    {
+      "file": "memory/collective/fixture_collective.json",
+      "record_id": "fixture_collective_001",
+      "summary": "Fixture collective summary",
+      "confidence": 0.8,
+      "governance_review_state": "approved",
+      "related_petition_id": "fixture_pending_001"
+    }
+  ],
+  "bridge_status": {
+    "seen_collective_files": {
+      "count": 1,
+      "recent_keys": [
+        "fixture_collective.json"
+      ]
+    },
+    "sent_files": {
+      "count": 0,
+      "recent_keys": []
+    }
+  },
+  "recent_governance_events": [
+    {
+      "timestamp": "2026-04-03T00:00:00Z",
+      "event_type": "item_world_nanny",
+      "record_name": "global",
+      "status": "cool",
+      "detail": "fixture"
+    }
+  ],
+  "recent_logs": {
+    "topology_events": [
+      "{\"timestamp\":\"2026-04-03T00:00:00Z\",\"event_type\":\"fixture\",\"status\":\"ok\"}"
+    ]
+  },
+  "subject": "Fixture pending review candidate",
+  "evidence_bundle": {
+    "world_state": {
+      "return_all_active": false,
+      "nanny_temperature": "cool",
+      "nanny_cooldown_seconds": 0,
+      "dispatch_counts": {
+        "approved": 1,
+        "deferred": 0,
+        "pending": 1,
+        "rejected": 0
+      },
+      "promotion_backlog_count": 1,
+      "collective_recent_count": 1
+    },
+    "nanny_state": {
+      "ok": true,
+      "temperature": "cool",
+      "burst_score": 0,
+      "error_score": 0,
+      "active_agent_warnings": [],
+      "recommended_actions": [],
+      "global_cooldown_seconds": 0
+    },
+    "return_all_state": {
+      "ok": true,
+      "enabled": false,
+      "issued_by": "operator",
+      "issued_at": "2026-04-03T00:00:00Z",
+      "reason": "fixture",
+      "allow_custodial_bypass": false
+    },
+    "dispatch_status": {
+      "counts": {
+        "approved": 1,
+        "deferred": 0,
+        "pending": 1,
+        "rejected": 0
+      },
+      "recent_items": [
+        {
+          "file": "memory/dispatch/pending/fixture_pending.json",
+          "petition_id": "fixture_pending_001",
+          "petition_kind": "memory_admission",
+          "requested_action": "admit_to_collective",
+          "status": "pending",
+          "summary": "Fixture pending review candidate",
+          "created_at": "2026-04-03T00:00:00Z"
+        }
+      ]
+    },
+    "promotion_backlog": {
+      "count": 1,
+      "recent_items": [
+        {
+          "file": "memory/promotion/fixture_candidate.json",
+          "record_id": "fixture_candidate_001",
+          "summary": "Fixture promotion candidate",
+          "promotion_candidate": true,
+          "confidence": 0.6,
+          "governance_review_state": "deferred"
+        }
+      ]
+    },
+    "collective_summaries": [
+      {
+        "file": "memory/collective/fixture_collective.json",
+        "record_id": "fixture_collective_001",
+        "summary": "Fixture collective summary",
+        "confidence": 0.8,
+        "governance_review_state": "approved",
+        "related_petition_id": "fixture_pending_001"
+      }
+    ],
+    "bridge_status": {
+      "seen_collective_files": {
+        "count": 1,
+        "recent_keys": [
+          "fixture_collective.json"
+        ]
+      },
+      "sent_files": {
+        "count": 0,
+        "recent_keys": []
+      }
+    },
+    "recent_governance_events": [
+      {
+        "timestamp": "2026-04-03T00:00:00Z",
+        "event_type": "item_world_nanny",
+        "record_name": "global",
+        "status": "cool",
+        "detail": "fixture"
+      }
+    ],
+    "recent_logs": {
+      "topology_events": [
+        "{\"timestamp\":\"2026-04-03T00:00:00Z\",\"event_type\":\"fixture\",\"status\":\"ok\"}"
+      ]
+    }
+  },
+  "recovery_constraints": {
+    "manual_only": true,
+    "no_state_writes": true,
+    "no_retry_loop": true,
+    "governance_brakes": {
+      "return_all_active": false,
+      "nanny_temperature": "cool"
+    }
+  },
+  "repeated_events": []
+}
