@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from flask import Flask, jsonify, request
 
+from validate_clarification_packet import validate_clarification_packet
 from governance_utils import can_bridge_to_honcho, read_nanny_state
 from review_and_submit_petition import build_review_payload, validate_draft_petition
 from run_hermes_v1 import validate_response_object
@@ -15,6 +16,7 @@ from run_hermes_v1 import validate_response_object
 ROOT = Path(__file__).resolve().parents[1]
 EVENT_LOG = ROOT / "logs" / "topology" / "events.jsonl"
 HERMES_RUNS_DIR = ROOT / "logs" / "hermes" / "runs"
+CLARIFICATION_PACKETS_DIR = ROOT / "logs" / "citadel" / "clarification_packets"
 MEMORY_DIR = ROOT / "memory"
 DISPATCH_DIR = MEMORY_DIR / "dispatch"
 GOVERNANCE_DIR = ROOT / "logs" / "governance"
@@ -848,6 +850,41 @@ def read_petition_draft_previews(limit: int = 8) -> list[dict[str, Any]]:
     return items
 
 
+def read_latest_clarification_packet() -> dict[str, Any]:
+    latest = _latest_json_files(CLARIFICATION_PACKETS_DIR, 1)
+    source_root = _safe_relative_path(CLARIFICATION_PACKETS_DIR)
+    if not latest:
+        return {
+            "ok": True,
+            "available": False,
+            "source_root": source_root,
+            "item": None,
+        }
+
+    path = latest[0]
+    source_path = _safe_relative_path(path)
+    try:
+        payload = _load_json(path)
+        packet = validate_clarification_packet(payload, path=path)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "available": False,
+            "source_root": source_root,
+            "source_path": source_path,
+            "error": str(exc),
+            "item": None,
+        }
+
+    return {
+        "ok": True,
+        "available": True,
+        "source_root": source_root,
+        "source_path": source_path,
+        "item": packet,
+    }
+
+
 def read_dispatch_counts() -> dict[str, int]:
     counts = {"pending": 0, "approved": 0, "deferred": 0, "rejected": 0}
     for petition in read_dispatch_petitions():
@@ -1000,6 +1037,11 @@ def api_petition_drafts():
         "source_root": _safe_relative_path(MEMORY_DIR / "drafts"),
         "items": read_petition_draft_previews(limit),
     })
+
+
+@app.get("/api/clarification/latest")
+def api_clarification_latest():
+    return jsonify(read_latest_clarification_packet())
 
 
 @app.get("/api/governance/return-all")

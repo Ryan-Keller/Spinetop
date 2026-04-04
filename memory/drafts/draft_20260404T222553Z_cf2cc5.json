@@ -1,0 +1,19 @@
+{
+  "petition_id": "draft_20260404T222553Z_cf2cc5",
+  "created_by": "hermes_spinetop_v1",
+  "mode": "anomaly_review",
+  "petition_kind": "operator_review",
+  "petition_type": "operator_review",
+  "status": "draft",
+  "summary": "Recent governance events indicate missing session_ids and petition_id issues. No immediate action is recommended.",
+  "evidence_refs": [
+    "recent_governance_events"
+  ],
+  "requested_action": "defer",
+  "confidence": 0.85,
+  "source_run_id": "hermes-20260404T222544Z-39f3",
+  "notes": "Generated from Hermes output. Not submitted.",
+  "low_priority": true,
+  "workspace": "spinetop",
+  "agent_id": "hermes_spinetop_v1"
+}
