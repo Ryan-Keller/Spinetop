@@ -1,0 +1,24 @@
+[
+  {
+    "id": "invalid_write_scope",
+    "expected": "correctly_blocked",
+    "scenario": "spawn",
+    "overrides": {
+      "write_scope": [
+        "logs/support/orchestration/",
+        "logs/support/experimental/"
+      ]
+    }
+  },
+  {
+    "id": "forbidden_destination",
+    "expected": "correctly_blocked",
+    "scenario": "spawn",
+    "overrides": {
+      "write_scope": [
+        "logs/support/orchestration/",
+        "memory/collective/"
+      ]
+    }
+  }
+]

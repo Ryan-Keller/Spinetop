@@ -1,0 +1,50 @@
+[
+  {
+    "id": "return_all_active",
+    "expected": "correctly_blocked",
+    "attack_surface": "weather_attack",
+    "path": "memory/collective/return_all_active.json",
+    "return_all": {
+      "enabled": true,
+      "issued_by": "mirror-door",
+      "issued_at": "2026-04-04T12:00:00Z",
+      "reason": "return all active for contract test",
+      "allow_custodial_bypass": false
+    }
+  },
+  {
+    "id": "nanny_hot_blocked",
+    "expected": "correctly_blocked",
+    "attack_surface": "weather_attack",
+    "path": "memory/collective/nanny_hot_blocked.json",
+    "nanny": {
+      "temperature": "hot",
+      "global_cooldown_seconds": 0,
+      "recommended_actions": [
+        "defer"
+      ]
+    }
+  },
+  {
+    "id": "cooldown_active",
+    "expected": "correctly_blocked",
+    "attack_surface": "weather_attack",
+    "path": "memory/collective/cooldown_active.json",
+    "nanny": {
+      "temperature": "cool",
+      "global_cooldown_seconds": 7200,
+      "recommended_actions": [
+        "defer"
+      ]
+    }
+  },
+  {
+    "id": "transport_metadata_incomplete",
+    "expected": "correctly_blocked",
+    "attack_surface": "transport_attack",
+    "path": "memory/collective/transport_metadata_incomplete.json",
+    "record_remove": [
+      "session_id"
+    ]
+  }
+]

@@ -1,0 +1,176 @@
+[
+  {
+    "id": "missing_governance_decision_id",
+    "expected": "correctly_blocked",
+    "attack_surface": "shape_attack",
+    "path": "memory/collective/missing_governance_decision_id.json",
+    "record_remove": [
+      "governance_decision_id"
+    ]
+  },
+  {
+    "id": "missing_petition_id",
+    "expected": "correctly_blocked",
+    "attack_surface": "shape_attack",
+    "path": "memory/collective/missing_petition_id.json",
+    "petition_remove": [
+      "petition_id"
+    ]
+  },
+  {
+    "id": "missing_candidate_id",
+    "expected": "correctly_blocked",
+    "attack_surface": "shape_attack",
+    "path": "memory/collective/missing_candidate_id.json",
+    "record_remove": [
+      "candidate_id"
+    ]
+  },
+  {
+    "id": "fake_but_well_formed_ids",
+    "expected": "correctly_blocked",
+    "attack_surface": "forged_lineage",
+    "path": "memory/collective/fake_but_well_formed_ids.json",
+    "record_set": {
+      "record_id": "mem_forged_ids",
+      "collective_record_id": "mem_forged_ids",
+      "candidate_id": "candidate_forged_ids",
+      "related_petition_id": "pet_forged_ids",
+      "governance_decision_id": "dec_forged_ids",
+      "governance_approval_ref": "decision:dec_forged_ids",
+      "session_id": "session_forged_ids"
+    },
+    "petition_set": {
+      "petition_id": "pet_forged_ids"
+    },
+    "decision_set": {
+      "decision_id": "dec_forged_ids",
+      "petition_id": "pet_forged_ids",
+      "related_collective_id": "mem_forged_ids"
+    }
+  },
+  {
+    "id": "wrong_record_type",
+    "expected": "correctly_blocked",
+    "attack_surface": "shape_attack",
+    "path": "memory/collective/wrong_record_type.json",
+    "record_set": {
+      "record_type": "dispatch_petition"
+    }
+  },
+  {
+    "id": "missing_petition_object",
+    "expected": "correctly_blocked",
+    "attack_surface": "lineage_attack",
+    "path": "memory/collective/missing_petition_object.json",
+    "petition_present": false
+  },
+  {
+    "id": "missing_decision_object",
+    "expected": "correctly_blocked",
+    "attack_surface": "lineage_attack",
+    "path": "memory/collective/missing_decision_object.json",
+    "decision_present": false
+  },
+  {
+    "id": "deferred_decision",
+    "expected": "correctly_blocked",
+    "attack_surface": "lineage_attack",
+    "path": "memory/collective/deferred_decision.json",
+    "record_set": {
+      "record_id": "mem_deferred_001",
+      "collective_record_id": "mem_deferred_001",
+      "candidate_id": "mem_deferred_001",
+      "related_petition_id": "pet_deferred_001",
+      "governance_decision_id": "dec_deferred_001",
+      "governance_approval_ref": "decision:dec_deferred_001",
+      "session_id": "session_deferred_001"
+    },
+    "petition_set": {
+      "petition_id": "pet_deferred_001"
+    },
+    "decision_set": {
+      "decision_id": "dec_deferred_001",
+      "petition_id": "pet_deferred_001",
+      "decision_outcome": "defer",
+      "review_state": "final",
+      "related_collective_id": "mem_deferred_001"
+    }
+  },
+  {
+    "id": "rejected_decision",
+    "expected": "correctly_blocked",
+    "attack_surface": "lineage_attack",
+    "path": "memory/collective/rejected_decision.json",
+    "record_set": {
+      "record_id": "mem_rejected_001",
+      "collective_record_id": "mem_rejected_001",
+      "candidate_id": "mem_rejected_001",
+      "related_petition_id": "pet_rejected_001",
+      "governance_decision_id": "dec_rejected_001",
+      "governance_approval_ref": "decision:dec_rejected_001",
+      "session_id": "session_rejected_001"
+    },
+    "petition_set": {
+      "petition_id": "pet_rejected_001"
+    },
+    "decision_set": {
+      "decision_id": "dec_rejected_001",
+      "petition_id": "pet_rejected_001",
+      "decision_outcome": "reject",
+      "review_state": "final",
+      "related_collective_id": "mem_rejected_001"
+    }
+  },
+  {
+    "id": "mismatched_candidate_linkage",
+    "expected": "correctly_blocked",
+    "attack_surface": "lineage_attack",
+    "path": "memory/collective/mismatched_candidate_linkage.json",
+    "record_set": {
+      "candidate_id": "candidate_shadow_mismatch"
+    }
+  },
+  {
+    "id": "reused_approved_decision_for_different_record",
+    "expected": "correctly_blocked",
+    "attack_surface": "lineage_attack",
+    "path": "memory/collective/reused_approved_decision_for_different_record.json",
+    "record_set": {
+      "record_id": "mem_reuse_other_001",
+      "collective_record_id": "mem_reuse_other_001",
+      "candidate_id": "mem_reuse_other_001",
+      "related_petition_id": "pet_reuse_other_001",
+      "governance_decision_id": "dec_reuse_other_001",
+      "governance_approval_ref": "decision:dec_reuse_other_001",
+      "session_id": "session_reuse_other_001"
+    },
+    "petition_set": {
+      "petition_id": "pet_reuse_other_001"
+    },
+    "decision_set": {
+      "decision_id": "dec_reuse_other_001",
+      "petition_id": "pet_reuse_other_001",
+      "related_collective_id": "mem_other_record_999"
+    }
+  },
+  {
+    "id": "forged_approval_metadata_without_real_decision",
+    "expected": "correctly_blocked",
+    "attack_surface": "lineage_attack",
+    "path": "memory/collective/forged_approval_metadata_without_real_decision.json",
+    "record_set": {
+      "record_id": "mem_ghost_approval_001",
+      "collective_record_id": "mem_ghost_approval_001",
+      "candidate_id": "mem_ghost_approval_001",
+      "related_petition_id": "pet_ghost_approval_001",
+      "governance_decision_id": "dec_ghost_approval_001",
+      "governance_approval_ref": "decision:dec_ghost_approval_001",
+      "session_id": "session_ghost_approval_001"
+    },
+    "petition_set": {
+      "petition_id": "pet_ghost_approval_001"
+    },
+    "decision_present": false
+  }
+]

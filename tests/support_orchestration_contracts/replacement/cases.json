@@ -1,0 +1,12 @@
+[
+  {
+    "id": "replacement_after_timeout",
+    "expected": "validly_accepted",
+    "scenario": "replacement_after_timeout"
+  },
+  {
+    "id": "replacement_after_inconsistent_output",
+    "expected": "validly_accepted",
+    "scenario": "replacement_after_inconsistent_output"
+  }
+]

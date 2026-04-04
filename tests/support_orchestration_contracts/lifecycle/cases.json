@@ -1,0 +1,7 @@
+[
+  {
+    "id": "expired_helper_reporting_completion",
+    "expected": "correctly_blocked",
+    "scenario": "expired_completion"
+  }
+]

@@ -58,9 +58,15 @@ Output contract:
 - Return exactly one JSON object that matches `hermes_v1_run_schema.md`.
 - `mode` must be the exact operator-selected mode token: `observe`, `anomaly_review`, `repair_check`, or `repetition_review`.
 - `status` must be one of `summary_only`, `no_action`, `petition_recommended`, or `blocked`; do not use synonyms like `ok`, `review`, or `active`.
-- `status` and `recommended_action` must stay paired: `summary_only` and `no_action` use `none` or `defer`; `petition_recommended` uses `operator_review` or `create_dispatch_petition`; `blocked` uses `none` or `defer`.
-- `recommended_action` must be one of `none`, `operator_review`, `create_dispatch_petition`, or `defer`; when no action is recommended, use `none` rather than `null`.
+- `status` and `recommended_action` must stay paired: `summary_only` and `no_action` use `none` or `defer`; `petition_recommended` uses `create_dispatch_petition`; `blocked` uses `none` or `defer`.
+- `recommended_action` must be one of `none`, `create_dispatch_petition`, or `defer`; do not use `operator_review` in this field.
+- If `status` is `petition_recommended`, set `recommended_action` to `create_dispatch_petition` and set `petition_kind` to one of `anomaly_review`, `operator_review`, `repair_request`, or `memory_admission`.
+- If `status` is `summary_only`, `no_action`, or `blocked`, set `petition_kind` to `null`.
 - Include every required top-level field: `run_id`, `mode`, `status`, `summary`, `evidence_refs`, `recommended_action`, `petition_kind`, and `confidence`.
+- `classification` is optional, but if present it must be a JSON object with keys `kind`, `title`, `severity`, `boundedness`, and `affected_system`; never emit `classification` as a string or label.
+- `classification.kind` must be exactly one of `observation`, `anomaly`, or `repair_candidate`; do not invent other kind labels.
+- `classification.severity` must be exactly one of `low`, `medium`, or `high`.
+- `classification.boundedness` must be exactly one of `localized`, `cross_system`, or `ambiguous`.
 - If no classification applies, set `classification` to `null`.
 - Do not rename fields, invent aliases, or add prose before or after the JSON.
 ```
@@ -86,13 +92,14 @@ Task:
 2. Call out bounded anomalies only.
 3. Avoid speculation.
 4. If no bounded issue is present, return no_action.
-5. If you only summarize, use `status=summary_only` with `recommended_action=none` or `defer`. If you recommend `operator_review` or `create_dispatch_petition`, use `status=petition_recommended`.
+5. If you recommend a governed petition, use `status=petition_recommended` and `recommended_action=create_dispatch_petition`; use `petition_kind=anomaly_review` when the issue is review-oriented.
+6. If you only summarize, use `status=summary_only` with `recommended_action=none` or `defer`.
 
 Output:
 - return exactly one JSON object matching the run schema
 - concise operator-facing summary
 - evidence_refs
-- optional classification
+- optional classification object, or `null`
 - recommended_action
 - confidence
 
@@ -119,7 +126,9 @@ Task:
 3. State severity and boundedness.
 4. Prefer operator review when the evidence is weak or the blast radius is unclear.
 5. Recommend a dispatch petition only if the anomaly is sufficiently bounded and the petition is the safest next step.
-6. If you only summarize, use `status=summary_only` with `recommended_action=none` or `defer`. If you recommend `operator_review` or `create_dispatch_petition`, use `status=petition_recommended`.
+6. If you recommend a governed petition, use `status=petition_recommended` and `recommended_action=create_dispatch_petition`; use `petition_kind=operator_review` when the safest next step is review.
+7. If you only summarize, use `status=summary_only` with `recommended_action=none` or `defer`.
+8. If you classify, make `classification.kind` one of `observation`, `anomaly`, or `repair_candidate` and keep the other classification fields inside the allowed enums above.
 
 Output:
 - return exactly one JSON object matching the run schema
@@ -130,7 +139,7 @@ Output:
 - petition_kind if a petition is recommended
 - confidence
 
-Classification expectation: expected.
+Classification expectation: if you classify, use the object form; otherwise set it to `null`.
 ```
 
 ## Repair Check Prompt
@@ -153,7 +162,8 @@ Task:
 3. Do not plan execution steps beyond a governed petition.
 4. If repair is not clearly bounded and reversible, or the cause is not clear enough, stop and recommend no_action/none rather than operator review.
 5. In the summary, focus on repairability, whether the cause is clear enough, and whether the path is reversible or low-risk; avoid promotion, backlog, or unrelated workflow commentary unless it directly affects repairability.
-6. If you only summarize, use `status=summary_only` with `recommended_action=none` or `defer`. If you recommend `operator_review` or `create_dispatch_petition`, use `status=petition_recommended`.
+6. If you recommend a governed petition, use `status=petition_recommended` and `recommended_action=create_dispatch_petition`; use `petition_kind=repair_request` when the issue is repair-oriented and bounded enough to petition.
+7. If you only summarize, use `status=summary_only` with `recommended_action=none` or `defer`.
 
 Output:
 - return exactly one JSON object matching the run schema
@@ -164,7 +174,7 @@ Output:
 - petition_kind if applicable
 - confidence
 
-Classification expectation: expected.
+Classification expectation: if you classify, use the object form; otherwise set it to `null`.
 ```
 
 ## Repetition Review Prompt
@@ -186,8 +196,9 @@ Task:
 3. Recommend operator review if the pattern is not yet bounded enough for a petition.
 4. Recommend a dispatch petition only when repetition is clear, bounded, and reviewable.
 5. If no repeatable pattern is found, keep the summary to 1-2 sentences, name the source or repeat-check examined, include at least one concrete evidence ref when available, and describe what was checked without recommending operator review or any stronger action than the structured fields.
-6. If you only summarize, use `status=summary_only` with `recommended_action=none` or `defer`. If you recommend `operator_review` or `create_dispatch_petition`, use `status=petition_recommended`.
-7. Always emit `evidence_refs` as a list of non-empty strings, never objects.
+6. If you recommend a governed petition, use `status=petition_recommended` and `recommended_action=create_dispatch_petition`; use `petition_kind=anomaly_review` unless the repeat pattern is specifically repair-oriented.
+7. If you only summarize, use `status=summary_only` with `recommended_action=none` or `defer`.
+8. Always emit `evidence_refs` as a list of non-empty strings, never objects.
 
 Output:
 - return exactly one JSON object matching the run schema
@@ -198,7 +209,7 @@ Output:
 - petition_kind if applicable
 - confidence
 
-Classification expectation: expected.
+Classification expectation: if you classify, use the object form; otherwise set it to `null`.
 ```
 
 ## Prompting Notes

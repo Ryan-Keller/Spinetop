@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
   Activity,
@@ -7,6 +7,8 @@ import {
   CircleDot,
   AlertTriangle,
   CheckCircle2,
+  FileText,
+  ClipboardList,
 } from "lucide-react";
 
 type EventStatus = "created" | "promotable" | "success" | "error" | "skipped";
@@ -38,6 +40,133 @@ type HonchoPeer = {
   };
 };
 
+type ReturnAllState = {
+  ok: boolean;
+  enabled: boolean;
+  issued_by: string;
+  issued_at: string;
+  reason: string;
+  allow_custodial_bypass: boolean;
+};
+
+type NannyState = {
+  ok: boolean;
+  temperature: string;
+  burst_score: number;
+  error_score: number;
+  active_agent_warnings: string[];
+  recommended_actions: string[];
+  global_cooldown_seconds: number;
+};
+
+type DispatchCounts = {
+  pending: number;
+  approved: number;
+  deferred: number;
+  rejected: number;
+  total: number;
+};
+
+type SupportHelperItem = {
+  lane: "orchestration" | "retrieval";
+  helper_id: string;
+  helper_type: string;
+  mandate_id: string;
+  task_scope: string;
+  status: string;
+  created_at?: string;
+  expires_at?: string;
+  source_file?: string;
+};
+
+type SupportHelperActivity = {
+  available: boolean;
+  total: number;
+  lane_counts: Record<string, number>;
+  status_counts: Record<string, number>;
+  items: SupportHelperItem[];
+  source_dirs: Record<string, string>;
+};
+
+type MirrorDoorFailure = {
+  category: string;
+  case_id: string;
+  expected: string;
+  actual: string;
+  reason: string;
+  attack_surface: string;
+  source_file: string;
+};
+
+type MirrorDoorTestStatus = {
+  available: boolean;
+  script_path: string;
+  fixture_root: string;
+  fixture_categories: string[];
+  fixture_files: number;
+  total?: number;
+  correctly_blocked?: number;
+  validly_accepted?: number;
+  unexpected_accept?: number;
+  unexpected_error?: number;
+  recent_failures?: MirrorDoorFailure[];
+  generated_at?: string;
+  error?: string;
+};
+
+type HermesRun = {
+  ok?: boolean;
+  source_path?: string;
+  captured_at?: string;
+  run_id?: string;
+  mode?: string;
+  status?: string;
+  summary?: string;
+  evidence_refs?: string[];
+  recommended_action?: string;
+  petition_kind?: string | null;
+  confidence?: number;
+  classification?: {
+    kind?: string;
+    title?: string;
+    severity?: string;
+    boundedness?: string;
+    affected_system?: string;
+  } | null;
+  error?: string;
+};
+
+type ReviewPreview = {
+  draft_path: string;
+  draft: {
+    petition_id: string;
+    mode: string;
+    petition_kind: string;
+    petition_type: string;
+    requested_action: string;
+    confidence: number;
+    source_run_id: string;
+    summary: string;
+    evidence_refs: string[];
+  };
+  submission_allowed: boolean;
+  submission_gate: {
+    status: string;
+    reason: string;
+  };
+  dispatch_preview?: Record<string, unknown>;
+  dispatch_path: string;
+  dispatch_petition_id: string;
+};
+
+type DraftRecord = {
+  ok?: boolean;
+  source_path?: string;
+  draft?: ReviewPreview["draft"];
+  review_preview?: ReviewPreview;
+  error?: string;
+};
+
 type StatusResponse = {
   ok: boolean;
   workspace_id: string;
@@ -46,6 +175,11 @@ type StatusResponse = {
   honcho_sessions: HonchoSession[];
   honcho_peers: HonchoPeer[];
   events_recent: TopologyEvent[];
+  return_all: ReturnAllState;
+  nanny: NannyState;
+  dispatch_counts: DispatchCounts;
+  support_helper_activity?: SupportHelperActivity;
+  mirror_door_test: MirrorDoorTestStatus;
 };
 
 const fallbackData: StatusResponse = {
@@ -109,6 +243,82 @@ const fallbackData: StatusResponse = {
       machine: "Spinetop",
     },
   ],
+  return_all: {
+    ok: true,
+    enabled: false,
+    issued_by: "operator",
+    issued_at: "",
+    reason: "",
+    allow_custodial_bypass: false,
+  },
+  nanny: {
+    ok: true,
+    temperature: "cool",
+    burst_score: 0,
+    error_score: 0,
+    active_agent_warnings: [],
+    recommended_actions: [],
+    global_cooldown_seconds: 0,
+  },
+  dispatch_counts: {
+    pending: 0,
+    approved: 0,
+    deferred: 0,
+    rejected: 0,
+    total: 0,
+  },
+  support_helper_activity: {
+    available: true,
+    total: 2,
+    lane_counts: {
+      orchestration: 1,
+      retrieval: 1,
+    },
+    status_counts: {
+      complete: 2,
+    },
+    source_dirs: {
+      orchestration: "logs/support/orchestration",
+      retrieval: "logs/support/retrieval",
+    },
+    items: [
+      {
+        lane: "orchestration",
+        helper_id: "runner_helper_2b_20260404T062124067861Z_e4b094d9",
+        helper_type: "runner_helper_2b",
+        mandate_id: "stress_mandate_001",
+        task_scope: "stress-test-runner_helper_2b",
+        status: "complete",
+        created_at: "2026-04-04T06:21:24Z",
+        expires_at: "2026-04-04T06:31:24Z",
+        source_file: "logs/support/orchestration/instances/runner_helper_2b_20260404T062124067861Z_e4b094d9.json",
+      },
+      {
+        lane: "retrieval",
+        helper_id: "retrieval_helper_2b_20260404T061154418152Z_8d4f5af9",
+        helper_type: "retrieval_helper_2b",
+        mandate_id: "mandate_demo_001",
+        task_scope: "retrieve references for the retrieval helper contract",
+        status: "complete",
+        created_at: "2026-04-04T06:11:54Z",
+        expires_at: "2026-04-04T06:21:54Z",
+        source_file: "logs/support/retrieval/instances/retrieval_helper_2b_20260404T061154418152Z_8d4f5af9.json",
+      },
+    ],
+  },
+  mirror_door_test: {
+    available: false,
+    script_path: "scripts/test_mirror_door_contracts.py",
+    fixture_root: "tests/mirror_door_contracts",
+    fixture_categories: [],
+    fixture_files: 0,
+    total: 0,
+    correctly_blocked: 0,
+    validly_accepted: 0,
+    unexpected_accept: 0,
+    unexpected_error: 0,
+    recent_failures: [],
+  },
 };
 
 const gateLabels = ["Inbox", "Promotion", "Collective", "Honcho"];
@@ -204,6 +414,35 @@ const styles = {
     gap: 16,
     gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
   } as const,
+  statusStrip: {
+    display: "grid",
+    gap: 12,
+    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+  } as const,
+  statusCard: {
+    borderRadius: 18,
+    border: "1px solid rgba(192,132,252,0.18)",
+    background: "rgba(2,6,23,0.75)",
+    padding: 14,
+  } as const,
+  statusLabel: {
+    fontSize: 11,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase" as const,
+    color: "#94a3b8",
+  } as const,
+  statusValue: {
+    marginTop: 8,
+    fontSize: 22,
+    fontWeight: 600,
+    color: "#f5d0fe",
+  } as const,
+  statusDetail: {
+    marginTop: 6,
+    fontSize: 12,
+    lineHeight: 1.4,
+    color: "#cbd5f5",
+  } as const,
   metricCard: {
     borderRadius: 16,
     border: "1px solid rgba(192,132,252,0.2)",
@@ -215,6 +454,80 @@ const styles = {
     border: "1px solid rgba(192,132,252,0.2)",
     background: "rgba(15,23,42,0.9)",
     padding: 20,
+  } as const,
+  sectionGrid: {
+    display: "grid",
+    gap: 24,
+    gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+  } as const,
+  sectionTitleRow: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+    marginBottom: 16,
+  } as const,
+  sectionTitle: {
+    fontSize: 20,
+    fontWeight: 600,
+    color: "#f5d0fe",
+    margin: 0,
+  } as const,
+  sectionSubtitle: {
+    marginTop: 4,
+    fontSize: 12,
+    color: "#94a3b8",
+    maxWidth: 640,
+  } as const,
+  stack: {
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: 12,
+  } as const,
+  recordCard: {
+    borderRadius: 18,
+    border: "1px solid rgba(192,132,252,0.2)",
+    background: "rgba(2,6,23,0.55)",
+    padding: 16,
+  } as const,
+  recordMetaRow: {
+    display: "flex",
+    flexWrap: "wrap" as const,
+    gap: 8,
+    alignItems: "center",
+    justifyContent: "space-between",
+  } as const,
+  badge: {
+    borderRadius: 999,
+    border: "1px solid rgba(148,163,184,0.3)",
+    background: "rgba(15,23,42,0.9)",
+    padding: "4px 10px",
+    fontSize: 11,
+    color: "#cbd5f5",
+  } as const,
+  badgeGood: {
+    border: "1px solid rgba(52,211,153,0.35)",
+    background: "rgba(6,78,59,0.35)",
+    color: "#bbf7d0",
+  } as const,
+  badgeBad: {
+    border: "1px solid rgba(251,113,133,0.35)",
+    background: "rgba(127,29,29,0.35)",
+    color: "#fecdd3",
+  } as const,
+  mono: {
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+  } as const,
+  subtleText: {
+    fontSize: 12,
+    color: "#94a3b8",
+  } as const,
+  previewBox: {
+    marginTop: 12,
+    borderRadius: 14,
+    border: "1px solid rgba(148,163,184,0.18)",
+    background: "rgba(15,23,42,0.75)",
+    padding: 12,
   } as const,
   gridSplit: {
     display: "grid",
@@ -300,26 +613,77 @@ function statusPill(status: string) {
   return stylesMap[status] ?? "#94a3b8";
 }
 
+function statusStripCard(title: string, value: string, detail: string) {
+  return (
+    <div style={styles.statusCard}>
+      <div style={styles.statusLabel}>{title}</div>
+      <div style={styles.statusValue}>{value}</div>
+      <div style={styles.statusDetail}>{detail}</div>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const [data, setData] = useState<StatusResponse>(fallbackData);
+  const [hermesRuns, setHermesRuns] = useState<HermesRun[]>([]);
+  const [petitionDrafts, setPetitionDrafts] = useState<DraftRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [lastRefresh, setLastRefresh] = useState("demo data");
   const [errorText, setErrorText] = useState("");
   const [selectedRecord, setSelectedRecord] = useState<string | null>(null);
 
+  const loadJson = async <T,>(url: string): Promise<T> => {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return (await res.json()) as T;
+  };
+
   const load = async () => {
     setLoading(true);
     try {
-      const res = await fetch("http://127.0.0.1:5051/api/status");
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = (await res.json()) as StatusResponse;
-      setData(json);
-      setErrorText("");
+      const [statusResult, runsResult, draftsResult] = await Promise.all([
+        loadJson<StatusResponse>("http://127.0.0.1:5051/api/status")
+          .then((value) => ({ ok: true as const, value }))
+          .catch((error) => ({ ok: false as const, error })),
+        loadJson<{ ok: boolean; items: HermesRun[] }>("http://127.0.0.1:5051/api/hermes/runs?limit=6")
+          .then((value) => ({ ok: true as const, value }))
+          .catch((error) => ({ ok: false as const, error })),
+        loadJson<{ ok: boolean; items: DraftRecord[] }>("http://127.0.0.1:5051/api/petition-drafts?limit=6")
+          .then((value) => ({ ok: true as const, value }))
+          .catch((error) => ({ ok: false as const, error })),
+      ]);
+
+      const errors: string[] = [];
+
+      if (statusResult.ok) {
+        setData(statusResult.value);
+      } else {
+        setData(fallbackData);
+        errors.push(`status: ${statusResult.error instanceof Error ? statusResult.error.message : "request failed"}`);
+      }
+
+      if (runsResult.ok) {
+        setHermesRuns(Array.isArray(runsResult.value.items) ? runsResult.value.items : []);
+      } else {
+        setHermesRuns([]);
+        errors.push(`hermes runs: ${runsResult.error instanceof Error ? runsResult.error.message : "request failed"}`);
+      }
+
+      if (draftsResult.ok) {
+        setPetitionDrafts(Array.isArray(draftsResult.value.items) ? draftsResult.value.items : []);
+      } else {
+        setPetitionDrafts([]);
+        errors.push(`drafts: ${draftsResult.error instanceof Error ? draftsResult.error.message : "request failed"}`);
+      }
+
+      setErrorText(errors.length ? `Using fallback data - ${errors.join(" | ")}` : "");
       setLastRefresh(new Date().toLocaleTimeString());
     } catch (err) {
       setData(fallbackData);
-      setErrorText(`Using fallback data � ${err instanceof Error ? err.message : "request failed"}`);
+      setErrorText(`Using fallback data - ${err instanceof Error ? err.message : "request failed"}`);
       setLastRefresh("fallback mode");
+      setHermesRuns([]);
+      setPetitionDrafts([]);
     } finally {
       setLoading(false);
     }
@@ -360,6 +724,25 @@ export default function Dashboard() {
     ];
   }, [data.events_recent]);
 
+  const returnAll = data.return_all ?? fallbackData.return_all;
+  const nanny = data.nanny ?? fallbackData.nanny;
+  const dispatchCounts = data.dispatch_counts ?? fallbackData.dispatch_counts;
+  const supportActivity: SupportHelperActivity = data.support_helper_activity ?? fallbackData.support_helper_activity ?? {
+    available: false,
+    total: 0,
+    lane_counts: {},
+    status_counts: {},
+    items: [],
+    source_dirs: {},
+  };
+  const mirrorDoorTest: MirrorDoorTestStatus = data.mirror_door_test ?? fallbackData.mirror_door_test ?? {
+    available: false,
+    script_path: "",
+    fixture_root: "",
+    fixture_categories: [],
+    fixture_files: 0,
+  };
+
   return (
     <div style={styles.page}>
       <div style={styles.container}>
@@ -392,12 +775,44 @@ export default function Dashboard() {
           {errorText ? <div style={styles.alert}>{errorText}</div> : null}
         </div>
 
+        <div style={styles.panel}>
+          <div style={{ marginBottom: 14, fontSize: 20, fontWeight: 600, color: "#f5d0fe" }}>
+            Stable system strip
+          </div>
+          <div style={styles.statusStrip}>
+            {statusStripCard(
+              "Return All",
+              returnAll.enabled ? "ENABLED" : "off",
+              returnAll.enabled
+                ? `issued by ${returnAll.issued_by || "operator"}${returnAll.issued_at ? ` at ${returnAll.issued_at}` : ""}`
+                : "No active return-all gate is recorded."
+            )}
+            {statusStripCard(
+              "Nanny",
+              `${nanny.temperature || "unknown"} / cooldown ${nanny.global_cooldown_seconds ?? 0}s`,
+              `burst ${nanny.burst_score ?? 0}, error ${nanny.error_score ?? 0}`
+            )}
+            {statusStripCard(
+              "Dispatch",
+              `${dispatchCounts.pending ?? 0} pending`,
+              `${dispatchCounts.approved ?? 0} approved, ${dispatchCounts.deferred ?? 0} deferred, ${dispatchCounts.rejected ?? 0} rejected, total ${dispatchCounts.total ?? 0}`
+            )}
+            {statusStripCard(
+              "Mirror-door test",
+              mirrorDoorTest.available ? `${mirrorDoorTest.total ?? 0} cases` : "unavailable",
+              `${mirrorDoorTest.correctly_blocked ?? 0} blocked, ${mirrorDoorTest.validly_accepted ?? 0} accepted, ${mirrorDoorTest.unexpected_accept ?? 0} unexpected accept`
+            )}
+          </div>
+        </div>
+
         <div style={styles.metrics}>
           {metricCard("Events", (data.events_recent || []).length, "live flow", Activity)}
-          {metricCard("Sessions", data.honcho_sessions_total ?? "�", "active memory links", Database)}
+          {metricCard("Sessions", data.honcho_sessions_total ?? "ï¿½", "active memory links", Database)}
+          {metricCard("Hermes Runs", hermesRuns.filter((item) => item.ok).length, "saved run JSON artifacts", FileText)}
+          {metricCard("Drafts", petitionDrafts.filter((item) => item.ok).length, "memory/drafts records", ClipboardList)}
           {metricCard(
             "Packet Stage",
-            selectedPacket ? `${selectedPacket.stage + 1}/4` : "�",
+            selectedPacket ? `${selectedPacket.stage + 1}/4` : "ï¿½",
             selectedPacket?.recordName || "no packet selected",
             CircleDot
           )}
@@ -602,21 +1017,14 @@ export default function Dashboard() {
                 }}
               >
                 {(data.events_recent || []).slice(0, 16).map((event, index) => {
-                  const stage = event.event_type in { hermes_write: 1, watcher_scan: 1, promote: 1, approve: 1, honcho_bridge: 1 }
-                    ? {
-                        hermes_write: 0,
-                        watcher_scan: 1,
-                        promote: 1,
-                        approve: 2,
-                        honcho_bridge: 3,
-                      }[event.event_type as keyof typeof {
-                        hermes_write: 0,
-                        watcher_scan: 1,
-                        promote: 1,
-                        approve: 2,
-                        honcho_bridge: 3,
-                      }]
-                    : 0;
+                  const stageMap = {
+                    hermes_write: 0,
+                    watcher_scan: 1,
+                    promote: 1,
+                    approve: 2,
+                    honcho_bridge: 3,
+                  } as const;
+                  const stage = stageMap[event.event_type as keyof typeof stageMap] ?? 0;
 
                   const xPositions = [12, 38, 62, 86];
                   const y = 18 + (index % 6) * 32;
@@ -651,7 +1059,7 @@ export default function Dashboard() {
                 })}
 
                 <div style={{ position: "absolute", left: 0, right: 0, bottom: 12, textAlign: "center", fontSize: 12, color: "#94a3b8" }}>
-                  Hermes write spawns left � watcher pulls inward � bridge gets vacuumed into the portal � failures flicker
+                  Hermes write spawns left ï¿½ watcher pulls inward ï¿½ bridge gets vacuumed into the portal ï¿½ failures flicker
                 </div>
               </div>
             </div>
@@ -729,7 +1137,331 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
+
+        <div style={styles.sectionGrid}>
+          <div style={styles.panel}>
+            <div style={styles.sectionTitleRow}>
+              <div>
+                <h2 style={styles.sectionTitle}>Recent Hermes Runs</h2>
+                <div style={styles.sectionSubtitle}>
+                  Read-only run JSON artifacts from <span style={styles.mono}>logs/hermes/runs/</span>. This surface never executes Hermes and only mirrors saved run records.
+                </div>
+              </div>
+              <span style={{ ...styles.badge, ...styles.badgeWarn }}>preview-only source</span>
+            </div>
+
+            <div style={styles.stack}>
+              {hermesRuns.length ? (
+                hermesRuns.map((run, index) => {
+                  const tone =
+                    run.error || !run.ok
+                      ? styles.badgeBad
+                      : run.status === "petition_recommended"
+                        ? styles.badgeWarn
+                        : styles.badgeGood;
+
+                  return (
+                    <div key={`${run.run_id || run.source_path || "hermes-run"}-${index}`} style={styles.recordCard}>
+                      <div style={styles.recordMetaRow}>
+                        <div>
+                          <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>
+                            {run.run_id || "unknown run"}
+                          </div>
+                          <div style={styles.subtleText}>
+                            {run.source_path || "unknown source"} {run.captured_at ? ` - ${run.captured_at}` : ""}
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                          <span style={{ ...styles.badge, ...tone }}>{run.status || (run.error ? "error" : "unknown")}</span>
+                          <span style={{ ...styles.badge, ...styles.badgeGood }}>{run.mode || "unknown mode"}</span>
+                          <span style={styles.badge}>confidence {(run.confidence ?? 0).toFixed(2)}</span>
+                        </div>
+                      </div>
+
+                      <div style={{ marginTop: 10, color: "#cbd5f5", fontSize: 13, lineHeight: 1.5 }}>
+                        {run.summary || "No summary available."}
+                      </div>
+
+                      <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 8 }}>
+                        {(run.evidence_refs || []).length ? (
+                          run.evidence_refs!.map((ref, refIndex) => (
+                            <span key={`${run.run_id || "hermes"}-ref-${refIndex}`} style={styles.badge}>
+                              {ref}
+                            </span>
+                          ))
+                        ) : (
+                          <span style={styles.subtleText}>No evidence refs recorded.</span>
+                        )}
+                      </div>
+
+                        <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Recommended action</div>
+                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 600, color: "#f5d0fe" }}>
+                          {run.recommended_action || "-"}
+                        </div>
+                        <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 8 }}>
+                          {run.petition_kind ? (
+                            <span style={styles.badge}>
+                              petition_kind: {run.petition_kind}
+                            </span>
+                          ) : null}
+                          {run.classification?.title ? (
+                            <span style={styles.badge}>
+                              classification: {run.classification.title}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      {run.error ? (
+                        <div style={{ ...styles.previewBox, borderColor: "rgba(251,113,133,0.3)", color: "#fecdd3" }}>
+                          {run.error}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })
+              ) : (
+                <div style={styles.recordCard}>
+                  No Hermes run JSON artifacts were found in <span style={styles.mono}>logs/hermes/runs/</span> yet.
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div style={styles.panel}>
+            <div style={styles.sectionTitleRow}>
+              <div>
+                <h2 style={styles.sectionTitle}>Petition Drafts</h2>
+                <div style={styles.sectionSubtitle}>
+                  Read-only draft records from <span style={styles.mono}>memory/drafts/</span>, with a preview-only review view built from the existing review helper logic.
+                </div>
+              </div>
+              <span style={{ ...styles.badge, ...styles.badgeGood }}>preview only</span>
+            </div>
+
+            <div style={styles.stack}>
+              {petitionDrafts.length ? (
+                petitionDrafts.map((item, index) => {
+                  if (!item.ok || !item.draft || !item.review_preview) {
+                    return (
+                      <div key={`${item.source_path || "draft-error"}-${index}`} style={styles.recordCard}>
+                        <div style={{ fontSize: 16, fontWeight: 600, color: "#fecdd3" }}>Draft load error</div>
+                        <div style={{ marginTop: 8, ...styles.subtleText }}>{item.source_path || "unknown source"}</div>
+                        <div style={{ marginTop: 10, color: "#fecdd3", fontSize: 13, lineHeight: 1.5 }}>
+                          {item.error || "Unknown draft error"}
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  const draft = item.draft;
+                  const preview = item.review_preview;
+                  const allowed = preview.submission_allowed;
+                  const gateTone = allowed ? styles.badgeGood : styles.badgeBad;
+
+                  return (
+                    <div key={`${draft.petition_id}-${index}`} style={styles.recordCard}>
+                      <div style={styles.recordMetaRow}>
+                        <div>
+                          <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>
+                            {draft.petition_id}
+                          </div>
+                          <div style={styles.subtleText}>
+                            {item.source_path || "unknown source"} {preview.draft_path ? ` - ${preview.draft_path}` : ""}
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                          <span style={{ ...styles.badge, ...styles.badgeGood }}>{draft.mode}</span>
+                          <span style={{ ...styles.badge, ...styles.badgeWarn }}>
+                            {draft.petition_kind} / {draft.petition_type}
+                          </span>
+                          <span style={styles.badge}>confidence {draft.confidence.toFixed(2)}</span>
+                        </div>
+                      </div>
+
+                      <div style={{ marginTop: 10, color: "#cbd5f5", fontSize: 13, lineHeight: 1.5 }}>
+                        {draft.summary}
+                      </div>
+
+                      <div style={{ marginTop: 12, display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))" }}>
+                        <div>
+                          <div style={styles.subtleText}>requested action</div>
+                          <div style={{ marginTop: 4, color: "#f5d0fe", fontSize: 13, fontWeight: 600 }}>
+                            {draft.requested_action}
+                          </div>
+                        </div>
+                        <div>
+                          <div style={styles.subtleText}>source run ID</div>
+                          <div style={{ marginTop: 4, color: "#f5d0fe", fontSize: 13, fontWeight: 600, ...styles.mono }}>
+                            {draft.source_run_id}
+                          </div>
+                        </div>
+                        <div>
+                          <div style={styles.subtleText}>review gate</div>
+                          <div style={{ marginTop: 4, color: allowed ? "#bbf7d0" : "#fecdd3", fontSize: 13, fontWeight: 600 }}>
+                            {allowed ? "would submit" : "blocked"}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={styles.previewBox}>
+                        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+                          <div>
+                            <div style={styles.subtleText}>Preview-only would submit</div>
+                            <div style={{ marginTop: 4, fontSize: 14, fontWeight: 600, color: "#e2e8f0" }}>
+                              {preview.submission_gate.status}
+                            </div>
+                          </div>
+                          <span style={{ ...styles.badge, ...gateTone }}>{allowed ? "allowed" : "blocked"}</span>
+                        </div>
+                        <div style={{ marginTop: 8, color: "#cbd5f5", fontSize: 13, lineHeight: 1.5 }}>
+                          {preview.submission_gate.reason}
+                        </div>
+                        <div style={{ marginTop: 8, ...styles.subtleText }}>
+                          dispatch path: <span style={styles.mono}>{preview.dispatch_path}</span>
+                        </div>
+                        <div style={{ marginTop: 4, ...styles.subtleText }}>
+                          dispatch petition ID: <span style={styles.mono}>{preview.dispatch_petition_id}</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <div style={styles.recordCard}>
+                  No petition draft JSON files were found in <span style={styles.mono}>memory/drafts/</span> yet.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div style={styles.sectionGrid}>
+          <div style={styles.panel}>
+            <div style={styles.sectionTitleRow}>
+              <div>
+                <h2 style={styles.sectionTitle}>Support helper activity</h2>
+                <div style={styles.sectionSubtitle}>
+                  Read-only helper instances from `logs/support/orchestration/instances/` and `logs/support/retrieval/instances/`.
+                </div>
+              </div>
+              <span style={{ ...styles.badge, ...styles.badgeGood }}>
+                {supportActivity.available ? `${supportActivity.total} helpers` : "no helpers"}
+              </span>
+            </div>
+
+            <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", marginBottom: 16 }}>
+              {Object.entries(supportActivity.lane_counts || {}).map(([lane, count]) => (
+                <div key={lane} style={{ ...styles.recordCard, padding: 12 }}>
+                  <div style={styles.subtleText}>{lane}</div>
+                  <div style={{ marginTop: 6, fontSize: 24, fontWeight: 600, color: "#f5d0fe" }}>{count}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={styles.stack}>
+              {(supportActivity.items || []).length ? (
+                supportActivity.items.map((item) => {
+                  const expiresText = item.expires_at ? `expires ${item.expires_at}` : "expires unavailable";
+                  return (
+                    <div key={`${item.lane}-${item.helper_id}`} style={styles.recordCard}>
+                      <div style={styles.recordMetaRow}>
+                        <div>
+                          <div style={{ fontSize: 14, fontWeight: 600, color: "#f5d0fe" }}>
+                            {item.helper_type}
+                          </div>
+                          <div style={{ marginTop: 4, fontSize: 12, color: "#94a3b8" }}>
+                            {item.helper_id}
+                          </div>
+                        </div>
+                        <span
+                          style={{
+                            ...styles.badge,
+                            ...(item.status === "complete" ? styles.badgeGood : item.status === "blocked" ? styles.badgeBad : styles.badgeWarn),
+                          }}
+                        >
+                          {item.status}
+                        </span>
+                      </div>
+                      <div style={{ marginTop: 10, fontSize: 12, color: "#cbd5f5" }}>
+                        mandate <span style={styles.mono}>{item.mandate_id || "unknown"}</span>
+                      </div>
+                      <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5" }}>
+                        task <span style={styles.mono}>{item.task_scope || "unknown"}</span>
+                      </div>
+                      <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 12, fontSize: 11, color: "#94a3b8" }}>
+                        <span>lane {item.lane}</span>
+                        <span>{item.created_at ? `created ${item.created_at}` : "created unavailable"}</span>
+                        <span>{expiresText}</span>
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <div style={styles.recordCard}>No support helper instances found in the logs yet.</div>
+              )}
+            </div>
+          </div>
+
+          <div style={styles.panel}>
+            <div style={styles.sectionTitleRow}>
+              <div>
+                <h2 style={styles.sectionTitle}>Mirror-door test summary</h2>
+                <div style={styles.sectionSubtitle}>
+                  Read-only summary from `scripts/test_mirror_door_contracts.py` and `tests/mirror_door_contracts/`.
+                </div>
+              </div>
+              <span style={{ ...styles.badge, ...(mirrorDoorTest.available ? styles.badgeGood : styles.badgeWarn) }}>
+                {mirrorDoorTest.available ? "available" : "unavailable"}
+              </span>
+            </div>
+
+            <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", marginBottom: 16 }}>
+              {[
+                ["total", mirrorDoorTest.total ?? 0],
+                ["correctly_blocked", mirrorDoorTest.correctly_blocked ?? 0],
+                ["validly_accepted", mirrorDoorTest.validly_accepted ?? 0],
+                ["unexpected_accept", mirrorDoorTest.unexpected_accept ?? 0],
+                ["unexpected_error", mirrorDoorTest.unexpected_error ?? 0],
+              ].map(([label, value]) => (
+                <div key={label} style={{ ...styles.recordCard, padding: 12 }}>
+                  <div style={styles.subtleText}>{label}</div>
+                  <div style={{ marginTop: 6, fontSize: 24, fontWeight: 600, color: "#f5d0fe" }}>{value as number}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={styles.stack}>
+              {(mirrorDoorTest.recent_failures || []).length ? (
+                mirrorDoorTest.recent_failures!.map((failure) => (
+                  <div key={`${failure.category}-${failure.case_id}`} style={styles.recordCard}>
+                    <div style={styles.recordMetaRow}>
+                      <div>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: "#f5d0fe" }}>
+                          {failure.case_id}
+                        </div>
+                        <div style={{ marginTop: 4, fontSize: 12, color: "#94a3b8" }}>{failure.category}</div>
+                      </div>
+                      <span style={{ ...styles.badge, ...styles.badgeBad }}>{failure.actual}</span>
+                    </div>
+                    <div style={{ marginTop: 8, fontSize: 12, color: "#cbd5f5" }}>{failure.reason}</div>
+                    <div style={{ marginTop: 6, fontSize: 11, color: "#94a3b8" }}>
+                      expected {failure.expected} â€¢ surface {failure.attack_surface}
+                    </div>
+                    <div style={{ marginTop: 4, fontSize: 11, color: "#64748b", wordBreak: "break-all" }}>
+                      {failure.source_file}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div style={styles.recordCard}>No recent failures recorded.</div>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
 }
+

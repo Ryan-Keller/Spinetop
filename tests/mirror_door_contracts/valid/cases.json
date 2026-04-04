@@ -1,0 +1,8 @@
+[
+  {
+    "id": "accepted_full_lineage",
+    "expected": "validly_accepted",
+    "attack_surface": "direct_bridge_invocation",
+    "path": "memory/collective/accepted_full_lineage.json"
+  }
+]

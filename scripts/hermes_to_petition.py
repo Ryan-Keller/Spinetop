@@ -87,11 +87,13 @@ def build_draft(run: dict[str, Any]) -> dict[str, Any] | None:
     if action == "none":
         return None
 
+    petition_kind = derive_petition_type(run)
     draft: dict[str, Any] = {
         "petition_id": build_petition_id(run),
         "created_by": CREATED_BY,
         "mode": run["mode"],
-        "petition_type": derive_petition_type(run),
+        "petition_kind": petition_kind,
+        "petition_type": petition_kind,
         "status": "draft",
         "summary": str(run["summary"]).strip(),
         "evidence_refs": [str(item).strip() for item in run["evidence_refs"]],

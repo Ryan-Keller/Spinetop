@@ -6,9 +6,15 @@ import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from repo_paths import repo_root
+from support_validation import (
+    validate_support_event_record,
+    validate_support_request,
+    require_object,
+    require_string,
+)
 
 
 ROOT = repo_root()
@@ -65,9 +71,17 @@ HELPER_CATALOG: dict[str, dict[str, Any]] = {
         ],
         "allowed_write_scope": [
             "logs/support/orchestration/",
-            "logs/support/runner/",
+            "logs/support/runs/",
             "memory/drafts/",
         ],
+        "required_request_fields": [
+            "task_plan",
+        ],
+        "task_plan": {
+            "type": "list[string]",
+            "min_items": 1,
+            "max_items": 12,
+        },
         "default_ttl_seconds": 1200,
         "expected_outputs": [
             "support log receipt",
@@ -145,12 +159,6 @@ def _path_hint(path: Path | None) -> str:
     return f" ({path})" if path else ""
 
 
-def _obj(data: Any, *, path: Path | None = None) -> dict[str, Any]:
-    if not isinstance(data, dict):
-        raise SupportOrchestrationError(f"JSON root must be an object{_path_hint(path)}")
-    return dict(data)
-
-
 def _load_json(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8-sig"))
@@ -171,122 +179,11 @@ def _append_jsonl(path: Path, data: dict[str, Any]) -> None:
         fh.write(json.dumps(data, ensure_ascii=False) + "\n")
 
 
-def _s(data: dict[str, Any], field: str, *, path: Path | None = None, allow_empty: bool = False) -> str:
-    value = data.get(field)
-    if not isinstance(value, str):
-        raise SupportOrchestrationError(f"Field '{field}' must be a string{_path_hint(path)}")
-    text = value.strip()
-    if not text and not allow_empty:
-        raise SupportOrchestrationError(f"Field '{field}' must not be empty{_path_hint(path)}")
-    return text
-
-
-def _i(data: dict[str, Any], field: str, *, path: Path | None = None, min_value: int | None = None) -> int:
-    value = data.get(field)
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise SupportOrchestrationError(f"Field '{field}' must be an integer{_path_hint(path)}")
-    if min_value is not None and value < min_value:
-        raise SupportOrchestrationError(f"Field '{field}' must be >= {min_value}{_path_hint(path)}")
-    return value
-
-
-def _list_of_strings(value: Any, *, field: str, path: Path | None = None) -> list[str]:
-    if isinstance(value, str):
-        items = [value]
-    elif isinstance(value, list):
-        items = value
-    else:
-        raise SupportOrchestrationError(f"Field '{field}' must be a string or list of strings{_path_hint(path)}")
-
-    out: list[str] = []
-    for idx, item in enumerate(items):
-        if not isinstance(item, str):
-            raise SupportOrchestrationError(f"Field '{field}' item {idx} must be a string{_path_hint(path)}")
-        text = item.strip().replace("\\", "/")
-        if not text:
-            raise SupportOrchestrationError(f"Field '{field}' item {idx} must not be empty{_path_hint(path)}")
-        out.append(text)
-    return out
-
-
-def _scope_to_path(scope: str) -> Path:
-    candidate = Path(scope)
-    if candidate.is_absolute():
-        return candidate.resolve()
-    return (ROOT / candidate).resolve()
-
-
-def _is_under(path: Path, root: Path) -> bool:
-    path = path.resolve()
-    root = root.resolve()
-    return path == root or root in path.parents
-
-
-def _scope_to_ref(scope: str) -> str:
-    return Path(scope).as_posix().rstrip("/")
-
-
 def _path_to_ref(path: Path) -> str:
     try:
         return path.resolve().relative_to(ROOT).as_posix()
     except Exception:
         return path.resolve().as_posix()
-
-
-def _validate_lane(value: str, *, field: str, write_scope: list[str], path: Path | None = None) -> str:
-    lane = value.strip().replace("\\", "/")
-    if not lane:
-        raise SupportOrchestrationError(f"Field '{field}' must not be empty{_path_hint(path)}")
-    if not (lane.startswith("logs/support/") or lane.startswith("memory/drafts/")):
-        raise SupportOrchestrationError(
-            f"Field '{field}' must stay inside logs/support/or memory/drafts/{_path_hint(path)}"
-        )
-    if lane not in write_scope:
-        raise SupportOrchestrationError(f"Field '{field}' must appear in write_scope{_path_hint(path)}")
-    return lane
-
-
-def _validate_support_ref(ref: str, *, field: str, path: Path | None = None) -> str:
-    normalized = ref.strip().replace("\\", "/")
-    if not normalized:
-        raise SupportOrchestrationError(f"Field '{field}' must not be empty{_path_hint(path)}")
-    if not (normalized.startswith("logs/support/") or normalized.startswith("memory/drafts/")):
-        raise SupportOrchestrationError(
-            f"Field '{field}' must stay inside logs/support/ or memory/drafts/{_path_hint(path)}"
-        )
-    return normalized
-
-
-def _normalize_write_scope(
-    value: Any,
-    *,
-    helper_type: str,
-    path: Path | None = None,
-) -> list[str]:
-    items = _list_of_strings(value, field="write_scope", path=path)
-    allowed = set(HELPER_CATALOG[helper_type]["allowed_write_scope"])
-    normalized: list[str] = []
-    for idx, item in enumerate(items):
-        scope_path = _scope_to_path(item)
-        if not _is_under(scope_path, ROOT):
-            raise SupportOrchestrationError(
-                f"Field 'write_scope' item {idx} must stay inside the repository root{_path_hint(path)}"
-            )
-        if not (item.startswith("logs/support/") or item.startswith("memory/drafts/")):
-            raise SupportOrchestrationError(
-                f"Field 'write_scope' item {idx} must be in a support lane or memory/drafts/{_path_hint(path)}"
-            )
-        if item not in allowed and not item.startswith("memory/drafts/"):
-            raise SupportOrchestrationError(
-                f"Field 'write_scope' item {idx} is not allowed for {helper_type}{_path_hint(path)}"
-            )
-        normalized.append(item)
-
-    if "logs/support/orchestration/" not in normalized:
-        raise SupportOrchestrationError(
-            f"Field 'write_scope' must include logs/support/orchestration/{_path_hint(path)}"
-        )
-    return normalized
 
 
 def _build_helper_id(*, helper_type: str, requested_by: str, mandate_id: str, task_scope: str, ttl_seconds: int) -> str:
@@ -304,36 +201,46 @@ def _helper_paths(helper_id: str) -> tuple[Path, Path, Path]:
 
 
 def _validate_request(data: Any, *, path: Path | None = None) -> dict[str, Any]:
-    record = _obj(data, path=path)
-    request_type = _s(record, "request_type", path=path)
+    record = require_object(data, path=path, error_cls=SupportOrchestrationError)
+    request_type = require_string(record, "request_type", path=path, error_cls=SupportOrchestrationError)
     if request_type not in ALLOWED_REQUEST_TYPES:
         raise SupportOrchestrationError(f"request_type must be one of {sorted(ALLOWED_REQUEST_TYPES)}{_path_hint(path)}")
 
-    helper_type = _s(record, "helper_type", path=path)
+    helper_type = require_string(record, "helper_type", path=path, error_cls=SupportOrchestrationError)
     if helper_type not in HELPER_CATALOG:
         raise SupportOrchestrationError(f"helper_type must be one of {sorted(HELPER_CATALOG)}{_path_hint(path)}")
 
-    requested_by = _s(record, "requested_by", path=path)
-    mandate_id = _s(record, "mandate_id", path=path)
-    task_scope = _s(record, "task_scope", path=path)
-    ttl_seconds = _i(record, "ttl_seconds", path=path, min_value=1)
-    return_lane = _s(record, "return_lane", path=path)
-    write_scope = _normalize_write_scope(record.get("write_scope"), helper_type=helper_type, path=path)
-    return_lane = _validate_lane(return_lane, field="return_lane", write_scope=write_scope, path=path)
+    normalized = validate_support_request(
+        record,
+        allowed_helper_types=HELPER_CATALOG.keys(),
+        allowed_write_scope=HELPER_CATALOG[helper_type]["allowed_write_scope"],
+        required_write_scope=["logs/support/orchestration/"],
+        path=path,
+        error_cls=SupportOrchestrationError,
+    )
 
-    normalized = dict(record)
     normalized["request_type"] = request_type
-    normalized["helper_type"] = helper_type
-    normalized["requested_by"] = requested_by
-    normalized["mandate_id"] = mandate_id
-    normalized["task_scope"] = task_scope
-    normalized["ttl_seconds"] = ttl_seconds
-    normalized["return_lane"] = return_lane
-    normalized["write_scope"] = write_scope
+
+    if helper_type == "runner_helper_2b":
+        task_plan = record.get("task_plan")
+        if not isinstance(task_plan, list) or not task_plan:
+            raise SupportOrchestrationError(f"Field 'task_plan' must be a non-empty list{_path_hint(path)}")
+        normalized_task_plan: list[str] = []
+        for idx, item in enumerate(task_plan):
+            if not isinstance(item, str):
+                raise SupportOrchestrationError(f"Field 'task_plan' item {idx} must be a string{_path_hint(path)}")
+            text = item.strip()
+            if not text:
+                raise SupportOrchestrationError(f"Field 'task_plan' item {idx} must not be empty{_path_hint(path)}")
+            normalized_task_plan.append(text)
+        if len(normalized_task_plan) > 12:
+            raise SupportOrchestrationError(f"Field 'task_plan' must contain at most 12 steps{_path_hint(path)}")
+        normalized["task_plan"] = normalized_task_plan
+        normalized["task_plan_count"] = len(normalized_task_plan)
 
     if request_type == "replace":
-        replaced_helper_id = _s(record, "replaces_helper_id", path=path)
-        replacement_reason = _s(record, "replacement_reason", path=path)
+        replaced_helper_id = require_string(record, "replaces_helper_id", path=path, error_cls=SupportOrchestrationError)
+        replacement_reason = require_string(record, "replacement_reason", path=path, error_cls=SupportOrchestrationError)
         if replacement_reason not in ALLOWED_REPLACEMENT_REASONS:
             raise SupportOrchestrationError(
                 f"replacement_reason must be one of {sorted(ALLOWED_REPLACEMENT_REASONS)}{_path_hint(path)}"
@@ -369,6 +276,8 @@ def _build_instance(request: dict[str, Any], *, status: str = "active", replaced
         "return_lane": request["return_lane"],
         "replaced_helper_id": replaced_helper_id,
         "replacement_reason": request.get("replacement_reason", ""),
+        "task_plan": list(request.get("task_plan") or []),
+        "task_plan_count": int(request.get("task_plan_count") or len(request.get("task_plan") or [])),
     }
 
 
@@ -411,8 +320,16 @@ def _event_record(
     }
 
 
-def _write_event(event: dict[str, Any]) -> None:
-    _append_jsonl(EVENT_LOG, event)
+def _write_event(event: dict[str, Any]) -> dict[str, Any]:
+    normalized = validate_support_event_record(
+        event,
+        allowed_helper_types=HELPER_CATALOG.keys(),
+        allowed_write_scope=HELPER_CATALOG[event["helper_type"]]["allowed_write_scope"],
+        required_write_scope=["logs/support/orchestration/"],
+        error_cls=SupportOrchestrationError,
+    )
+    _append_jsonl(EVENT_LOG, normalized)
+    return normalized
 
 
 def _write_request_receipt(helper: dict[str, Any], request_ref: str, *, event_type: str) -> Path:
@@ -432,6 +349,7 @@ def _write_request_receipt(helper: dict[str, Any], request_ref: str, *, event_ty
         "request_ref": request_ref,
         "event_type": event_type,
         "replacement_reason": helper.get("replacement_reason", ""),
+        "task_plan": list(helper.get("task_plan") or []),
     }
     _write_json(receipt_path, receipt)
     return receipt_path
@@ -441,7 +359,7 @@ def _load_instance(helper_id: str) -> dict[str, Any]:
     instance_path, _, _ = _helper_paths(helper_id)
     if not instance_path.exists():
         raise SupportOrchestrationError(f"Missing helper instance: {instance_path}")
-    instance = _obj(_load_json(instance_path), path=instance_path)
+    instance = require_object(_load_json(instance_path), path=instance_path, error_cls=SupportOrchestrationError)
     if instance.get("helper_id") != helper_id:
         raise SupportOrchestrationError(f"Helper record mismatch for {helper_id}")
     return instance
@@ -520,25 +438,22 @@ def mark_status(helper_id: str, status: str, *, note: str = "", outputs_refs: li
         raise SupportOrchestrationError(
             f"Helper {helper_id} cannot self-transition to replaced; use replacement flow"
         )
-    validated_outputs = [
-        _validate_support_ref(ref, field="output_ref")
-        for ref in (outputs_refs or [])
-    ]
     helper["status"] = status
     helper["updated_at"] = utc_now_iso()
     if note:
         helper["note"] = note
     _persist_instance(helper)
     request_ref = _path_to_ref(_helper_paths(helper_id)[0])
-    _write_event(
+    normalized_event = _write_event(
         _event_record(
             event_type=status,
             helper=helper,
             request_ref=request_ref,
-            outputs_refs=validated_outputs,
+            outputs_refs=outputs_refs,
             note=note,
         )
     )
+    validated_outputs = normalized_event.get("outputs_refs", [])
     _, receipt_path, _ = _helper_paths(helper_id)
     receipt = {
         "helper_id": helper["helper_id"],
@@ -556,7 +471,7 @@ def sweep_expired() -> list[dict[str, Any]]:
     now = utc_now()
     expired: list[dict[str, Any]] = []
     for path in _iter_instance_paths():
-        helper = _obj(_load_json(path), path=path)
+        helper = require_object(_load_json(path), path=path, error_cls=SupportOrchestrationError)
         if helper.get("helper_type") not in HELPER_CATALOG:
             continue
         if helper.get("status") != "active":

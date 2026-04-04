@@ -1,0 +1,17 @@
+{
+  "petition_id": "draft_20260404T184937Z_c3c34b",
+  "created_by": "hermes_spinetop_v1",
+  "mode": "repetition_review",
+  "petition_kind": "operator_review",
+  "petition_type": "operator_review",
+  "status": "draft",
+  "summary": "Repeated honcho_bridge events (5 occurrences) and dispatch_petition events (3 occurrences) observed. No clear bounded anomaly detected yet.",
+  "evidence_refs": [
+    "recent_governance_events"
+  ],
+  "requested_action": "defer",
+  "confidence": 0.8,
+  "source_run_id": "hermes-20260404T041015Z-cd7b",
+  "notes": "Generated from Hermes output. Not submitted.",
+  "low_priority": true
+}

@@ -1,4 +1,4 @@
-
+ï»¿
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
@@ -203,7 +203,7 @@ function buildPatternCandidates(records: ReturnType<typeof groupByRecord>) {
       const pattern =
         repeated >= 2
           ? `Repeated ${types[types.length - 1]} x${repeated}`
-          : `Sequence: ${types.slice(0, 3).join(" ? ")}${types.length > 3 ? " …" : ""}`;
+          : `Sequence: ${types.slice(0, 3).join(" ? ")}${types.length > 3 ? " â€¦" : ""}`;
       return {
         recordName: rec.recordName,
         sequence,
@@ -259,7 +259,7 @@ export default function HonchoItemWorld() {
       setData(json);
       setErrorText("");
     } catch (err) {
-      setErrorText(`Unable to reach /api/status — ${err instanceof Error ? err.message : "request failed"}`);
+      setErrorText(`Unable to reach /api/status â€” ${err instanceof Error ? err.message : "request failed"}`);
       setData(null);
     }
   };
@@ -277,7 +277,7 @@ export default function HonchoItemWorld() {
   const bridgeSuccess = events.filter((e) => e.event_type === "honcho_bridge" && e.status === "success").length;
   const bridgeFailures = events.filter((e) => e.event_type === "honcho_bridge" && e.status !== "success").length;
   const selected = records.find((rec) => rec.recordName === selectedRecord) ?? records[0];
-  const eventCountLabel = data ? events.length : "—";
+  const eventCountLabel = data ? events.length : "â€”";
 
   useEffect(() => {
     if (!selectedRecord && records[0]) {
@@ -347,7 +347,7 @@ export default function HonchoItemWorld() {
                 color: "#e9d5ff",
               }}
             >
-              workspace: {data?.workspace_id ?? "—"}
+              workspace: {data?.workspace_id ?? "â€”"}
             </span>
             <span
               style={{
@@ -357,7 +357,7 @@ export default function HonchoItemWorld() {
                 color: "#cbd5f5",
               }}
             >
-              sessions: {data?.honcho_sessions_total ?? "—"}
+              sessions: {data?.honcho_sessions_total ?? "â€”"}
             </span>
             <span
               style={{
@@ -367,7 +367,7 @@ export default function HonchoItemWorld() {
                 color: "#cbd5f5",
               }}
             >
-              peers: {data?.honcho_peers_total ?? "—"}
+              peers: {data?.honcho_peers_total ?? "â€”"}
             </span>
           </div>
 
@@ -515,7 +515,7 @@ export default function HonchoItemWorld() {
                 );
               })}
 
-              <div style={{ position: "absolute", insetY: 0, right: 32, display: "flex", alignItems: "center" }}>
+              <div style={{ position: "absolute", top: 0, bottom: 0, right: 32, display: "flex", alignItems: "center" }}>
                 <motion.div
                   style={{
                     position: "relative",
@@ -647,7 +647,7 @@ export default function HonchoItemWorld() {
                     .map((event, idx) => (
                       <div key={`${event.record_name}-${event.timestamp}-${idx}`} style={{ borderRadius: 12, border: "1px solid rgba(71,85,105,0.4)", background: "rgba(15,23,42,0.6)", padding: 8 }}>
                         <div style={{ fontWeight: 600, color: "#e2e8f0" }}>{event.record_name}</div>
-                        <div style={{ marginTop: 4, color: "#94a3b8" }}>{event.event_type} • {event.status}</div>
+                        <div style={{ marginTop: 4, color: "#94a3b8" }}>{event.event_type} â€¢ {event.status}</div>
                       </div>
                     ))}
                   {events.filter((event) => {
@@ -823,3 +823,4 @@ export default function HonchoItemWorld() {
     </div>
   );
 }
+

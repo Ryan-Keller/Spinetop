@@ -2,20 +2,29 @@ from __future__ import annotations
 
 import json
 import urllib.request
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from flask import Flask, jsonify, request
 
+from governance_utils import read_nanny_state
+from review_and_submit_petition import build_review_payload, validate_draft_petition
+from run_hermes_v1 import validate_response_object
+
 ROOT = Path(__file__).resolve().parents[1]
 EVENT_LOG = ROOT / "logs" / "topology" / "events.jsonl"
+HERMES_RUNS_DIR = ROOT / "logs" / "hermes" / "runs"
 MEMORY_DIR = ROOT / "memory"
 DISPATCH_DIR = MEMORY_DIR / "dispatch"
 GOVERNANCE_DIR = ROOT / "logs" / "governance"
+SUPPORT_ORCHESTRATION_DIR = ROOT / "logs" / "support" / "orchestration"
+SUPPORT_RETRIEVAL_DIR = ROOT / "logs" / "support" / "retrieval"
 HONCHO_BASE = "http://127.0.0.1:8000"
 WORKSPACE_ID = "shared-coordination"
 IN_MEMORY_EVENTS: list[dict[str, Any]] = []
 IN_MEMORY_EVENTS_MAX = 200
+MIRROR_DOOR_CACHE: dict[str, Any] = {"signature": "", "value": None}
 
 KNOWN_PEERS = [
     {"id": "desktop", "metadata": {"created_by": "system"}},
@@ -379,6 +388,300 @@ def read_item_world_status() -> dict[str, Any]:
     }
 
 
+def _load_json_object(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if isinstance(payload, dict):
+        return payload
+    return None
+
+
+def read_support_helper_activity(limit: int = 24) -> dict[str, Any]:
+    lane_specs = [
+        ("orchestration", SUPPORT_ORCHESTRATION_DIR / "instances"),
+        ("retrieval", SUPPORT_RETRIEVAL_DIR / "instances"),
+    ]
+    items: list[tuple[int, dict[str, Any]]] = []
+    lane_counts: Counter[str] = Counter()
+    status_counts: Counter[str] = Counter()
+
+    for lane, instance_dir in lane_specs:
+        if not instance_dir.exists():
+            continue
+        for path in sorted(instance_dir.glob("*.json"), key=lambda item: item.stat().st_mtime_ns, reverse=True):
+            raw = _load_json_object(path)
+            if not raw:
+                continue
+            item = {
+                "lane": lane,
+                "helper_id": str(raw.get("helper_id") or path.stem),
+                "helper_type": str(raw.get("helper_type") or "unknown"),
+                "mandate_id": str(raw.get("mandate_id") or ""),
+                "task_scope": str(raw.get("task_scope") or ""),
+                "status": str(raw.get("status") or "unknown"),
+                "created_at": str(raw.get("created_at") or raw.get("updated_at") or ""),
+                "expires_at": str(raw.get("expires_at") or ""),
+                "source_file": _safe_relative_path(path),
+            }
+            lane_counts[lane] += 1
+            status_counts[item["status"]] += 1
+            items.append((path.stat().st_mtime_ns, item))
+
+    items.sort(key=lambda pair: pair[0], reverse=True)
+    return {
+        "available": bool(items),
+        "total": len(items),
+        "lane_counts": dict(lane_counts),
+        "status_counts": dict(status_counts),
+        "items": [item for _, item in items[:limit]],
+        "source_dirs": {
+            "orchestration": _safe_relative_path(SUPPORT_ORCHESTRATION_DIR),
+            "retrieval": _safe_relative_path(SUPPORT_RETRIEVAL_DIR),
+        },
+    }
+
+
+def _mirror_door_signature(script_path: Path, fixture_root: Path) -> str:
+    fixture_mtimes: list[int] = []
+    if fixture_root.exists():
+        for path in fixture_root.rglob("*.json"):
+            if path.is_file():
+                fixture_mtimes.append(path.stat().st_mtime_ns)
+    return "|".join(
+        [
+            str(script_path.stat().st_mtime_ns if script_path.exists() else 0),
+            str(fixture_root.stat().st_mtime_ns if fixture_root.exists() else 0),
+            str(len(fixture_mtimes)),
+            str(sum(fixture_mtimes)),
+        ]
+    )
+
+
+def _load_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ValueError(str(exc)) from exc
+
+
+def _latest_json_files(directory: Path, limit: int) -> list[Path]:
+    if not directory.exists():
+        return []
+    files = [path for path in directory.glob("*.json") if path.is_file()]
+    files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return files[:limit]
+
+
+def _safe_relative_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(ROOT))
+    except Exception:
+        return str(path)
+
+
+def _mtime_iso(path: Path) -> str:
+    return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
+
+
+def read_hermes_runs(limit: int = 8) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for path in _latest_json_files(HERMES_RUNS_DIR, limit):
+        source_path = _safe_relative_path(path)
+        try:
+            payload = _load_json(path)
+        except Exception as exc:
+            items.append({
+                "ok": False,
+                "source_path": source_path,
+                "captured_at": _mtime_iso(path),
+                "error": f"malformed json: {exc}",
+            })
+            continue
+
+        if not isinstance(payload, dict):
+            items.append({
+                "ok": False,
+                "source_path": source_path,
+                "captured_at": _mtime_iso(path),
+                "error": "run record must be a JSON object",
+            })
+            continue
+
+        run_id = str(payload.get("run_id") or "").strip()
+        mode = str(payload.get("mode") or "").strip()
+        if not run_id or not mode:
+            items.append({
+                "ok": False,
+                "source_path": source_path,
+                "captured_at": _mtime_iso(path),
+                "error": "run record missing run_id or mode",
+            })
+            continue
+
+        ok, reason = validate_response_object(payload, run_id, mode)
+        if not ok:
+            items.append({
+                "ok": False,
+                "source_path": source_path,
+                "captured_at": _mtime_iso(path),
+                "error": reason,
+            })
+            continue
+
+        items.append({
+            "ok": True,
+            "source_path": source_path,
+            "captured_at": _mtime_iso(path),
+            "run_id": run_id,
+            "mode": mode,
+            "status": str(payload.get("status") or ""),
+            "summary": str(payload.get("summary") or ""),
+            "evidence_refs": list(payload.get("evidence_refs") or []),
+            "recommended_action": str(payload.get("recommended_action") or ""),
+            "petition_kind": payload.get("petition_kind"),
+            "confidence": float(payload.get("confidence") or 0.0),
+            "classification": payload.get("classification"),
+        })
+    return items
+
+
+def read_petition_draft_previews(limit: int = 8) -> list[dict[str, Any]]:
+    drafts_dir = MEMORY_DIR / "drafts"
+    return_all = read_return_all_state()
+    nanny = read_nanny_state()
+    items: list[dict[str, Any]] = []
+
+    for path in _latest_json_files(drafts_dir, limit):
+        source_path = _safe_relative_path(path)
+        try:
+            payload = _load_json(path)
+            draft = validate_draft_petition(payload, path=path)
+            preview = build_review_payload(
+                draft,
+                draft_path=path,
+                return_all=return_all,
+                nanny=nanny,
+            )
+        except Exception as exc:
+            items.append({
+                "ok": False,
+                "source_path": source_path,
+                "error": str(exc),
+            })
+            continue
+
+        items.append({
+            "ok": True,
+            "source_path": source_path,
+            "draft": {
+                "petition_id": draft["petition_id"],
+                "mode": draft["mode"],
+                "petition_kind": draft["petition_kind"],
+                "petition_type": draft["petition_type"],
+                "requested_action": draft["requested_action"],
+                "confidence": draft["confidence"],
+                "source_run_id": draft["source_run_id"],
+                "summary": draft["summary"],
+                "evidence_refs": draft["evidence_refs"],
+            },
+            "review_preview": preview,
+        })
+
+    return items
+
+
+def read_dispatch_counts() -> dict[str, int]:
+    counts = {"pending": 0, "approved": 0, "deferred": 0, "rejected": 0}
+    for petition in read_dispatch_petitions():
+        status = str(petition.get("status") or "").strip()
+        if status in counts:
+            counts[status] += 1
+    counts["total"] = sum(counts.values())
+    return counts
+
+
+def read_mirror_door_test_status() -> dict[str, Any]:
+    script_path = ROOT / "scripts" / "test_mirror_door_contracts.py"
+    fixture_root = ROOT / "tests" / "mirror_door_contracts"
+    signature = _mirror_door_signature(script_path, fixture_root)
+    cached_signature = str(MIRROR_DOOR_CACHE.get("signature") or "")
+    cached_value = MIRROR_DOOR_CACHE.get("value")
+    if cached_signature == signature and isinstance(cached_value, dict):
+        return cached_value
+
+    summary: dict[str, Any] = {
+        "available": script_path.exists() and fixture_root.exists(),
+        "script_path": "scripts/test_mirror_door_contracts.py",
+        "fixture_root": "tests/mirror_door_contracts",
+        "fixture_categories": [],
+        "fixture_files": 0,
+        "total": 0,
+        "correctly_blocked": 0,
+        "validly_accepted": 0,
+        "unexpected_accept": 0,
+        "unexpected_error": 0,
+        "recent_failures": [],
+    }
+    if not summary["available"]:
+        MIRROR_DOOR_CACHE["signature"] = signature
+        MIRROR_DOOR_CACHE["value"] = summary
+        return summary
+
+    try:
+        import test_mirror_door_contracts as mirror_tests
+    except Exception as exc:  # pragma: no cover - import fallback only
+        summary["available"] = False
+        summary["error"] = f"unable to import mirror-door test script: {exc}"
+        MIRROR_DOOR_CACHE["signature"] = signature
+        MIRROR_DOOR_CACHE["value"] = summary
+        return summary
+
+    try:
+        cases = list(mirror_tests.iter_case_files())
+        results = [mirror_tests.run_case(case) for case in cases]
+    except Exception as exc:
+        summary["available"] = False
+        summary["error"] = f"mirror-door test execution failed: {exc}"
+        MIRROR_DOOR_CACHE["signature"] = signature
+        MIRROR_DOOR_CACHE["value"] = summary
+        return summary
+
+    counts: Counter[str] = Counter(result.bucket for result in results)
+    failures = [
+        {
+            "category": result.category,
+            "case_id": result.case_id,
+            "expected": result.expected,
+            "actual": result.actual,
+            "reason": result.reason,
+            "attack_surface": result.attack_surface,
+            "source_file": _safe_relative_path(result.source_file),
+        }
+        for result in results
+        if result.bucket in {"unexpected_accept", "unexpected_error"}
+    ]
+    fixture_categories = sorted(path.name for path in fixture_root.iterdir() if path.is_dir())
+
+    summary.update(
+        {
+            "fixture_categories": fixture_categories,
+            "fixture_files": sum(1 for path in fixture_root.rglob("*.json") if path.is_file()),
+            "total": len(results),
+            "correctly_blocked": int(counts.get("correctly_blocked", 0)),
+            "validly_accepted": int(counts.get("validly_accepted", 0)),
+            "unexpected_accept": int(counts.get("unexpected_accept", 0)),
+            "unexpected_error": int(counts.get("unexpected_error", 0)),
+            "recent_failures": failures[:6],
+            "generated_at": iso_now(),
+        }
+    )
+    MIRROR_DOOR_CACHE["signature"] = signature
+    MIRROR_DOOR_CACHE["value"] = summary
+    return summary
+
+
 @app.get("/api/status")
 def api_status():
     sessions_total, sessions_items = get_sessions(10)
@@ -392,6 +695,11 @@ def api_status():
         "honcho_sessions": sessions_items,
         "honcho_peers": peers_items,
         "events_recent": get_events(50),
+        "return_all": read_return_all_state(),
+        "nanny": read_item_world_status(),
+        "dispatch_counts": read_dispatch_counts(),
+        "support_helper_activity": read_support_helper_activity(),
+        "mirror_door_test": read_mirror_door_test_status(),
     })
 
 
@@ -408,6 +716,32 @@ def api_dispatch():
     return jsonify({
         "ok": True,
         "petitions": read_dispatch_petitions(),
+    })
+
+
+@app.get("/api/hermes/runs")
+def api_hermes_runs():
+    try:
+        limit = max(1, min(20, int(request.args.get("limit", 8))))
+    except Exception:
+        limit = 8
+    return jsonify({
+        "ok": True,
+        "source_root": _safe_relative_path(HERMES_RUNS_DIR),
+        "items": read_hermes_runs(limit),
+    })
+
+
+@app.get("/api/petition-drafts")
+def api_petition_drafts():
+    try:
+        limit = max(1, min(20, int(request.args.get("limit", 8))))
+    except Exception:
+        limit = 8
+    return jsonify({
+        "ok": True,
+        "source_root": _safe_relative_path(MEMORY_DIR / "drafts"),
+        "items": read_petition_draft_previews(limit),
     })
 
 

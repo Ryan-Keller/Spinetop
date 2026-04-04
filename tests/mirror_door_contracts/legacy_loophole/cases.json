@@ -1,0 +1,85 @@
+[
+  {
+    "id": "new_record_disguised_as_grandfathered",
+    "expected": "correctly_blocked",
+    "attack_surface": "legacy_loophole",
+    "path": "memory/collective/new_record_disguised_as_grandfathered.json",
+    "record_set": {
+      "record_id": "mem_forged_grandfather_001",
+      "collective_record_id": "mem_forged_grandfather_001",
+      "legacy_compatibility": true,
+      "approval_timestamp": "2026-04-04T12:00:00Z",
+      "governance_approval_ref": "legacy:mem_forged_grandfather_001",
+      "legacy_status": "legacy_grandfathered"
+    },
+    "record_remove": [
+      "candidate_id",
+      "related_petition_id",
+      "governance_decision_id"
+    ]
+  },
+  {
+    "id": "approval_timestamp_without_decision",
+    "expected": "correctly_blocked",
+    "attack_surface": "legacy_loophole",
+    "path": "memory/collective/approval_timestamp_without_decision.json",
+    "record_set": {
+      "record_id": "mem_legacy_timestamp_only_001",
+      "collective_record_id": "mem_legacy_timestamp_only_001",
+      "legacy_compatibility": true,
+      "approval_timestamp": "2026-04-04T12:00:00Z",
+      "legacy_status": "legacy_incomplete"
+    },
+    "record_remove": [
+      "candidate_id",
+      "related_petition_id",
+      "governance_decision_id",
+      "governance_approval_ref"
+    ],
+    "decision_present": false,
+    "petition_present": false
+  },
+  {
+    "id": "fake_legacy_status",
+    "expected": "correctly_blocked",
+    "attack_surface": "legacy_loophole",
+    "path": "memory/collective/fake_legacy_status.json",
+    "record_set": {
+      "record_id": "mem_fake_legacy_status_001",
+      "collective_record_id": "mem_fake_legacy_status_001",
+      "legacy_status": "legacy_grandfathered"
+    },
+    "record_remove": [
+      "candidate_id",
+      "related_petition_id",
+      "governance_decision_id",
+      "governance_approval_ref",
+      "approval_timestamp"
+    ],
+    "petition_present": false,
+    "decision_present": false
+  },
+  {
+    "id": "old_petition_reused_for_new_record",
+    "expected": "correctly_blocked",
+    "attack_surface": "legacy_loophole",
+    "path": "memory/collective/old_petition_reused_for_new_record.json",
+    "record_set": {
+      "record_id": "mem_new_record_with_old_petition_001",
+      "collective_record_id": "mem_new_record_with_old_petition_001",
+      "candidate_id": "mem_new_record_with_old_petition_001",
+      "related_petition_id": "pet_old_reuse_001",
+      "governance_decision_id": "dec_old_reuse_001",
+      "governance_approval_ref": "decision:dec_old_reuse_001",
+      "session_id": "session_old_reuse_001"
+    },
+    "petition_set": {
+      "petition_id": "pet_old_reuse_001"
+    },
+    "decision_set": {
+      "decision_id": "dec_old_reuse_001",
+      "petition_id": "pet_old_reuse_001",
+      "related_collective_id": "mem_new_record_with_old_petition_001"
+    }
+  }
+]

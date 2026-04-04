@@ -1,0 +1,23 @@
+{
+  "profile": "local",
+  "default_model_key": "local_fast",
+  "model_profiles": {
+    "fast": {
+      "model_key": "local_fast",
+      "intended_use": "short structured Hermes work"
+    },
+    "reasoning": {
+      "model_key": "local_deep",
+      "intended_use": "longer or trickier local runs"
+    }
+  },
+  "provider_profiles": {
+    "ollama": {
+      "base_url": "http://172.19.0.1:11434",
+      "timeout_seconds": 120
+    }
+  },
+  "mode_safe_settings": {
+    "temperature": 0.2
+  }
+}

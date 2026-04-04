@@ -4,6 +4,7 @@ Spinetop is the governed environment the agent lives inside. It is not the agent
 
 Start here:
 
+- [Docs Index](docs/README.md)
 - [World Contract](docs/doctrine.md)
 - [State Machine](docs/state_machine_v1.md)
 - [Record Schemas](docs/record_schemas.md)

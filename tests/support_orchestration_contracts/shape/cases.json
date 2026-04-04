@@ -1,0 +1,18 @@
+[
+  {
+    "id": "invalid_helper_type",
+    "expected": "correctly_blocked",
+    "scenario": "spawn",
+    "overrides": {
+      "helper_type": "not_a_helper"
+    }
+  },
+  {
+    "id": "invalid_ttl_seconds",
+    "expected": "correctly_blocked",
+    "scenario": "spawn",
+    "overrides": {
+      "ttl_seconds": 0
+    }
+  }
+]

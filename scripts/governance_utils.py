@@ -106,6 +106,48 @@ def _is_legacy_collective_record(record: dict[str, Any]) -> bool:
     return not _has_new_governance_markers(record)
 
 
+def _has_explicit_collective_lineage(record: dict[str, Any]) -> bool:
+    record_id = str(record.get("record_id") or "").strip()
+    collective_record_id = str(record.get("collective_record_id") or "").strip()
+    candidate_id = str(record.get("candidate_id") or "").strip()
+    related_petition_id = str(record.get("related_petition_id") or "").strip()
+    governance_decision_id = str(record.get("governance_decision_id") or "").strip()
+    governance_approval_ref = str(record.get("governance_approval_ref") or "").strip()
+    return bool(
+        record_id
+        and collective_record_id
+        and candidate_id
+        and related_petition_id
+        and governance_decision_id
+        and record_id == collective_record_id == candidate_id
+        and governance_approval_ref == f"decision:{governance_decision_id}"
+    )
+
+
+def _is_truly_grandfathered_collective_record(record: dict[str, Any]) -> bool:
+    if str(record.get("legacy_status") or "").strip() != "legacy_grandfathered":
+        return False
+    if not bool(record.get("legacy_compatibility") is True):
+        return False
+    if not str(record.get("approval_timestamp") or "").strip():
+        return False
+    if not str(record.get("governance_approval_ref") or "").strip().startswith("legacy:"):
+        return False
+    if record.get("promotion_candidate") is True:
+        return False
+    for field in (
+        "candidate_id",
+        "related_petition_id",
+        "governance_decision_id",
+        "governance_review_state",
+        "governance_review_reason",
+        "governance_review_timestamp",
+    ):
+        if str(record.get(field) or "").strip():
+            return False
+    return True
+
+
 def _resolve_related_petition_id(record: dict[str, Any]) -> str:
     related_petition_id = str(record.get("related_petition_id") or "").strip()
     if related_petition_id:
@@ -287,29 +329,28 @@ def can_bridge_to_honcho(
     if str(record.get("record_type") or "").strip() != "collective_memory":
         return GovernanceGate(False, "deferred", "record_type must be collective_memory")
 
+    if bool(record.get("legacy_compatibility") is True):
+        if _is_truly_grandfathered_collective_record(record):
+            return GovernanceGate(True, "allowed", "explicitly grandfathered legacy collective record")
+        return GovernanceGate(False, "deferred", "legacy compatibility requires a truly grandfathered record")
+
+    if not _has_explicit_collective_lineage(record):
+        return GovernanceGate(False, "deferred", "missing full collective lineage")
+
     record_id = str(record.get("record_id") or "").strip()
     collective_record_id = str(record.get("collective_record_id") or "").strip()
     candidate_id = str(record.get("candidate_id") or "").strip()
     related_petition_id = str(record.get("related_petition_id") or "").strip()
     governance_decision_id = str(record.get("governance_decision_id") or "").strip()
-    governance_approval_ref = str(record.get("governance_approval_ref") or "").strip()
     admitted_at = str(record.get("admitted_at") or "").strip()
     admission_actor = str(record.get("admission_actor") or "").strip()
     governance_review_state = str(record.get("governance_review_state") or "").strip()
-    legacy_compatibility = bool(record.get("legacy_compatibility") is True)
-
-    full_lineage = bool(record_id and collective_record_id and candidate_id and related_petition_id and governance_decision_id)
-
-    if not full_lineage:
-        if legacy_compatibility and str(record.get("approval_timestamp") or "").strip() and governance_approval_ref.startswith("legacy:"):
-            return GovernanceGate(True, "allowed", "explicitly grandfathered legacy collective record")
-        return GovernanceGate(False, "deferred", "missing full collective lineage")
 
     if collective_record_id != record_id:
         return GovernanceGate(False, "deferred", "collective_record_id does not match record_id")
+    if candidate_id != record_id:
+        return GovernanceGate(False, "deferred", "candidate_id does not match record_id")
 
-    if governance_approval_ref != f"decision:{governance_decision_id}":
-        return GovernanceGate(False, "deferred", "governance_approval_ref does not match decision")
     if not admitted_at:
         return GovernanceGate(False, "deferred", "missing admitted_at")
     if not admission_actor:
@@ -324,8 +365,13 @@ def can_bridge_to_honcho(
         return GovernanceGate(False, "deferred", f"missing dispatch petition {related_petition_id}")
     if status != "approved":
         return GovernanceGate(False, "deferred", f"dispatch petition {related_petition_id} not approved")
+    record_name = str(petition.get("record_name") or "").strip()
+    if not record_name.startswith(f"dispatch_{related_petition_id}_"):
+        return GovernanceGate(False, "deferred", f"dispatch petition {related_petition_id} record_name does not match petition_id")
+    if str(record.get("governance_approval_ref") or "").strip() != f"decision:{governance_decision_id}":
+        return GovernanceGate(False, "deferred", "governance_approval_ref does not match decision")
 
-    decision_path, decision = _find_governance_decision(decision_id=governance_decision_id, petition_id=related_petition_id)
+    _decision_path, decision = _find_governance_decision(decision_id=governance_decision_id, petition_id=related_petition_id)
     if not decision:
         return GovernanceGate(False, "deferred", f"missing governance decision {governance_decision_id}")
     if str(decision.get("record_type") or "").strip() != "governance_decision":
@@ -337,10 +383,8 @@ def can_bridge_to_honcho(
     if str(decision.get("review_state") or "").strip() != "final":
         return GovernanceGate(False, "deferred", "governance decision not final")
     decision_collective_id = str(decision.get("related_collective_id") or "").strip()
-    if not legacy_compatibility and decision_collective_id != record_id:
+    if decision_collective_id != record_id:
         return GovernanceGate(False, "deferred", "governance decision not linked to this collective")
-    if legacy_compatibility and decision_collective_id and decision_collective_id != record_id:
-        return GovernanceGate(False, "deferred", "governance decision linked to a different collective")
 
     return GovernanceGate(True, "allowed", f"collective {record_id} approved with decision {governance_decision_id}")
 

@@ -21,6 +21,7 @@ ROOT = repo_root()
 EXPERT_ID = "hermes-spinetop"
 PROMPTS_PATH = ROOT / "docs" / "hermes_v1_prompts.md"
 MODEL_REGISTRY_PATH = ROOT / "config" / "model_registry.json"
+HERMES_RUNTIME_PATH = ROOT / "config" / "hermes_runtime.json"
 SERVICES_PATH = ROOT / "config" / "services.json"
 LOGS_DIR = ROOT / "logs"
 MEMORY_DIR = ROOT / "memory"
@@ -429,6 +430,15 @@ def resolve_model_key(runtime_policy: Any, requested_model_key: str | None) -> s
     return runtime_policy.default_model_key
 
 
+def load_hermes_runtime_config() -> dict[str, Any]:
+    payload = load_json_file(HERMES_RUNTIME_PATH)
+    if payload is None:
+        return {}
+    if not isinstance(payload, dict):
+        raise ValueError("hermes_runtime.json must be a JSON object")
+    return payload
+
+
 def load_model_registry() -> dict[str, Any]:
     payload = load_json_file(MODEL_REGISTRY_PATH)
     if not isinstance(payload, dict):
@@ -439,7 +449,33 @@ def load_model_registry() -> dict[str, Any]:
     return models
 
 
-def invoke_model(model_key: str, prompt: str) -> str:
+def resolve_runtime_model_key(runtime_policy: Any, runtime_config: dict[str, Any], requested_model_key: str | None) -> str:
+    if requested_model_key:
+        return resolve_model_key(runtime_policy, requested_model_key)
+
+    configured_default = str(runtime_config.get("default_model_key") or "").strip()
+    if configured_default:
+        if configured_default not in runtime_policy.allowed_model_keys:
+            allowed = ", ".join(runtime_policy.allowed_model_keys)
+            raise ValueError(
+                f"Runtime default_model_key '{configured_default}' is not allowed for {runtime_policy.expert_id}. Allowed: {allowed}"
+            )
+        return configured_default
+
+    return runtime_policy.default_model_key
+
+
+def load_provider_profile(runtime_config: dict[str, Any], provider: str) -> dict[str, Any]:
+    provider_profiles = runtime_config.get("provider_profiles", {})
+    if provider_profiles and not isinstance(provider_profiles, dict):
+        raise ValueError("hermes_runtime.json provider_profiles must be an object")
+    profile = provider_profiles.get(provider, {}) if isinstance(provider_profiles, dict) else {}
+    if profile and not isinstance(profile, dict):
+        raise ValueError(f"hermes_runtime.json provider_profiles.{provider} must be an object")
+    return profile
+
+
+def invoke_model(model_key: str, prompt: str, runtime_config: dict[str, Any]) -> str:
     models = load_model_registry()
     if model_key not in models:
         raise ValueError(f"Unknown model key: {model_key}")
@@ -453,16 +489,27 @@ def invoke_model(model_key: str, prompt: str) -> str:
     if not provider or not model_name:
         raise ValueError(f"Incomplete model config for {model_key}")
 
+    provider_profile = load_provider_profile(runtime_config, provider)
+    mode_safe_settings = runtime_config.get("mode_safe_settings", {})
+    if mode_safe_settings and not isinstance(mode_safe_settings, dict):
+        raise ValueError("hermes_runtime.json mode_safe_settings must be an object")
+
+    temperature = float(mode_safe_settings.get("temperature", 0.2)) if isinstance(mode_safe_settings, dict) else 0.2
+    timeout_seconds = int(provider_profile.get("timeout_seconds", mode_safe_settings.get("timeout_seconds", 120))) if isinstance(mode_safe_settings, dict) else int(provider_profile.get("timeout_seconds", 120))
+
     if provider == "ollama":
-        services = load_json_file(SERVICES_PATH)
-        if not isinstance(services, dict):
-            raise ValueError("services.json must be a JSON object")
-        ollama = services.get("ollama", {})
-        if not isinstance(ollama, dict):
-            raise ValueError("services.json ollama entry must be an object")
-        host = str(ollama.get("host") or "127.0.0.1").strip()
-        port = int(ollama.get("port") or 11434)
-        url = f"http://{host}:{port}/api/chat"
+        base_url = str(provider_profile.get("base_url") or "").strip()
+        if not base_url:
+            services = load_json_file(SERVICES_PATH)
+            if not isinstance(services, dict):
+                raise ValueError("services.json must be a JSON object")
+            ollama = services.get("ollama", {})
+            if not isinstance(ollama, dict):
+                raise ValueError("services.json ollama entry must be an object")
+            host = str(provider_profile.get("host") or ollama.get("host") or "127.0.0.1").strip()
+            port = int(provider_profile.get("port") or ollama.get("port") or 11434)
+            base_url = f"http://{host}:{port}"
+        url = f"{base_url}/api/chat"
         body = {
             "model": model_name,
             "messages": [
@@ -472,7 +519,7 @@ def invoke_model(model_key: str, prompt: str) -> str:
             "stream": False,
             "format": "json",
             "options": {
-                "temperature": 0.2,
+                "temperature": temperature,
             },
         }
         req = urllib.request.Request(
@@ -482,7 +529,7 @@ def invoke_model(model_key: str, prompt: str) -> str:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
         except urllib.error.URLError as exc:
             raise RuntimeError(f"Ollama call failed for {model_key}: {exc}") from exc
@@ -496,10 +543,10 @@ def invoke_model(model_key: str, prompt: str) -> str:
         raise ValueError("Ollama response missing message.content")
 
     if provider == "api":
-        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        api_key = str(provider_profile.get("api_key") or os.getenv("OPENAI_API_KEY", "")).strip()
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is not set for api model invocation")
-        base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+        base_url = str(provider_profile.get("base_url") or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
         url = f"{base_url}/chat/completions"
         body = {
             "model": model_name,
@@ -507,7 +554,7 @@ def invoke_model(model_key: str, prompt: str) -> str:
                 {"role": "system", "content": "Return only a JSON object that matches the Hermes-Spinetop v1 run schema. No markdown, no code fences, no commentary."},
                 {"role": "user", "content": prompt},
             ],
-            "temperature": 0.2,
+            "temperature": temperature,
             "response_format": {"type": "json_object"},
         }
         req = urllib.request.Request(
@@ -520,7 +567,7 @@ def invoke_model(model_key: str, prompt: str) -> str:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
         except urllib.error.URLError as exc:
             raise RuntimeError(f"API call failed for {model_key}: {exc}") from exc
@@ -714,12 +761,36 @@ def main() -> int:
     args = parser.parse_args()
 
     runtime_policy = load_runtime_policy(EXPERT_ID)
-    model_key = resolve_model_key(runtime_policy, args.model_key)
+    runtime_config = load_hermes_runtime_config()
+    model_key = resolve_runtime_model_key(runtime_policy, runtime_config, args.model_key)
+    models = load_model_registry()
+    model_cfg = models.get(model_key, {})
+    provider = str(model_cfg.get("provider") or "").strip().lower() if isinstance(model_cfg, dict) else ""
+    model_name = str(model_cfg.get("model") or "").strip() if isinstance(model_cfg, dict) else ""
+    provider_profile = load_provider_profile(runtime_config, provider) if provider else {}
     live_snapshot = build_snapshot()
     input_snapshot = read_input_snapshot(args.input_file) if args.input_file else {}
     snapshot = merge_snapshot(live_snapshot, input_snapshot)
     run_id = str(snapshot.get("run_id") or live_snapshot["run_id"])
     prompt = build_prompt(args.mode, snapshot, run_id)
+
+    print("=== MODEL SELECTION ===")
+    print(f"profile={str(runtime_config.get('profile') or 'local').strip() or 'local'}")
+    print(f"model_key={model_key}")
+    print(f"provider={provider or 'unknown'}")
+    print(f"model={model_name or 'unknown'}")
+    if provider_profile:
+        base_url = str(provider_profile.get("base_url") or "").strip()
+        if not base_url and provider == "ollama":
+            host = str(provider_profile.get("host") or "").strip()
+            port = provider_profile.get("port")
+            if host and port is not None:
+                base_url = f"http://{host}:{int(port)}"
+        if base_url:
+            print(f"base_url={base_url}")
+    if isinstance(runtime_config.get("mode_safe_settings"), dict):
+        print(f"mode_safe_settings={compact_json(runtime_config['mode_safe_settings'])}")
+    print("")
 
     if args.dry_run:
         print("=== RENDERED PROMPT ===")
@@ -729,7 +800,7 @@ def main() -> int:
         return 0
 
     try:
-        raw_response = invoke_model(model_key, prompt)
+        raw_response = invoke_model(model_key, prompt, runtime_config)
     except Exception as exc:
         print("=== RAW RESPONSE ===")
         print(f"[unavailable: {exc}]")

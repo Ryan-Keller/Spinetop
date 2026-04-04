@@ -1,0 +1,17 @@
+[
+  {
+    "id": "direct_file_drop_into_collective",
+    "expected": "correctly_blocked",
+    "attack_surface": "state_machine_attack",
+    "path": "memory/collective/direct_file_drop_into_collective.json",
+    "record_remove": [
+      "governance_decision_id"
+    ]
+  },
+  {
+    "id": "skipped_path_attempt",
+    "expected": "correctly_blocked",
+    "attack_surface": "state_machine_attack",
+    "path": "sandbox/skipped_path_attempt.json"
+  }
+]

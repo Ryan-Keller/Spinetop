@@ -10,10 +10,20 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from repo_paths import repo_root
+from support_validation import (
+    normalize_write_scope,
+    require_object,
+    require_string,
+    require_support_lane,
+    validate_support_event_record,
+    validate_support_request,
+    validate_ttl_seconds,
+)
 
 
 ROOT = repo_root()
 HELPER_TYPE = "retrieval_helper_2b"
+ALLOWED_WRITE_SCOPE = ["logs/support/orchestration/", "logs/support/retrieval/", "memory/drafts/"]
 ALLOWED_RESULT_STATUSES = {"complete", "partial", "none_found", "blocked", "failed"}
 ALLOWED_INSTANCE_STATUSES = {
     "spawned",
@@ -109,31 +119,6 @@ def _append_jsonl(path: Path, data: dict[str, Any]) -> None:
         fh.write(json.dumps(data, ensure_ascii=False) + "\n")
 
 
-def _obj(data: Any, *, path: Path | None = None) -> dict[str, Any]:
-    if not isinstance(data, dict):
-        raise RetrievalHelperError(f"JSON root must be an object{_path_hint(path)}")
-    return dict(data)
-
-
-def _s(data: dict[str, Any], field: str, *, path: Path | None = None, allow_empty: bool = False) -> str:
-    value = data.get(field)
-    if not isinstance(value, str):
-        raise RetrievalHelperError(f"Field '{field}' must be a string{_path_hint(path)}")
-    text = value.strip()
-    if not text and not allow_empty:
-        raise RetrievalHelperError(f"Field '{field}' must not be empty{_path_hint(path)}")
-    return text
-
-
-def _i(data: dict[str, Any], field: str, *, path: Path | None = None, min_value: int | None = None) -> int:
-    value = data.get(field)
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise RetrievalHelperError(f"Field '{field}' must be an integer{_path_hint(path)}")
-    if min_value is not None and value < min_value:
-        raise RetrievalHelperError(f"Field '{field}' must be >= {min_value}{_path_hint(path)}")
-    return value
-
-
 def _li(data: dict[str, Any], field: str, *, path: Path | None = None) -> list[str]:
     value = data.get(field)
     if value is None:
@@ -191,34 +176,6 @@ def _is_under(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
 
 
-def _normalize_write_scope(value: Any, *, path: Path | None = None) -> list[str]:
-    if isinstance(value, str):
-        scopes = [value]
-    elif isinstance(value, list):
-        scopes = value
-    else:
-        raise RetrievalHelperError(f"Field 'write_scope' must be a string or list of strings{_path_hint(path)}")
-    out: list[str] = []
-    for idx, item in enumerate(scopes):
-        if not isinstance(item, str):
-            raise RetrievalHelperError(f"Field 'write_scope' item {idx} must be a string{_path_hint(path)}")
-        text = item.strip()
-        if not text:
-            raise RetrievalHelperError(f"Field 'write_scope' item {idx} must not be empty{_path_hint(path)}")
-        normalized = text.replace("\\", "/")
-        scope_path = _scope_to_path(normalized)
-        if not (normalized.startswith("logs/support/") or normalized.startswith("memory/drafts/")):
-            raise RetrievalHelperError(
-                f"Field 'write_scope' item {idx} must be a support lane under logs/support/ or memory/drafts/{_path_hint(path)}"
-            )
-        if not _is_under(scope_path, ROOT):
-            raise RetrievalHelperError(
-                f"Field 'write_scope' item {idx} must stay inside the repository root{_path_hint(path)}"
-            )
-        out.append(normalized)
-    return out
-
-
 def _scope_allowed(scope: Path, allowed_roots: Iterable[Path]) -> bool:
     for root in allowed_roots:
         if _is_under(scope, root):
@@ -252,19 +209,6 @@ def _validate_read_scope(value: Any, *, path: Path | None = None) -> list[str]:
     return normalized
 
 
-def _validate_lane(lane: str, write_scope: list[str], *, path: Path | None = None) -> str:
-    lane = lane.strip().replace("\\", "/")
-    if not lane:
-        raise RetrievalHelperError(f"Field 'return_lane' must not be empty{_path_hint(path)}")
-    if not (lane.startswith("logs/support/") or lane.startswith("memory/drafts/")):
-        raise RetrievalHelperError(
-            f"Field 'return_lane' must be a support lane under logs/support/ or memory/drafts/{_path_hint(path)}"
-        )
-    if lane not in write_scope:
-        raise RetrievalHelperError(f"Field 'return_lane' must appear in write_scope{_path_hint(path)}")
-    return lane
-
-
 def _build_helper_id(*, requested_by: str, mandate_id: str, task_scope: str, query_scope: str) -> str:
     stamp = utc_now().strftime("%Y%m%dT%H%M%S%fZ")
     digest = hashlib.sha1(
@@ -274,37 +218,25 @@ def _build_helper_id(*, requested_by: str, mandate_id: str, task_scope: str, que
 
 
 def validate_retrieval_request(data: Any, *, path: Path | None = None, is_replacement: bool = False) -> dict[str, Any]:
-    record = _obj(data, path=path)
-    helper_type = _s(record, "helper_type", path=path)
-    if helper_type != HELPER_TYPE:
-        raise RetrievalHelperError(f"helper_type must be {HELPER_TYPE}{_path_hint(path)}")
-    requested_by = _s(record, "requested_by", path=path)
-    mandate_id = _s(record, "mandate_id", path=path)
-    task_scope = _s(record, "task_scope", path=path)
-    ttl_seconds = _i(record, "ttl_seconds", path=path, min_value=1)
-    query_scope = _s(record, "query_scope", path=path)
-    write_scope = _normalize_write_scope(record.get("write_scope"), path=path)
-    if not any(scope.startswith("logs/support/") for scope in write_scope):
-        raise RetrievalHelperError(
-            f"Field 'write_scope' must include a support log lane under logs/support/{_path_hint(path)}"
-        )
-    return_lane = _validate_lane(_s(record, "return_lane", path=path), write_scope, path=path)
+    record = require_object(data, path=path, error_cls=RetrievalHelperError)
+    normalized = validate_support_request(
+        record,
+        allowed_helper_types=[HELPER_TYPE],
+        allowed_write_scope=ALLOWED_WRITE_SCOPE,
+        required_write_scope=["logs/support/retrieval/"],
+        path=path,
+        error_cls=RetrievalHelperError,
+    )
+
+    query_scope = require_string(record, "query_scope", path=path, error_cls=RetrievalHelperError)
     read_scope = _validate_read_scope(record.get("read_scope"), path=path)
 
-    normalized = dict(record)
-    normalized["helper_type"] = helper_type
-    normalized["requested_by"] = requested_by
-    normalized["mandate_id"] = mandate_id
-    normalized["task_scope"] = task_scope
-    normalized["ttl_seconds"] = ttl_seconds
     normalized["query_scope"] = query_scope
-    normalized["write_scope"] = write_scope
-    normalized["return_lane"] = return_lane
     normalized["read_scope"] = read_scope
 
     if is_replacement:
-        replaces_helper_id = _s(record, "replaces_helper_id", path=path)
-        replacement_reason = _s(record, "replacement_reason", path=path)
+        replaces_helper_id = require_string(record, "replaces_helper_id", path=path, error_cls=RetrievalHelperError)
+        replacement_reason = require_string(record, "replacement_reason", path=path, error_cls=RetrievalHelperError)
         if replacement_reason not in ALLOWED_REPLACEMENT_REASONS:
             raise RetrievalHelperError(
                 f"replacement_reason must be one of {sorted(ALLOWED_REPLACEMENT_REASONS)}{_path_hint(path)}"
@@ -393,7 +325,13 @@ def _event_record(
 
 
 def _write_support_event(event: dict[str, Any]) -> None:
-    _append_jsonl(EVENT_LOG, event)
+    normalized = validate_support_event_record(
+        event,
+        allowed_helper_types=[HELPER_TYPE],
+        allowed_write_scope=ALLOWED_WRITE_SCOPE,
+        error_cls=RetrievalHelperError,
+    )
+    _append_jsonl(EVENT_LOG, normalized)
 
 
 def _instance_paths(helper_id: str) -> tuple[Path, Path]:
@@ -403,21 +341,36 @@ def _instance_paths(helper_id: str) -> tuple[Path, Path]:
 
 
 def _validate_instance(data: Any, *, path: Path | None = None) -> dict[str, Any]:
-    instance = _obj(data, path=path)
+    instance = require_object(data, path=path, error_cls=RetrievalHelperError)
     if instance.get("helper_type") != HELPER_TYPE:
         raise RetrievalHelperError(f"helper_type must be {HELPER_TYPE}{_path_hint(path)}")
-    _s(instance, "helper_id", path=path)
-    _s(instance, "mandate_id", path=path)
-    _s(instance, "task_scope", path=path)
-    _s(instance, "created_at", path=path)
-    _s(instance, "expires_at", path=path)
-    _s(instance, "status", path=path)
+    require_string(instance, "helper_id", path=path, error_cls=RetrievalHelperError)
+    require_string(instance, "mandate_id", path=path, error_cls=RetrievalHelperError)
+    require_string(instance, "task_scope", path=path, error_cls=RetrievalHelperError)
+    require_string(instance, "created_at", path=path, error_cls=RetrievalHelperError)
+    require_string(instance, "expires_at", path=path, error_cls=RetrievalHelperError)
+    require_string(instance, "status", path=path, error_cls=RetrievalHelperError)
     if instance["status"] not in ALLOWED_INSTANCE_STATUSES:
         raise RetrievalHelperError(f"Unsupported helper status{_path_hint(path)}: {instance['status']}")
-    instance["write_scope"] = _normalize_write_scope(instance.get("write_scope"), path=path)
-    instance["query_scope"] = _s(instance, "query_scope", path=path)
-    instance["return_lane"] = _validate_lane(_s(instance, "return_lane", path=path), instance["write_scope"], path=path)
-    instance["ttl_seconds"] = _i(instance, "ttl_seconds", path=path, min_value=1)
+    instance["write_scope"] = normalize_write_scope(
+        instance.get("write_scope"),
+        allowed_write_scope=ALLOWED_WRITE_SCOPE,
+        path=path,
+        error_cls=RetrievalHelperError,
+    )
+    instance["query_scope"] = require_string(instance, "query_scope", path=path, error_cls=RetrievalHelperError)
+    instance["return_lane"] = require_support_lane(
+        require_string(instance, "return_lane", path=path, error_cls=RetrievalHelperError),
+        instance["write_scope"],
+        field="return_lane",
+        path=path,
+        error_cls=RetrievalHelperError,
+    )
+    instance["ttl_seconds"] = validate_ttl_seconds(
+        instance.get("ttl_seconds"),
+        path=path,
+        error_cls=RetrievalHelperError,
+    )
     instance["read_scope"] = _validate_read_scope(instance.get("read_scope"), path=path)
     return instance
 

@@ -48,6 +48,7 @@ def build_petition_payload(
     dispatch_mode: str = "normal",
     operator_id: str = "",
     entry_class: str = "normal",
+    petition_id: str = "",
 ) -> tuple[dict[str, Any], Path, str, dict[str, Any] | None, Path | None]:
     status = status.strip().lower()
     if status not in {"pending", "approved", "deferred", "rejected"}:
@@ -57,7 +58,7 @@ def build_petition_payload(
     target_dir.mkdir(parents=True, exist_ok=True)
 
     stamp = utc_now_iso().replace("-", "").replace(":", "").replace("+00:00", "Z")
-    petition_id = build_petition_id(agent_id, workspace, task, summary, stamp)
+    petition_id = _normalize_text(petition_id).strip() or build_petition_id(agent_id, workspace, task, summary, stamp)
     record_name = f"dispatch_{petition_id}_{status}.json"
     now_iso = utc_now_iso()
     source_host = socket.gethostname()
@@ -199,6 +200,7 @@ def create_dispatch_petition_from_fields(
     dispatch_mode: str = "normal",
     operator_id: str = "",
     entry_class: str = "normal",
+    petition_id: str = "",
 ) -> tuple[dict[str, Any], Path, str]:
     payload, path, petition_id, decision_record, decision_path = build_petition_payload(
         status=status,
@@ -220,6 +222,7 @@ def create_dispatch_petition_from_fields(
         dispatch_mode=dispatch_mode,
         operator_id=_normalize_text(operator_id),
         entry_class=_normalize_text(entry_class, "normal"),
+        petition_id=_normalize_text(petition_id),
     )
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     if decision_record and decision_path:
@@ -252,6 +255,7 @@ def main() -> int:
         default="normal",
         choices=["normal", "self_heal", "repair", "anomaly_review"],
     )
+    parser.add_argument("--petition-id", default="")
     args = parser.parse_args()
 
     _, path, _ = create_dispatch_petition_from_fields(
@@ -274,6 +278,7 @@ def main() -> int:
         dispatch_mode=args.dispatch_mode,
         operator_id=args.operator_id,
         entry_class=args.entry_class,
+        petition_id=args.petition_id,
     )
     print(path)
     return 0
