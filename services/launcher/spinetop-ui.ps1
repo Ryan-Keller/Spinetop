@@ -92,6 +92,119 @@ function Get-LanIpAddress {
     return "127.0.0.1"
 }
 
+function Test-RunningAsAdministrator {
+    try {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+        return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch {
+        return $false
+    }
+}
+
+function Ensure-LanFirewallRules {
+    param(
+        [Parameter(Mandatory = $true)][string]$ListenAddress,
+        [Parameter(Mandatory = $true)][int[]]$Ports
+    )
+
+    if (-not (Test-RunningAsAdministrator)) {
+        return [pscustomobject]@{
+            is_admin = $false
+            ensured = $false
+            message = "Launcher is not elevated, so Windows firewall rules were not modified."
+        }
+    }
+
+    $ruleResults = @()
+    foreach ($port in $Ports) {
+        $ruleName = "Spinetop Launcher LAN $port"
+        $existing = $null
+        try {
+            $existing = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction Stop | Select-Object -First 1
+        } catch {
+        }
+
+        if ($existing) {
+            try {
+                $existing | Set-NetFirewallRule -Enabled True -Profile Private -Action Allow | Out-Null
+                $ruleResults += [pscustomobject]@{
+                    port = $port
+                    rule_name = $ruleName
+                    state = "enabled"
+                }
+            } catch {
+                $ruleResults += [pscustomobject]@{
+                    port = $port
+                    rule_name = $ruleName
+                    state = "error"
+                    error = $_.Exception.Message
+                }
+            }
+            continue
+        }
+
+        try {
+            New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow -Protocol TCP -LocalPort $port -Profile Private -RemoteAddress LocalSubnet | Out-Null
+            $ruleResults += [pscustomobject]@{
+                port = $port
+                rule_name = $ruleName
+                state = "created"
+            }
+        } catch {
+            $ruleResults += [pscustomobject]@{
+                port = $port
+                rule_name = $ruleName
+                state = "error"
+                error = $_.Exception.Message
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        is_admin = $true
+        ensured = $true
+        listen_address = $ListenAddress
+        rules = $ruleResults
+    }
+}
+
+function Get-LanFirewallRuleState {
+    param(
+        [Parameter(Mandatory = $true)][int[]]$Ports
+    )
+
+    $ruleResults = @()
+    foreach ($port in $Ports) {
+        $ruleName = "Spinetop Launcher LAN $port"
+        $rule = $null
+        try {
+            $rule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction Stop | Select-Object -First 1
+        } catch {
+        }
+
+        if ($rule) {
+            $ruleResults += [pscustomobject]@{
+                port = $port
+                rule_name = $ruleName
+                state = if ($rule.Enabled) { "present" } else { "disabled" }
+            }
+        } else {
+            $ruleResults += [pscustomobject]@{
+                port = $port
+                rule_name = $ruleName
+                state = "missing"
+            }
+        }
+    }
+
+    $ready = -not ($ruleResults | Where-Object { $_.state -ne "present" })
+    return [pscustomobject]@{
+        ready = $ready
+        rules = $ruleResults
+    }
+}
+
 function Resolve-LauncherPath {
     param(
         [Parameter(Mandatory = $true)][string]$BasePath,
@@ -468,6 +581,7 @@ function Write-StateFile {
     param(
         [Parameter(Mandatory = $true)]$BackendState,
         [Parameter(Mandatory = $true)]$FrontendState,
+        $LanFirewallState,
         [Nullable[bool]]$LanUiReachable,
         [string]$Note = ""
     )
@@ -488,6 +602,7 @@ function Write-StateFile {
             frontend_api_base = "/api"
             frontend_bind_address = $FrontendBindAddress
             lan_ui_reachable = $LanUiReachable
+            lan_firewall_state = $LanFirewallState
         }
         lan_proxy = Get-LanProxyState
         note = $Note
@@ -723,6 +838,8 @@ function Show-Status {
     $backend = Get-ServiceState -Name "backend" -PidFile $BackendPidFile -Port $BackendPort
     $frontend = Get-ServiceState -Name "frontend" -PidFile $FrontendPidFile -Port $FrontendPort
     $lanProxy = Get-LanProxyState
+    $firewallState = Get-LanFirewallRuleState -Ports @($FrontendPort, $BackendPort)
+    $firewallMode = if ($firewallState.ready) { "ready" } else { "missing" }
     Write-Host (Format-ServiceLine $backend)
     Write-Host (Format-ServiceLine $frontend)
     Write-Host (Format-ServiceLine $lanProxy)
@@ -731,6 +848,7 @@ function Show-Status {
     Write-Host "desktop api: $DesktopApiUrl"
     Write-Host "lan api: $LanApiUrl"
     Write-Host "lan ip: $LanIp"
+    Write-Host "firewall: $firewallMode"
     Write-Host "state: $StateFile"
     Write-Host "logs: $LogRoot"
     if (Test-Path -LiteralPath $StateFile) {
@@ -755,8 +873,19 @@ function Start-Launcher {
     $launchedLanProxy = $false
     $note = ""
     $lanUiReachable = $null
+    $lanFirewallState = $null
 
     try {
+        $lanFirewallState = Ensure-LanFirewallRules -ListenAddress $LanIp -Ports @($FrontendPort, $BackendPort)
+        if (-not $lanFirewallState.is_admin) {
+            Write-Warning $lanFirewallState.message
+        } else {
+            $createdPorts = @($lanFirewallState.rules | Where-Object { $_.state -in @("created", "enabled") } | ForEach-Object { $_.port })
+            if ($createdPorts.Count -gt 0) {
+                Write-Host "lan firewall rules ready for ports: $($createdPorts -join ', ')"
+            }
+        }
+
         $backendState = Get-ServiceState -Name "backend" -PidFile $BackendPidFile -Port $BackendPort
         if ($backendState.state -eq "external") {
             $backendState = Try-Adopt-Backend
@@ -814,7 +943,7 @@ function Start-Launcher {
             throw "Frontend is up locally, but the LAN URL did not respond from this host: $LanUiUrl"
         }
 
-        Write-StateFile -BackendState $backendState -FrontendState $frontendState -LanUiReachable $lanUiReachable -Note "launcher started"
+        Write-StateFile -BackendState $backendState -FrontendState $frontendState -LanFirewallState $lanFirewallState -LanUiReachable $lanUiReachable -Note "launcher started"
 
         try {
             Start-Process -FilePath $DesktopUiUrl | Out-Null
@@ -839,7 +968,7 @@ function Start-Launcher {
         if ($launchedBackend) {
             try { Stop-Backend | Out-Null } catch { }
         }
-        Write-StateFile -BackendState (Get-ServiceState -Name "backend" -PidFile $BackendPidFile -Port $BackendPort) -FrontendState (Get-ServiceState -Name "frontend" -PidFile $FrontendPidFile -Port $FrontendPort) -LanUiReachable $lanUiReachable -Note "launcher start failed"
+        Write-StateFile -BackendState (Get-ServiceState -Name "backend" -PidFile $BackendPidFile -Port $BackendPort) -FrontendState (Get-ServiceState -Name "frontend" -PidFile $FrontendPidFile -Port $FrontendPort) -LanFirewallState $lanFirewallState -LanUiReachable $lanUiReachable -Note "launcher start failed"
         throw
     }
 }

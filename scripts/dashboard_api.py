@@ -16,8 +16,11 @@ from state_machine import (
     normalize_mission_id,
     read_artifact_index,
     read_mission_brief,
+    read_working_memory,
     read_state,
     upsert_artifact_index_entry,
+    working_memory_path,
+    write_working_memory,
     write_state,
 )
 from governance_utils import can_bridge_to_honcho, read_nanny_state
@@ -31,6 +34,7 @@ CLARIFICATION_PACKETS_DIR = ROOT / "logs" / "citadel" / "clarification_packets"
 EXPEDITIONS_ACTIVE_DIR = ROOT / "expeditions" / "active"
 WORKBENCH_MISSIONS_DIR = ROOT / "workbench" / "missions"
 MISSION_CHAT_FILENAME = "chat.jsonl"
+MISSION_PARKING_FILENAME = "parking_status.json"
 MEMORY_DIR = ROOT / "memory"
 DISPATCH_DIR = MEMORY_DIR / "dispatch"
 GOVERNANCE_DIR = ROOT / "logs" / "governance"
@@ -244,6 +248,13 @@ def _load_json(path: Path) -> Any:
         return None
 
 
+def _record_object(record: Any, key: str) -> dict[str, Any] | None:
+    if not isinstance(record, dict):
+        return None
+    value = record.get(key)
+    return value if isinstance(value, dict) else None
+
+
 def _mission_root(mission_id: str) -> Path:
     return EXPEDITIONS_ACTIVE_DIR / normalize_mission_id(mission_id)
 
@@ -261,6 +272,10 @@ def _ensure_workbench_structure(mission_id: str) -> Path:
 
 def _mission_chat_path(mission_id: str) -> Path:
     return _ensure_workbench_structure(mission_id) / "notes" / MISSION_CHAT_FILENAME
+
+
+def _mission_parking_path(mission_id: str) -> Path:
+    return _ensure_workbench_structure(mission_id) / "notes" / MISSION_PARKING_FILENAME
 
 
 def _mission_manifest_payload(mission_id: str) -> dict[str, Any] | None:
@@ -381,6 +396,70 @@ def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
         f.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
+def _default_parking_status(mission_id: str) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    return {
+        "mission_id": mission,
+        "status": "active",
+        "reason": "",
+        "parked_at": "",
+        "parked_by": "",
+        "resume_hint": "",
+        "updated_at": "",
+    }
+
+
+def _read_parking_status(mission_id: str) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    path = _mission_parking_path(mission)
+    if not path.exists():
+        return _default_parking_status(mission)
+    payload = _load_json(path)
+    if not isinstance(payload, dict):
+        return _default_parking_status(mission)
+    record = _default_parking_status(mission)
+    record["mission_id"] = str(payload.get("mission_id") or mission).strip() or mission
+    status = str(payload.get("status") or "active").strip().lower()
+    record["status"] = status if status in {"active", "parked"} else "active"
+    record["reason"] = str(payload.get("reason") or "").strip()
+    record["parked_at"] = str(payload.get("parked_at") or "").strip()
+    parked_by = str(payload.get("parked_by") or "").strip()
+    record["parked_by"] = parked_by if parked_by in {"operator", "system_read_model"} else ""
+    record["resume_hint"] = str(payload.get("resume_hint") or "").strip()
+    record["updated_at"] = str(payload.get("updated_at") or "").strip()
+    if record["status"] != "parked":
+        record["parked_at"] = ""
+    return record
+
+
+def _write_parking_status(
+    mission_id: str,
+    *,
+    status: str,
+    reason: str = "",
+    parked_by: str = "operator",
+    resume_hint: str = "",
+) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    normalized_status = "parked" if str(status).strip().lower() == "parked" else "active"
+    existing = _read_parking_status(mission)
+    record = {
+        "mission_id": mission,
+        "status": normalized_status,
+        "reason": str(reason).strip(),
+        "parked_at": str(existing.get("parked_at") or "") if normalized_status == "parked" else "",
+        "parked_by": str(parked_by).strip() or "operator",
+        "resume_hint": str(resume_hint).strip(),
+        "updated_at": iso_now(),
+    }
+    if normalized_status == "parked" and not record["parked_at"]:
+        record["parked_at"] = record["updated_at"]
+    if normalized_status != "parked":
+        record["parked_by"] = ""
+    _write_json(_mission_parking_path(mission), record)
+    return record
+
+
 def _mission_chat_messages(mission_id: str) -> list[dict[str, Any]]:
     path = _mission_chat_path(mission_id)
     rows = _read_jsonl(path)
@@ -399,42 +478,675 @@ def _mission_chat_messages(mission_id: str) -> list[dict[str, Any]]:
     return messages
 
 
-def _chat_reply(message: str, quick_reply: str | None, state: str, mission_summary: str) -> dict[str, str]:
+def _text_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    items: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if text and text not in items:
+            items.append(text)
+    return items
+
+
+def _dict_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, dict):
+            items.append(item)
+    return items
+
+
+def _normalize_question_text(text: str) -> str:
+    return " ".join(str(text).strip().lower().split())
+
+
+def _extract_confirmed_fact_items(text: str, *, source: str, created_at: str) -> list[dict[str, str]]:
+    lowered = text.lower()
+    facts: list[dict[str, str]] = []
+    if any(token in lowered for token in ["production", "prod"]):
+        facts.append({"text": "Environment confirmed: production.", "source": source, "created_at": created_at})
+    if "staging" in lowered:
+        facts.append({"text": "Environment confirmed: staging.", "source": source, "created_at": created_at})
+    if "window" in lowered:
+        facts.append({"text": "A timing window was provided.", "source": source, "created_at": created_at})
+    if "objective" in lowered:
+        facts.append({"text": "The mission objective was restated.", "source": source, "created_at": created_at})
+    if "scope" in lowered:
+        facts.append({"text": "The mission scope was clarified.", "source": source, "created_at": created_at})
+    if "link" in lowered or "url" in lowered:
+        facts.append({"text": "A reference link or URL was provided.", "source": source, "created_at": created_at})
+    if "outcome" in lowered or "result" in lowered:
+        facts.append({"text": "The desired outcome was stated.", "source": source, "created_at": created_at})
+    return facts
+
+
+def _assumption_items_from_packet(latest_packet: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(latest_packet, dict):
+        return []
+    assumptions = latest_packet.get("assumptions")
+    if not isinstance(assumptions, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for index, assumption in enumerate(assumptions[:4]):
+        if not isinstance(assumption, dict):
+            continue
+        statement = str(assumption.get("statement") or "").strip()
+        if not statement:
+            continue
+        items.append({
+            "assumption_id": str(assumption.get("assumption_id") or f"assumption_{index + 1}"),
+            "statement": statement,
+            "confidence": float(assumption.get("confidence") or 0.0),
+            "source": str(assumption.get("source") or "Hermes result"),
+            "type": str(assumption.get("type") or "default"),
+            "reason": "Provisional assumption carried forward from the latest clarification packet.",
+        })
+    return items
+
+
+def _question_items_from_packet(latest_packet: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(latest_packet, dict):
+        return []
+    ranked = latest_packet.get("clarifying_questions_ranked")
+    if not isinstance(ranked, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for index, question in enumerate(ranked[:4]):
+        if not isinstance(question, dict):
+            continue
+        text = str(question.get("question") or "").strip()
+        if not text:
+            continue
+        impact = str(question.get("impact") or "medium").strip()
+        if impact not in {"low", "medium", "high"}:
+            impact = "medium"
+        items.append({
+            "question": text,
+            "impact": impact,
+            "source": "clarification packet",
+            "asked_count": 0,
+            "last_asked_at": "",
+            "question_id": f"question_{index + 1}",
+        })
+    return items
+
+
+def _question_items_from_summary(summary: dict[str, Any], latest_packet: dict[str, Any] | None) -> list[dict[str, Any]]:
+    questions = _question_items_from_packet(latest_packet)
+    if questions:
+        return questions
+    next_question = str(summary.get("next_question") or "").strip()
+    if next_question:
+        impact = "high" if summary.get("status") == "blocked" else "medium"
+        return [{
+            "question": next_question,
+            "impact": impact,
+            "source": "mission summary",
+            "asked_count": 0,
+            "last_asked_at": "",
+            "question_id": "summary_question_1",
+        }]
+    needs = summary.get("what_we_need_from_you")
+    if isinstance(needs, list) and needs:
+        items: list[dict[str, Any]] = []
+        for index, item in enumerate(needs[:3]):
+            text = str(item).strip()
+            if not text:
+                continue
+            items.append({
+                "question": text,
+                "impact": "high" if index == 0 and summary.get("status") == "blocked" else "medium",
+                "source": "mission summary",
+                "asked_count": 0,
+                "last_asked_at": "",
+                "question_id": f"need_{index + 1}",
+            })
+        return items
+    return []
+
+
+def _question_is_blocking(question: str) -> bool:
+    lower = question.lower()
+    return any(
+        token in lower
+        for token in [
+            "approve",
+            "approval",
+            "review preview",
+            "submit",
+            "dispatch",
+            "bridge",
+            "governance",
+            "which path",
+            "final answer",
+            "publish",
+        ]
+    )
+
+
+def _question_quick_replies(question: str, *, can_continue_without_input: bool) -> list[dict[str, str]]:
+    lower = question.lower()
+    if "production or staging" in lower or ("production" in lower and "staging" in lower):
+        return [
+            {"label": "Production", "value": "production"},
+            {"label": "Staging", "value": "staging"},
+            {"label": "Not sure", "value": "Not sure"},
+        ]
+    if "yes / no" in lower or "yes/no" in lower or lower.startswith("is "):
+        return [
+            {"label": "Yes", "value": "Yes"},
+            {"label": "No", "value": "No"},
+            {"label": "Not sure", "value": "Not sure"},
+        ]
+    if any(token in lower for token in ["objective", "scope", "link", "desired outcome"]):
+        return [
+            {"label": "Objective", "value": "objective"},
+            {"label": "Scope", "value": "scope"},
+            {"label": "Link", "value": "link"},
+            {"label": "Desired outcome", "value": "desired outcome"},
+        ]
+    replies = [
+        {"label": "Not sure", "value": "Not sure"},
+        {"label": "Write more information", "value": "Write more information"},
+    ]
+    if can_continue_without_input:
+        replies.insert(0, {"label": "Proceed with assumptions", "value": "Proceed with assumptions"})
+    return replies
+
+
+def _merge_unique_structured(items: list[dict[str, Any]], key_name: str) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        key = _normalize_question_text(item.get(key_name) or item.get("statement") or item.get("text") or "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    return merged
+
+
+def _merge_unique_strings(items: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        key = _normalize_question_text(item or "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(str(item).strip())
+    return merged
+
+
+def _merge_deferred_questions(
+    existing: Any,
+    new_questions: list[dict[str, Any]],
+    confirmed_facts: list[dict[str, Any]],
+    operator_text: str,
+    quick_reply: str | None,
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    if isinstance(existing, list):
+        for item in existing:
+            if isinstance(item, dict) and str(item.get("question") or "").strip():
+                items.append(item)
+
+    fact_text = " ".join(str(item.get("text") or "") for item in confirmed_facts).lower()
+    for question in new_questions:
+        question_text = str(question.get("question") or "").strip()
+        if not question_text:
+            continue
+        normalized = _normalize_question_text(question_text)
+        resolved = False
+        if normalized in fact_text and fact_text:
+            resolved = True
+        if "production or staging" in normalized and any(token in fact_text for token in ["production", "staging"]):
+            resolved = True
+        if "outage window" in normalized and "window" in fact_text:
+            resolved = True
+        if any(token in normalized for token in ["objective", "scope", "link", "desired outcome"]) and any(
+            token in fact_text for token in ["objective", "scope", "link", "desired outcome"]
+        ):
+            resolved = True
+        if quick_reply and _normalize_question_text(quick_reply) in normalized:
+            resolved = True
+        if operator_text and _normalize_question_text(operator_text) in normalized:
+            resolved = True
+        if resolved:
+            continue
+        items.append({
+            "question": question_text,
+            "impact": str(question.get("impact") or "medium"),
+            "source": str(question.get("source") or "mission summary"),
+            "asked_count": int(question.get("asked_count") or 0),
+            "last_asked_at": str(question.get("last_asked_at") or ""),
+            "question_id": str(question.get("question_id") or _normalize_question_text(question_text).replace(" ", "_")[:40]),
+        })
+
+    return _merge_unique_structured(items, "question")
+
+
+def _assumption_summary_lines(assumptions: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for item in assumptions[:4]:
+        statement = str(item.get("statement") or "").strip()
+        if not statement:
+            continue
+        confidence = item.get("confidence")
+        reason = str(item.get("reason") or "").strip()
+        if isinstance(confidence, (int, float)):
+            line = f"{statement} (confidence {float(confidence):.2f})"
+        else:
+            line = statement
+        if reason:
+            line = f"{line} - {reason}"
+        lines.append(line)
+    return lines
+
+
+def _fact_summary_lines(facts: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for item in facts[:5]:
+        text = str(item.get("text") or "").strip()
+        if text:
+            lines.append(text)
+    return lines
+
+
+def _question_summary_lines(questions: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for item in questions[:4]:
+        text = str(item.get("question") or "").strip()
+        if text:
+            lines.append(text)
+    return lines
+
+
+def _working_memory_baseline_confidence(detail: dict[str, Any]) -> float:
+    score = 0.18
+    if detail.get("latest_hermes_run"):
+        score += 0.22
+    if detail.get("latest_clarification_packet"):
+        score += 0.18
+    if detail.get("latest_draft"):
+        score += 0.12
+    if detail.get("manifest"):
+        score += 0.08
+    if detail.get("mission_inputs"):
+        score += min(0.08, len(detail.get("mission_inputs") or []) * 0.02)
+    return max(0.05, min(0.95, score))
+
+
+def _working_memory_operating_status(
+    *,
+    current_state: str,
+    confidence: float,
+    active_assumptions: list[dict[str, Any]],
+    open_questions: list[dict[str, Any]],
+    deferred_questions: list[dict[str, Any]],
+) -> tuple[str, bool, str]:
+    current_state = current_state or "MISSION_DEFINED"
+    blocking_questions = [item for item in open_questions if _question_is_blocking(str(item.get("question") or ""))]
+    if current_state in {"MISSION_CLOSED", "ARCHIVE_REVIEW"}:
+        return "idle", True, ""
+    if current_state in {"PACKAGE_READY", "BRIDGE_CONSIDERATION"}:
+        return "ready_for_review", True, ""
+    if blocking_questions:
+        reason = str(blocking_questions[0].get("question") or "A blocking clarification is required.").strip()
+        return "blocked", False, reason
+    if current_state in {"CLARIFICATION_NEEDED", "RECONSIDERATION_REQUESTED"}:
+        if active_assumptions:
+            if confidence < 0.45 or open_questions:
+                reason = str(open_questions[0].get("question") or "Proceeding under explicit assumptions.").strip() if open_questions else "Proceeding under explicit assumptions."
+                return "needs_clarification_but_continuing", True, reason
+            return "proceeding_with_assumptions", True, ""
+        if confidence < 0.35:
+            reason = str(open_questions[0].get("question") or "Low confidence but no safe blocker is present.").strip() if open_questions else "Low confidence but no safe blocker is present."
+            return "low_confidence_continue", True, reason
+        if open_questions:
+            return "needs_clarification_but_continuing", True, str(open_questions[0].get("question") or "").strip()
+        return "proceeding_with_assumptions", True, ""
+    if confidence < 0.35:
+        return "low_confidence_continue", True, "Confidence is still low, but the mission can continue."
+    if open_questions:
+        return "proceeding_with_assumptions", True, str(open_questions[0].get("question") or "").strip()
+    if active_assumptions:
+        return "proceeding_with_assumptions", True, ""
+    return "proceeding_with_assumptions", True, ""
+
+
+def _build_working_memory_payload(
+    detail: dict[str, Any],
+    *,
+    operator_text: str = "",
+    operator_reply_at: str = "",
+    source: str = "",
+    quick_reply: str | None = None,
+) -> dict[str, Any]:
+    mission_id = str(detail.get("mission_id") or "").strip()
+    current_state = str(detail.get("current_state") or "MISSION_DEFINED").strip() or "MISSION_DEFINED"
+    mission_summary = detail.get("mission_summary") if isinstance(detail.get("mission_summary"), dict) else {}
+    latest_packet = detail.get("latest_clarification_packet") if isinstance(detail.get("latest_clarification_packet"), dict) else None
+    objective = str(detail.get("objective") or "").strip()
+    existing = read_working_memory(mission_id) if mission_id else {}
+
+    confirmed_facts: list[dict[str, Any]] = []
+    if isinstance(existing, dict):
+        confirmed_facts.extend(_dict_list(existing.get("confirmed_facts")))
+    created_at = operator_reply_at or iso_now()
+    if objective:
+        confirmed_facts.append({
+            "text": f"Mission objective: {objective}",
+            "source": "mission brief",
+            "created_at": str(detail.get("created_at") or created_at),
+        })
+    if operator_text:
+        confirmed_facts.extend(_extract_confirmed_fact_items(operator_text, source=source or "operator input", created_at=created_at))
+    confirmed_facts = _merge_unique_structured(confirmed_facts, "text")
+
+    active_assumptions: list[dict[str, Any]] = []
+    if isinstance(existing, dict):
+        active_assumptions.extend(_dict_list(existing.get("active_assumptions")))
+    active_assumptions.extend(_assumption_items_from_packet(latest_packet))
+    if not active_assumptions and objective:
+        active_assumptions.append({
+            "assumption_id": "assumption_1",
+            "statement": f"The mission can proceed using the current objective as the initial anchor: {objective}.",
+            "confidence": 0.35,
+            "source": "mission brief",
+            "type": "default",
+            "reason": "No stronger context has been provided yet, so the mission uses the objective as the safest starting assumption.",
+        })
+    active_assumptions = _merge_unique_structured(active_assumptions, "statement")
+
+    open_questions = _question_items_from_summary(mission_summary, latest_packet)
+    deferred_questions = _merge_deferred_questions(
+        existing.get("deferred_questions") if isinstance(existing, dict) else [],
+        open_questions,
+        confirmed_facts,
+        operator_text,
+        quick_reply,
+    )
+    if not open_questions and deferred_questions:
+        open_questions = deferred_questions[:2]
+
+    baseline_confidence = _working_memory_baseline_confidence(detail)
+    confidence_penalty = min(0.25, 0.05 * max(0, len(active_assumptions) - 1))
+    if open_questions:
+        confidence_penalty += 0.03 if any(_question_is_blocking(str(item.get("question") or "")) for item in open_questions) else 0.05
+    if current_state in {"CLARIFICATION_NEEDED", "RECONSIDERATION_REQUESTED"}:
+        confidence_penalty += 0.05
+    if quick_reply and _normalize_question_text(quick_reply) == "proceed with assumptions":
+        confidence_penalty = max(0.02, confidence_penalty - 0.03)
+    confidence_penalty = min(0.4, confidence_penalty)
+    confidence = max(0.05, min(0.95, baseline_confidence - confidence_penalty))
+
+    operating_status, can_continue_without_input, blocked_reason = _working_memory_operating_status(
+        current_state=current_state,
+        confidence=confidence,
+        active_assumptions=active_assumptions,
+        open_questions=open_questions,
+        deferred_questions=deferred_questions,
+    )
+    crew_recalled = not can_continue_without_input and operating_status == "blocked"
+    existing_parked_at = str(existing.get("parked_at") or "") if isinstance(existing, dict) else ""
+    parked_at = existing_parked_at
+    if crew_recalled and not parked_at:
+        parked_at = iso_now()
+    if not crew_recalled:
+        parked_at = ""
+
+    latest_summary = str(mission_summary.get("summary") or "").strip()
+    if not latest_summary:
+        latest_summary = str((detail.get("latest_hermes_run") or {}).get("summary") or "").strip()
+    if not latest_summary:
+        latest_summary = str((detail.get("manifest") or {}).get("summary") or "").strip()
+    if not latest_summary and objective:
+        latest_summary = f"Mission focused on {objective}."
+
+    memory = {
+        "mission_id": mission_id,
+        "confirmed_facts": confirmed_facts,
+        "active_assumptions": active_assumptions,
+        "open_questions": open_questions[:4],
+        "deferred_questions": deferred_questions[:8],
+        "latest_summary": latest_summary,
+        "latest_confidence": round(confidence, 2),
+        "confidence_reduction": round(max(0.0, baseline_confidence - confidence), 2),
+        "last_operator_reply_at": operator_reply_at or (str(existing.get("last_operator_reply_at") or "") if isinstance(existing, dict) else ""),
+        "updated_at": iso_now(),
+        "operating_status": operating_status,
+        "blocked_reason": blocked_reason,
+        "can_continue_without_input": can_continue_without_input,
+        "crew_status": "recalled" if crew_recalled else "active",
+        "crew_recalled": crew_recalled,
+        "expedition_activity": "paused" if crew_recalled else "running",
+        "wake_hint": str(open_questions[0].get("question") or blocked_reason or "") if open_questions or blocked_reason else "",
+        "parked_at": parked_at,
+    }
+    return memory
+
+
+def _refresh_working_memory(
+    mission_id: str,
+    *,
+    operator_text: str = "",
+    operator_reply_at: str = "",
+    source: str = "",
+    quick_reply: str | None = None,
+) -> dict[str, Any]:
+    detail = _build_expedition_detail(mission_id)
+    memory = _build_working_memory_payload(
+        detail,
+        operator_text=operator_text,
+        operator_reply_at=operator_reply_at,
+        source=source,
+        quick_reply=quick_reply,
+    )
+    write_working_memory(mission_id, memory)
+    return memory
+
+
+def _blocking_question_lines(
+    open_question_items: list[dict[str, Any]],
+    latest_packet: dict[str, Any] | None,
+) -> list[str]:
+    questions: list[str] = []
+    for item in open_question_items:
+        text = str(item.get("question") or "").strip()
+        if text and _question_is_blocking(text):
+            questions.append(text)
+    if not questions and isinstance(latest_packet, dict):
+        for item in _dict_list(latest_packet.get("clarifying_questions_ranked")):
+            text = str(item.get("question") or "").strip()
+            impact = str(item.get("impact") or "medium").strip().lower()
+            if text and impact == "high":
+                questions.append(text)
+    return _merge_unique_strings(questions)[:3]
+
+
+def _operator_options(
+    *,
+    operator_posture: str,
+    blocking_questions: list[str],
+    has_review_preview: bool,
+    parking_status: dict[str, Any],
+) -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    if operator_posture == "parked":
+        options.append({"label": "Resume mission", "value": "Resume mission", "kind": "resume"})
+    else:
+        options.append({"label": "Proceed with assumptions", "value": "Proceed with assumptions", "kind": "assume"})
+        options.append({"label": "Park mission", "value": "Park mission", "kind": "park"})
+    if blocking_questions:
+        options.append({"label": "Answer blockers", "value": "Answer blockers", "kind": "blockers"})
+    if has_review_preview:
+        options.append({"label": "Open review preview", "value": "Open review preview", "kind": "review"})
+    if operator_posture != "parked" and str(parking_status.get("status") or "active") == "parked":
+        options.insert(0, {"label": "Resume mission", "value": "Resume mission", "kind": "resume"})
+    return options[:5]
+
+
+def _clarification_facts_from_text(text: str) -> list[str]:
+    lowered = text.lower()
+    facts: list[str] = []
+    if any(token in lowered for token in ["production", "prod"]):
+        facts.append("production")
+    if "staging" in lowered:
+        facts.append("staging")
+    if "window" in lowered:
+        facts.append("window")
+    if "objective" in lowered:
+        facts.append("objective")
+    if "scope" in lowered:
+        facts.append("scope")
+    if "link" in lowered or "url" in lowered:
+        facts.append("link")
+    if "outcome" in lowered or "result" in lowered:
+        facts.append("desired outcome")
+    return facts
+
+
+def _clarification_reply_text(message: str, quick_reply: str | None, detail: dict[str, Any]) -> tuple[str, str]:
     quick = str(quick_reply or "").strip().lower()
-    if quick in {"yes", "affirmative"}:
-        return {
-            "role": "assistant",
-            "tone": "good",
-            "message": "Acknowledged. I'll keep the mission moving and wait for the next instruction.",
-        }
-    if quick in {"no", "negative"}:
-        return {
-            "role": "assistant",
-            "tone": "watch",
-            "message": "Understood. I'll hold this mission steady and avoid making assumptions.",
-        }
+    summary = detail.get("mission_summary") if isinstance(detail.get("mission_summary"), dict) else {}
+    parking_status = detail.get("parking_status") if isinstance(detail.get("parking_status"), dict) else {}
+    working_memory = detail.get("working_memory") if isinstance(detail.get("working_memory"), dict) else {}
+    next_question = str(summary.get("next_question") or "").strip()
+    reason = str(summary.get("clarification_reason") or "").strip()
+    blocked_reason = str(working_memory.get("blocked_reason") or "").strip()
+    current_state = str(detail.get("current_state") or "")
+    operator_posture = str(summary.get("operator_posture") or detail.get("operator_posture") or "").strip()
+    message_lower = message.lower().strip()
+    assumption_lines = _assumption_summary_lines(_dict_list(working_memory.get("active_assumptions")))
+    open_questions = _question_summary_lines(_dict_list(working_memory.get("open_questions")))
+    blocking_questions = list(summary.get("blocking_questions") or detail.get("blocking_questions") or [])
+    review_preview = _record_object(detail.get("latest_draft"), "review_preview") if isinstance(detail, dict) else None
+
+    if quick == "park mission":
+        wake_hint = str(parking_status.get("resume_hint") or summary.get("next_best_operator_answer") or next_question or blocked_reason or "").strip()
+        if wake_hint:
+            return f"Mission parked. Expedition activity is paused until new input arrives. To wake it cleanly, answer this: {wake_hint}", "watch"
+        return "Mission parked. Expedition activity is paused until new input arrives.", "watch"
+    if quick == "resume mission":
+        if assumption_lines:
+            return f"Mission resumed. I’m back in active review and proceeding under the current assumptions: {'; '.join(assumption_lines[:2])}.", "good"
+        return "Mission resumed. I’m back in active review with the current mission context.", "good"
+    if quick == "answer blockers":
+        if blocking_questions:
+            return f"The top blocker is: {blocking_questions[0]}", "watch"
+        if open_questions:
+            return f"The top open question is: {open_questions[0]}", "watch"
+        return "There is no hard blocker right now. The mission can continue under bounded assumptions.", "good"
+    if quick == "open review preview":
+        if isinstance(review_preview, dict):
+            preview_path = str(review_preview.get("draft_path") or "").strip()
+            if preview_path:
+                return f"Review preview is ready. Open the draft preview at {preview_path} to inspect it without submitting anything.", "good"
+        return "No review preview is ready yet. I’ll keep the mission in its current safe lane until a draft exists.", "watch"
+
+    if quick == "proceed with assumptions":
+        if assumption_lines:
+            preview = "; ".join(assumption_lines[:2])
+            return f"Understood. I’m proceeding with explicit assumptions: {preview}. I’ll keep the remaining question queued.", "good"
+        return "Understood. I’m proceeding with the safest available assumptions and will keep the remaining question queued.", "good"
+    if quick in {"production", "staging"}:
+        return f"Thanks. I’ve recorded the environment as {quick} and will use that as the working assumption.", "good"
+    if quick in {"objective", "scope", "link", "desired outcome"}:
+        return f"Thanks. I’ve marked {quick} as the missing detail and will keep the mission moving with the current assumptions.", "good"
+
+    if quick == "yes":
+        if "production or staging" in next_question.lower():
+            return "Confirmed. I’m treating this as an environment decision point and will keep the mission moving with the current working assumption.", "good"
+        if "outage window" in next_question.lower():
+            return "Thanks. That confirms the outage-window focus and narrows the mission.", "good"
+        return "Thanks. I’ve recorded the confirmation and will use it to narrow the mission.", "good"
+    if quick == "no":
+        if "production or staging" in next_question.lower():
+            return "Understood. I’ll avoid locking the environment assumption and will continue with the safest fallback.", "watch"
+        return "Understood. I’ll avoid assuming that detail and keep the mission on the least risky path.", "watch"
+    if quick == "not sure":
+        if blocked_reason:
+            return f"No problem. I still need one blocking answer: {blocked_reason}", "watch"
+        return "No problem. I’ll keep the mission in clarification mode, but continue under the current assumptions.", "watch"
     if quick in {"write more information", "more info", "more information"}:
-        return {
-            "role": "assistant",
-            "tone": "watch",
-            "message": "Please add the missing context. Helpful details are objective, scope, constraints, links, and desired outcome.",
-        }
-    if "?" in message or state in {"CLARIFICATION_NEEDED", "RECONSIDERATION_REQUESTED"}:
-        return {
-            "role": "assistant",
-            "tone": "watch",
-            "message": mission_summary or "I need a bit more detail before I can move this mission forward.",
-        }
+        if next_question:
+            return f"Please add the missing detail for this mission: {next_question}", "watch"
+        if blocked_reason:
+            return f"Please add the missing detail that would unblock the mission: {blocked_reason}", "watch"
+        return "Please add the missing detail that would improve confidence, even though the mission can continue.", "watch"
+
+    facts = _clarification_facts_from_text(message)
+    if facts:
+        if "production" in facts or "staging" in facts:
+            return "Thanks — that gives me an environment signal. I’m treating the mission as environment-scoped and will keep asking only for the most important remaining question.", "good"
+        if "window" in facts:
+            return "Thanks — I have the timing focus now. I’ll use the outage window as the active constraint.", "good"
+        if "link" in facts:
+            return "Thanks — I’ve got a reference to work from, which helps narrow the mission.", "good"
+        if "desired outcome" in facts:
+            return "That helps. I now have a clearer outcome target and can narrow the next question.", "good"
+        return "Thanks — I’ve recorded that as mission input and used it to narrow the clarification path.", "good"
+
+    if operator_posture == "parked":
+        wake_hint = str(parking_status.get("resume_hint") or next_question or blocked_reason or "").strip()
+        if wake_hint:
+            return f"The mission is parked. One clear answer would wake it: {wake_hint}", "watch"
+        return "The mission is parked until you send fresh input to wake it.", "watch"
+
+    if "?" in message_lower or current_state in {"CLARIFICATION_NEEDED", "RECONSIDERATION_REQUESTED"}:
+        if blocked_reason:
+            return f"I’m blocked on one answer: {blocked_reason}", "watch"
+        if reason:
+            return f"I can continue with assumptions, but this would improve things: {reason}", "watch"
+        if next_question:
+            return next_question, "watch"
+        if open_questions:
+            return f"I can continue, but the most useful next question is: {open_questions[0]}", "watch"
+        return "I can continue with assumptions, but one clear answer would improve confidence.", "watch"
+
+    if message.strip():
+        if assumption_lines:
+            preview = "; ".join(assumption_lines[:2])
+            return f"Thanks — I’ve recorded that as mission input. I’m keeping the mission moving under these assumptions: {preview}.", "good"
+        return "Thanks — I’ve recorded that as mission input and will use it to refine the next clarification.", "good"
+
+    if blocked_reason:
+        return f"I need one blocking answer before I can move this mission forward: {blocked_reason}", "watch"
+    return "I can continue with assumptions, but one more detail would improve confidence.", "watch"
+
+
+def _chat_reply(message: str, quick_reply: str | None, detail: dict[str, Any]) -> dict[str, str]:
+    reply, tone = _clarification_reply_text(message, quick_reply, detail)
     return {
         "role": "assistant",
-        "tone": "good",
-        "message": "Received. I've recorded this in the mission chat and intake lanes for review.",
+        "tone": tone,
+        "message": reply,
     }
 
 
 def _append_chat_exchange(mission_id: str, message: str, *, quick_reply: str | None = None) -> dict[str, Any]:
     mission = normalize_mission_id(mission_id)
+    action = _normalize_question_text(quick_reply or message)
     detail = _build_expedition_detail(mission)
+    summary = detail.get("mission_summary") if isinstance(detail.get("mission_summary"), dict) else {}
+    if action == "park mission":
+        _write_parking_status(
+            mission,
+            status="parked",
+            reason=str(summary.get("operator_posture_reason") or summary.get("blocked_reason") or summary.get("clarification_reason") or "").strip(),
+            parked_by="operator",
+            resume_hint=str(summary.get("next_best_operator_answer") or summary.get("next_question") or "").strip(),
+        )
+        detail = _build_expedition_detail(mission)
+    elif action in {"resume mission", "proceed with assumptions"}:
+        _write_parking_status(mission, status="active", reason=str(message).strip(), parked_by="operator", resume_hint="")
+        detail = _build_expedition_detail(mission)
     path = _mission_chat_path(mission)
     user_item = {
         "message_id": f"chat_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{_short_digest(f'{mission}|user|{message}')}",
@@ -446,7 +1158,7 @@ def _append_chat_exchange(mission_id: str, message: str, *, quick_reply: str | N
         "created_at": iso_now(),
         "kind": "message",
     }
-    assistant = _chat_reply(message, quick_reply, str(detail.get("current_state") or ""), str(detail.get("summary") or ""))
+    assistant = _chat_reply(message, quick_reply, detail)
     assistant_digest_seed = f"{mission}|assistant|{assistant['message']}"
     assistant_item = {
         "message_id": f"chat_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{_short_digest(assistant_digest_seed)}",
@@ -460,6 +1172,16 @@ def _append_chat_exchange(mission_id: str, message: str, *, quick_reply: str | N
     }
     _append_jsonl(path, user_item)
     _append_jsonl(path, assistant_item)
+    working_memory = _build_working_memory_payload(
+        detail,
+        operator_text=message,
+        operator_reply_at=user_item["created_at"],
+        source="mission chat",
+        quick_reply=quick_reply,
+    )
+    working_memory["latest_summary"] = str(detail.get("mission_summary", {}).get("summary") or working_memory.get("latest_summary") or "")
+    working_memory["last_operator_reply_at"] = user_item["created_at"]
+    write_working_memory(mission, working_memory)
     return {
         "messages": [user_item, assistant_item],
         "path": path.relative_to(ROOT).as_posix(),
@@ -467,11 +1189,23 @@ def _append_chat_exchange(mission_id: str, message: str, *, quick_reply: str | N
     }
 
 
-def _mission_status_badge(current_state: str, manifest_status: str, latest_run_id: str, input_count: int) -> str:
+def _mission_status_badge(
+    current_state: str,
+    manifest_status: str,
+    latest_run_id: str,
+    input_count: int,
+    operating_status: str = "",
+    operator_posture: str = "",
+    triage_bucket: str = "",
+) -> str:
     if current_state in {"MISSION_CLOSED", "ARCHIVE_REVIEW"}:
         return "idle"
-    if current_state in {"PACKAGE_READY", "BRIDGE_CONSIDERATION"} or manifest_status in {"ready_for_review"}:
+    if operator_posture == "parked" or triage_bucket == "parked":
+        return "waiting_for_user"
+    if current_state in {"PACKAGE_READY", "BRIDGE_CONSIDERATION"} or manifest_status in {"ready_for_review"} or operating_status == "ready_for_review" or triage_bucket == "review":
         return "ready_for_review"
+    if operator_posture == "needs_operator_answer" or triage_bucket == "waiting":
+        return "waiting_for_user"
     if current_state in {
         "CITADEL_ACTIVE",
         "RELEASE_REQUESTED",
@@ -483,9 +1217,11 @@ def _mission_status_badge(current_state: str, manifest_status: str, latest_run_i
     }:
         return "researching"
     if current_state in {"CLARIFICATION_NEEDED", "MISSION_DEFINED", "RECONSIDERATION_REQUESTED"}:
-        return "waiting_for_user"
+        return "researching"
+    if operating_status in {"proceeding_with_assumptions", "needs_clarification_but_continuing", "low_confidence_continue"}:
+        return "researching"
     if not latest_run_id and input_count == 0:
-        return "waiting_for_user"
+        return "researching"
     return "researching"
 
 
@@ -520,8 +1256,24 @@ def _mission_summary_payload(
     latest_draft: dict[str, Any] | None,
     latest_packet: dict[str, Any] | None,
     mission_inputs: list[dict[str, Any]],
+    working_memory: dict[str, Any] | None = None,
+    parking_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    working_memory = working_memory if isinstance(working_memory, dict) else read_working_memory(mission_id)
+    parking_status = parking_status if isinstance(parking_status, dict) else _read_parking_status(mission_id)
+    confirmed_fact_items = _dict_list(working_memory.get("confirmed_facts"))
+    active_assumption_items = _dict_list(working_memory.get("active_assumptions"))
+    open_question_items = _dict_list(working_memory.get("open_questions"))
+    deferred_question_items = _dict_list(working_memory.get("deferred_questions"))
+    operating_status = str(working_memory.get("operating_status") or "").strip()
+    blocked_reason = str(working_memory.get("blocked_reason") or "").strip()
+    can_continue_without_input = bool(working_memory.get("can_continue_without_input", True))
+    memory_latest_summary = str(working_memory.get("latest_summary") or "").strip()
+    memory_confidence = working_memory.get("latest_confidence")
+
     believed: list[str] = []
+    if memory_latest_summary:
+        believed.append(memory_latest_summary)
     if objective:
         believed.append(f"Objective: {objective}")
     if latest_run:
@@ -535,11 +1287,6 @@ def _mission_summary_payload(
         provisional = str((latest_packet.get("provisional_answer") or {}).get("text") or "").strip()
         if provisional:
             believed.append(provisional)
-        confidence_analysis = latest_packet.get("confidence_analysis")
-        if isinstance(confidence_analysis, dict):
-            current_conf = confidence_analysis.get("current_confidence")
-            if isinstance(current_conf, (int, float)):
-                believed.append(f"Clarification confidence: {float(current_conf):.2f}")
     if manifest:
         manifest_summary = str(manifest.get("summary") or "").strip()
         if manifest_summary:
@@ -548,66 +1295,230 @@ def _mission_summary_payload(
         draft_summary = str((latest_draft.get("draft") or {}).get("summary") or latest_draft.get("summary") or "").strip()
         if draft_summary:
             believed.append(draft_summary)
-
+    for item in confirmed_fact_items[:2]:
+        text = str(item.get("text") or "").strip()
+        if text:
+            believed.append(text)
+    for item in active_assumption_items[:2]:
+        text = str(item.get("statement") or "").strip()
+        if text:
+            believed.append(f"Assuming: {text}")
     believed = [item for item in believed if item][:5]
-    confidence = 0.25
+
+    baseline_confidence = 0.18
     if latest_run:
-        confidence += 0.25
+        baseline_confidence += 0.22
     if latest_draft:
-        confidence += 0.15
+        baseline_confidence += 0.12
     if latest_packet:
-        confidence += 0.2
+        baseline_confidence += 0.18
     if manifest:
-        confidence += 0.1
+        baseline_confidence += 0.08
     if mission_inputs:
-        confidence += min(0.1, len(mission_inputs) * 0.02)
+        baseline_confidence += min(0.08, len(mission_inputs) * 0.02)
+    baseline_confidence = max(0.05, min(0.95, baseline_confidence))
+
+    confidence = baseline_confidence
     if current_state in {"CLARIFICATION_NEEDED", "RECONSIDERATION_REQUESTED"}:
-        confidence -= 0.1
+        confidence -= 0.05
+    if active_assumption_items:
+        confidence -= min(0.25, 0.05 * max(0, len(active_assumption_items) - 1))
+    if open_question_items:
+        confidence -= 0.05 if can_continue_without_input else 0.1
     confidence = max(0.05, min(0.95, confidence))
+    if isinstance(memory_confidence, (int, float)):
+        confidence = max(confidence, min(0.95, float(memory_confidence)))
     confidence_label = "low" if confidence < 0.4 else "moderate" if confidence < 0.7 else "high"
+    confidence_reduction = round(max(0.0, baseline_confidence - confidence), 2)
 
-    missing_inputs: list[str] = []
-    packet_missing = []
-    if isinstance(latest_packet, dict):
-        packet_missing = list(latest_packet.get("missing_facts") or [])
-    if packet_missing:
-        missing_inputs.extend([str(item) for item in packet_missing[:4] if str(item).strip()])
-    elif current_state in {"CLARIFICATION_NEEDED", "RECONSIDERATION_REQUESTED"}:
-        missing_inputs.append("One clear operator clarification would unblock the mission.")
-    elif not latest_run:
-        missing_inputs.append("No Hermes run has been recorded yet.")
-    elif not latest_draft and current_state in {"PACKAGE_READY", "BRIDGE_CONSIDERATION"}:
-        missing_inputs.append("A preview draft may still be needed before review.")
+    if not memory_latest_summary:
+        if latest_run:
+            memory_latest_summary = str(latest_run.get("summary") or "").strip()
+        if not memory_latest_summary and manifest:
+            memory_latest_summary = str(manifest.get("summary") or "").strip()
+        if not memory_latest_summary and objective:
+            memory_latest_summary = f"Mission focused on {objective}."
+    if not memory_latest_summary:
+        memory_latest_summary = "No structured summary is available yet."
 
-    if not missing_inputs and mission_inputs:
-        latest_input = str(mission_inputs[0].get("content") or "").strip()
-        if latest_input:
-            missing_inputs.append(f"Confirm whether this latest input should steer the mission: {latest_input[:90]}")
+    confirmed_facts = _fact_summary_lines(confirmed_fact_items)
+    active_assumptions = _assumption_summary_lines(active_assumption_items)
+    open_questions = _question_summary_lines(open_question_items)
+    deferred_questions = _question_summary_lines(deferred_question_items)
+    blocking_questions = _blocking_question_lines(open_question_items, latest_packet)
+    parked = str(parking_status.get("status") or "active") == "parked"
+    parking_reason = str(parking_status.get("reason") or "").strip()
+    parking_resume_hint = str(parking_status.get("resume_hint") or "").strip()
 
-    if current_state in {"CLARIFICATION_NEEDED", "RECONSIDERATION_REQUESTED"}:
-        recommended_next_step = "Send one focused mission input or answer the latest clarification question."
-    elif current_state in {"PACKAGE_READY", "BRIDGE_CONSIDERATION"}:
+    summary_operating_status = operating_status
+    if not summary_operating_status:
+        if current_state in {"MISSION_CLOSED", "ARCHIVE_REVIEW"}:
+            summary_operating_status = "idle"
+        elif current_state in {"PACKAGE_READY", "BRIDGE_CONSIDERATION"}:
+            summary_operating_status = "ready_for_review"
+        elif not can_continue_without_input:
+            summary_operating_status = "blocked"
+        elif current_state in {"CLARIFICATION_NEEDED", "RECONSIDERATION_REQUESTED"} and open_questions:
+            summary_operating_status = "needs_clarification_but_continuing"
+        elif confidence < 0.35:
+            summary_operating_status = "low_confidence_continue"
+        else:
+            summary_operating_status = "proceeding_with_assumptions"
+
+    if summary_operating_status == "blocked":
+        can_continue_without_input = False
+    if summary_operating_status in {"proceeding_with_assumptions", "needs_clarification_but_continuing", "low_confidence_continue"}:
+        can_continue_without_input = True
+    if current_state in {"PACKAGE_READY", "BRIDGE_CONSIDERATION"}:
+        operator_posture = "ready_for_review"
+        operator_posture_reason = "A package or review artifact exists, so the next operator step is review."
+        triage_bucket = "review"
+    elif parked:
+        operator_posture = "parked"
+        operator_posture_reason = parking_reason or blocked_reason or "The mission is parked in the mission console until new operator input arrives."
+        triage_bucket = "parked"
+    elif blocking_questions:
+        operator_posture = "needs_operator_answer"
+        operator_posture_reason = blocking_questions[0]
+        triage_bucket = "waiting"
+    elif current_state == "CLARIFICATION_NEEDED":
+        if active_assumptions or can_continue_without_input:
+            operator_posture = "proceed_with_assumptions"
+            operator_posture_reason = "Clarification would help, but the mission can continue safely under bounded assumptions."
+            triage_bucket = "do_now"
+        else:
+            operator_posture = "needs_operator_answer"
+            operator_posture_reason = blocked_reason or "A material clarification is still required."
+            triage_bucket = "waiting"
+    else:
+        operator_posture = "active"
+        operator_posture_reason = "The mission is in motion and does not need immediate operator intervention."
+        triage_bucket = "do_now"
+
+    if operator_posture in {"parked", "needs_operator_answer"}:
+        can_continue_without_input = False
+    elif operator_posture in {"proceed_with_assumptions", "active", "ready_for_review"}:
+        can_continue_without_input = True
+
+    if operator_posture == "parked":
+        clarification_reason = operator_posture_reason
+    elif operator_posture == "needs_operator_answer":
+        clarification_reason = blocked_reason or (blocking_questions[0] if blocking_questions else "A blocking clarification is required before continuing.")
+    elif operator_posture == "ready_for_review":
+        clarification_reason = "The mission is ready for review."
+    elif active_assumptions:
+        clarification_reason = "The mission is proceeding under explicit assumptions."
+    else:
+        clarification_reason = "The mission is continuing cautiously."
+
+    next_question = ""
+    if operator_posture == "parked":
+        next_question = parking_resume_hint or (blocking_questions[0] if blocking_questions else open_questions[0] if open_questions else "")
+    elif blocking_questions:
+        next_question = blocking_questions[0]
+    elif open_questions:
+        next_question = open_questions[0]
+    elif operator_posture == "ready_for_review":
+        next_question = "Do you want me to open the review preview and keep it pending?"
+    elif summary_operating_status == "low_confidence_continue":
+        next_question = "What extra detail would most reduce uncertainty?"
+
+    next_best_operator_answer = ""
+    if operator_posture == "parked":
+        next_best_operator_answer = parking_resume_hint or "Send fresh mission input when you want this expedition to resume."
+    elif operator_posture == "needs_operator_answer" and blocking_questions:
+        next_best_operator_answer = blocking_questions[0]
+    elif next_question:
+        next_best_operator_answer = next_question
+    elif operator_posture == "proceed_with_assumptions":
+        next_best_operator_answer = "No immediate reply is required; the mission can proceed with the current assumptions."
+    else:
+        next_best_operator_answer = "Add more context if you want to reduce uncertainty."
+
+    operator_options = _operator_options(
+        operator_posture=operator_posture,
+        blocking_questions=blocking_questions,
+        has_review_preview=bool(_record_object(latest_draft, "review_preview") or latest_draft),
+        parking_status=parking_status,
+    )
+
+    if operator_posture == "needs_operator_answer":
+        what_we_need_from_you = blocking_questions[:2] or [blocked_reason or "A blocking clarification is required before continuing."]
+    elif operator_posture == "parked":
+        what_we_need_from_you = [parking_resume_hint or next_question or "Send fresh mission input when you want this expedition to resume."]
+    elif open_questions:
+        what_we_need_from_you = open_questions[:2]
+        if can_continue_without_input:
+            what_we_need_from_you = [f"Optional: {item}" for item in what_we_need_from_you]
+    elif operator_posture == "ready_for_review":
+        what_we_need_from_you = ["Confirm whether the review preview should be opened."]
+    elif operator_posture == "proceed_with_assumptions":
+        what_we_need_from_you = []
+    else:
+        what_we_need_from_you = ["No immediate input is required."]
+
+    crew_status = "recalled" if operator_posture == "parked" else str(working_memory.get("crew_status") or "active").strip() or "active"
+    expedition_activity = "paused" if operator_posture == "parked" else str(working_memory.get("expedition_activity") or "running").strip() or "running"
+    parked_at = str(parking_status.get("parked_at") or "").strip()
+    wake_hint = parking_resume_hint or str(working_memory.get("wake_hint") or next_question or blocked_reason or "").strip()
+
+    if current_state in {"RELEASE_REQUESTED", "RELEASE_PREPARED", "EXPEDITION_ACTIVE"}:
+        recommended_next_step = "Continue the run, then refresh mission detail for the latest state."
+    elif operator_posture == "parked":
+        recommended_next_step = "Leave the mission quiet until new input arrives, then resume it with a fresh operator message."
+    elif operator_posture == "needs_operator_answer":
+        recommended_next_step = "Answer the top blocking question before continuing."
+    elif operator_posture == "ready_for_review":
         recommended_next_step = "Open the review preview and decide whether to submit the draft."
+    elif operator_posture == "proceed_with_assumptions" or summary_operating_status == "needs_clarification_but_continuing":
+        recommended_next_step = "Continue under the current assumptions and answer the top question when ready."
+    elif summary_operating_status == "low_confidence_continue":
+        recommended_next_step = "Continue cautiously and add context if it would reduce uncertainty."
     elif current_state in {"MISSION_CLOSED", "ARCHIVE_REVIEW"}:
         recommended_next_step = "Review the archive summary or reopen the mission if new work is needed."
-    elif current_state in {"RELEASE_REQUESTED", "RELEASE_PREPARED", "EXPEDITION_ACTIVE"}:
-        recommended_next_step = "Continue the run, then refresh mission detail for the latest state."
     else:
-        recommended_next_step = "Add context in mission chat or intake and keep the expedition moving."
+        recommended_next_step = "Proceed with the current assumptions and add more context only if it will improve confidence."
 
-    summary_text = f"{current_state.replace('_', ' ').lower()} mission for {mission_id}."
+    summary_text = f"{operator_posture.replace('_', ' ')} mission for {mission_id}."
     if objective:
         summary_text = f"{summary_text[:-1]} focused on {objective}."
 
+    last_operator_reply_at = str(working_memory.get("last_operator_reply_at") or "")
+
     return {
         "mission_id": mission_id,
-        "status": current_state,
+        "life_cycle_state": current_state,
+        "status": summary_operating_status,
+        "operating_status": summary_operating_status,
+        "can_continue_without_input": can_continue_without_input,
+        "blocked_reason": blocked_reason,
         "summary": summary_text,
+        "latest_summary": memory_latest_summary,
         "what_we_believe": believed or [objective or "No objective recorded yet."],
+        "confirmed_facts": confirmed_facts,
+        "active_assumptions": active_assumptions,
+        "assumptions_active": active_assumptions,
+        "open_questions": open_questions,
+        "deferred_questions": deferred_questions,
+        "blocking_questions": blocking_questions,
         "confidence": round(confidence, 2),
         "confidence_label": confidence_label,
-        "what_we_need_from_you": missing_inputs[:4],
+        "confidence_reduction": round(confidence_reduction, 2),
+        "what_we_need_from_you": what_we_need_from_you[:4],
+        "clarification_reason": clarification_reason,
+        "next_question": next_question,
+        "next_best_operator_answer": next_best_operator_answer,
+        "quick_replies": operator_options[:5],
+        "operator_posture": operator_posture,
+        "operator_posture_reason": operator_posture_reason,
+        "operator_options": operator_options[:5],
+        "triage_bucket": triage_bucket,
         "recommended_next_step": recommended_next_step,
+        "last_operator_reply_at": last_operator_reply_at,
+        "crew_status": crew_status,
+        "expedition_activity": expedition_activity,
+        "parked_at": parked_at,
+        "wake_hint": wake_hint,
     }
 
 
@@ -627,6 +1538,8 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
     latest_run = _latest_run_summary(mission)
     latest_draft = _latest_draft_summary(mission)
     latest_packet = _latest_clarification_summary(mission)
+    working_memory = read_working_memory(mission)
+    parking_status = _read_parking_status(mission)
     workbench_files = _workbench_files(mission)
     workbench_folders = []
     for folder_name in ["intake", "scratch", "code", "test_runs", "notes", "outputs"]:
@@ -643,12 +1556,33 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
             "newest_modified_at": newest_modified_at,
         })
     manifest_status = str((manifest or {}).get("status") or "").strip()
-    status_badge = _mission_status_badge(current_state, manifest_status, latest_run_id, len(mission_inputs))
+    summary_preview = _mission_summary_payload(
+        mission_id=mission,
+        objective=objective,
+        current_state=current_state,
+        manifest=manifest if isinstance(manifest, dict) else None,
+        latest_run=latest_run if isinstance(latest_run, dict) else None,
+        latest_draft=latest_draft if isinstance(latest_draft, dict) else None,
+        latest_packet=latest_packet if isinstance(latest_packet, dict) else None,
+        mission_inputs=mission_inputs,
+        working_memory=working_memory,
+        parking_status=parking_status,
+    )
+    status_badge = _mission_status_badge(
+        current_state,
+        manifest_status,
+        latest_run_id,
+        len(mission_inputs),
+        str(summary_preview.get("operating_status") or ""),
+        str(summary_preview.get("operator_posture") or ""),
+        str(summary_preview.get("triage_bucket") or ""),
+    )
     last_updated = _latest_mtime([
         mission_dir / "state.json",
         mission_dir / "mission_brief.json",
         mission_dir / "artifact_index.json",
         mission_dir / "mission_manifest.json",
+        mission_dir / "working_memory.json",
         *[ROOT / str(item.get("path") or "") for item in workbench_files if str(item.get("path") or "").strip()],
     ])
 
@@ -668,16 +1602,15 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
         "latest_hermes_run": latest_run,
         "latest_draft": latest_draft,
         "latest_clarification_packet": latest_packet,
-        "mission_summary": _mission_summary_payload(
-            mission_id=mission,
-            objective=objective,
-            current_state=current_state,
-            manifest=manifest if isinstance(manifest, dict) else None,
-            latest_run=latest_run if isinstance(latest_run, dict) else None,
-            latest_draft=latest_draft if isinstance(latest_draft, dict) else None,
-            latest_packet=latest_packet if isinstance(latest_packet, dict) else None,
-            mission_inputs=mission_inputs,
-        ),
+        "working_memory": working_memory,
+        "parking_status": parking_status,
+        "operator_posture": str(summary_preview.get("operator_posture") or ""),
+        "operator_posture_reason": str(summary_preview.get("operator_posture_reason") or ""),
+        "assumptions_active": list(summary_preview.get("assumptions_active") or []),
+        "blocking_questions": list(summary_preview.get("blocking_questions") or []),
+        "operator_options": list(summary_preview.get("operator_options") or []),
+        "triage_bucket": str(summary_preview.get("triage_bucket") or ""),
+        "mission_summary": summary_preview,
         "mission_inputs": mission_inputs,
         "mission_chat": mission_chat,
         "workbench": {
@@ -739,6 +1672,9 @@ def _list_expeditions() -> list[dict[str, Any]]:
             "input_count": detail["input_count"],
             "summary": str((detail.get("mission_summary") or {}).get("summary") or (detail.get("manifest") or {}).get("summary") or ""),
             "manifest_status": str((detail.get("manifest") or {}).get("status") or ""),
+            "operator_posture": str(detail.get("operator_posture") or ""),
+            "triage_bucket": str(detail.get("triage_bucket") or ""),
+            "operator_posture_reason": str(detail.get("operator_posture_reason") or ""),
             "path": mission_dir.relative_to(ROOT).as_posix(),
         })
     return missions
@@ -1742,6 +2678,7 @@ def api_expeditions_create():
     _ensure_workbench_structure(mission_id)
     write_state(mission_id, "MISSION_DEFINED")
     _create_mission_brief(mission_id, objective)
+    _refresh_working_memory(mission_id)
 
     detail = _build_expedition_detail(mission_id)
     return jsonify({
@@ -1776,11 +2713,38 @@ def api_expedition_input(mission_id: str):
             "error": "content is required",
         }), 400
 
+    parking_status = _read_parking_status(mission)
+    if str(parking_status.get("status") or "active") == "parked":
+        _write_parking_status(mission, status="active", reason=content, parked_by="operator", resume_hint="")
+    item = _write_mission_input(mission, content)
+    _refresh_working_memory(mission, operator_text=content, operator_reply_at=str(item.get("created_at") or ""), source="mission intake")
+
     return jsonify({
         "ok": True,
-        "item": _write_mission_input(mission, content),
+        "item": item,
         "mission": _build_expedition_detail(mission),
     })
+
+
+@app.post("/api/expeditions/<mission_id>/parking")
+def api_expedition_parking(mission_id: str):
+    try:
+        mission = normalize_mission_id(mission_id)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    if not _mission_exists(mission):
+        return jsonify({"ok": False, "error": "mission not found"}), 404
+    try:
+        payload = request.get_json(force=True) or {}
+    except Exception:
+        payload = {}
+    status = str(payload.get("status") or "").strip().lower()
+    if status not in {"active", "parked"}:
+        return jsonify({"ok": False, "error": "status must be active or parked"}), 400
+    reason = str(payload.get("reason") or "").strip()
+    resume_hint = str(payload.get("resume_hint") or "").strip()
+    record = _write_parking_status(mission, status=status, reason=reason, parked_by="operator", resume_hint=resume_hint)
+    return jsonify({"ok": True, "parking_status": record, "item": _build_expedition_detail(mission)})
 
 
 @app.post("/api/expeditions/<mission_id>/respond")
@@ -1837,17 +2801,34 @@ def api_expedition_chat(mission_id: str):
         }), 400
 
     quick_reply = str(payload.get("quick_reply") or payload.get("preset") or "").strip() or None
+    if _normalize_question_text(quick_reply or content) not in {"park mission"}:
+        parking_status = _read_parking_status(mission)
+        if str(parking_status.get("status") or "active") == "parked":
+            _write_parking_status(mission, status="active", reason=content, parked_by="operator", resume_hint="")
     exchange = _append_chat_exchange(mission, content, quick_reply=quick_reply)
+    assistant_message = ""
+    assistant_tone = "info"
+    if isinstance(exchange, dict):
+        messages = exchange.get("messages")
+        if isinstance(messages, list) and messages:
+            last = messages[-1]
+            if isinstance(last, dict):
+                assistant_message = str(last.get("message") or "")
+                assistant_tone = str(last.get("tone") or "info")
+    detail = _build_expedition_detail(mission)
+    working_memory = detail.get("working_memory") if isinstance(detail, dict) else {}
     return jsonify({
         "ok": True,
-        "item": _build_expedition_detail(mission),
+        "item": detail,
         "messages": _mission_chat_messages(mission),
         "exchange": exchange,
         "response": {
             "kind": "chat",
-            "summary": "Mission chat updated.",
-            "answer": str((exchange.get("messages") or [{}])[-1].get("message") if isinstance(exchange, dict) else ""),
-            "questions": [],
+            "summary": assistant_message or "Mission chat updated.",
+            "answer": assistant_message,
+            "message": assistant_message,
+            "tone": assistant_tone,
+            "questions": _question_summary_lines(_dict_list(working_memory.get("open_questions"))) if isinstance(working_memory, dict) else [],
             "artifact": "mission_chat",
         },
     })

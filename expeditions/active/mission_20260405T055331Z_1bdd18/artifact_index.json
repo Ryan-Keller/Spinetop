@@ -1,0 +1,20 @@
+{
+  "mission_id": "mission_20260405T055331Z_1bdd18",
+  "items": [
+    {
+      "kind": "state",
+      "path": "expeditions/active/mission_20260405T055331Z_1bdd18/state.json",
+      "created_at": "2026-04-05T05:53:31.656890+00:00"
+    },
+    {
+      "kind": "mission_brief",
+      "path": "expeditions/active/mission_20260405T055331Z_1bdd18/mission_brief.json",
+      "created_at": "2026-04-05T05:53:31.657890+00:00"
+    },
+    {
+      "kind": "working_memory",
+      "path": "expeditions/active/mission_20260405T055331Z_1bdd18/working_memory.json",
+      "created_at": "2026-04-05T05:53:31.712467+00:00"
+    }
+  ]
+}

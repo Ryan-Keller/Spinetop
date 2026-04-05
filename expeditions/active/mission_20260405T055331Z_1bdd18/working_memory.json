@@ -1,0 +1,48 @@
+{
+  "mission_id": "mission_20260405T055331Z_1bdd18",
+  "confirmed_facts": [
+    {
+      "text": "Mission objective: review recent anomalies and suggest action",
+      "source": "mission brief",
+      "created_at": "2026-04-05T05:53:31.657890+00:00"
+    }
+  ],
+  "active_assumptions": [
+    {
+      "assumption_id": "assumption_1",
+      "statement": "The mission can proceed using the current objective as the initial anchor: review recent anomalies and suggest action.",
+      "confidence": 0.35,
+      "source": "mission brief",
+      "type": "default",
+      "reason": "No stronger context has been provided yet, so the mission uses the objective as the safest starting assumption."
+    }
+  ],
+  "open_questions": [
+    {
+      "question": "What extra detail would most reduce uncertainty?",
+      "impact": "medium",
+      "source": "mission summary",
+      "asked_count": 0,
+      "last_asked_at": "",
+      "question_id": "summary_question_1"
+    }
+  ],
+  "deferred_questions": [
+    {
+      "question": "What extra detail would most reduce uncertainty?",
+      "impact": "medium",
+      "source": "mission summary",
+      "asked_count": 0,
+      "last_asked_at": "",
+      "question_id": "summary_question_1"
+    }
+  ],
+  "latest_summary": "low confidence continue mission for mission_20260405T055331Z_1bdd18 focused on review recent anomalies and suggest action.",
+  "latest_confidence": 0.16,
+  "confidence_reduction": 0.02,
+  "last_operator_reply_at": "2026-04-05T05:53:31.705390+00:00",
+  "updated_at": "2026-04-05T05:53:31.712467+00:00",
+  "operating_status": "low_confidence_continue",
+  "blocked_reason": "Confidence is still low, but the mission can continue.",
+  "can_continue_without_input": true
+}

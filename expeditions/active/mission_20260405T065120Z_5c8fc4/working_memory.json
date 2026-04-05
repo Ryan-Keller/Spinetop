@@ -1,0 +1,58 @@
+{
+  "mission_id": "mission_20260405T065120Z_5c8fc4",
+  "confirmed_facts": [
+    {
+      "text": "Mission objective: triage anomaly mission",
+      "source": "mission brief",
+      "created_at": "2026-04-05T06:51:20.938959+00:00"
+    },
+    {
+      "text": "A timing window was provided.",
+      "source": "mission intake",
+      "created_at": "2026-04-05T06:51:21.052416+00:00"
+    }
+  ],
+  "active_assumptions": [
+    {
+      "assumption_id": "assumption_1",
+      "statement": "The mission can proceed using the current objective as the initial anchor: triage anomaly mission.",
+      "confidence": 0.35,
+      "source": "mission brief",
+      "type": "default",
+      "reason": "No stronger context has been provided yet, so the mission uses the objective as the safest starting assumption."
+    }
+  ],
+  "open_questions": [
+    {
+      "question": "What extra detail would most reduce uncertainty?",
+      "impact": "medium",
+      "source": "mission summary",
+      "asked_count": 0,
+      "last_asked_at": "",
+      "question_id": "summary_question_1"
+    }
+  ],
+  "deferred_questions": [
+    {
+      "question": "What extra detail would most reduce uncertainty?",
+      "impact": "medium",
+      "source": "mission summary",
+      "asked_count": 0,
+      "last_asked_at": "",
+      "question_id": "summary_question_1"
+    }
+  ],
+  "latest_summary": "active mission for mission_20260405T065120Z_5c8fc4 focused on triage anomaly mission.",
+  "latest_confidence": 0.15,
+  "confidence_reduction": 0.05,
+  "last_operator_reply_at": "2026-04-05T06:51:21.052416+00:00",
+  "updated_at": "2026-04-05T06:51:21.064290+00:00",
+  "operating_status": "low_confidence_continue",
+  "blocked_reason": "Confidence is still low, but the mission can continue.",
+  "can_continue_without_input": true,
+  "crew_status": "active",
+  "crew_recalled": false,
+  "expedition_activity": "running",
+  "wake_hint": "What extra detail would most reduce uncertainty?",
+  "parked_at": ""
+}

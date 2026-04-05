@@ -76,6 +76,12 @@ KIND_PROFILE: dict[str, dict[str, str]] = {
         "quality_signal": "provisional",
         "reusability_class": "review_only",
     },
+    "working_memory": {
+        "artifact_stage": "analysis",
+        "problem_role": "working_memory",
+        "quality_signal": "derived",
+        "reusability_class": "mission_local",
+    },
 }
 
 

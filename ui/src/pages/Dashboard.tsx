@@ -1,5 +1,6 @@
 ﻿import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
+import { useRef } from "react";
 import {
   Activity,
   Database,
@@ -253,6 +254,9 @@ type ExpeditionSummary = {
   input_count: number;
   summary: string;
   manifest_status: string;
+  operator_posture?: string;
+  operator_posture_reason?: string;
+  triage_bucket?: string;
   path: string;
 };
 
@@ -328,15 +332,55 @@ type ExpeditionDetail = {
   latest_hermes_run?: HermesRun | Record<string, unknown> | null;
   latest_draft?: DraftRecord | Record<string, unknown> | null;
   latest_clarification_packet?: Record<string, unknown> | null;
+  parking_status?: {
+    mission_id: string;
+    status: "active" | "parked";
+    reason?: string;
+    parked_at?: string;
+    parked_by?: string;
+    resume_hint?: string;
+    updated_at?: string;
+  };
+  operator_posture?: string;
+  operator_posture_reason?: string;
+  assumptions_active?: string[];
+  blocking_questions?: string[];
+  operator_options?: { label: string; value: string; kind?: string }[];
+  triage_bucket?: string;
   mission_summary?: {
     mission_id: string;
     status: string;
+    life_cycle_state?: string;
+    operating_status?: string;
+    can_continue_without_input?: boolean;
+    blocked_reason?: string;
     summary: string;
+    latest_summary?: string;
     what_we_believe: string[];
+    confirmed_facts?: string[];
+    active_assumptions?: string[];
+    assumptions_active?: string[];
+    open_questions?: string[];
+    deferred_questions?: string[];
+    blocking_questions?: string[];
     confidence: number;
     confidence_label: "low" | "moderate" | "high";
+    confidence_reduction?: number;
     what_we_need_from_you: string[];
+    clarification_reason?: string;
+    next_question?: string;
+    next_best_operator_answer?: string;
+    quick_replies?: { label: string; value: string; kind?: string }[];
+    operator_posture?: string;
+    operator_posture_reason?: string;
+    operator_options?: { label: string; value: string; kind?: string }[];
+    triage_bucket?: string;
     recommended_next_step: string;
+    last_operator_reply_at?: string;
+    crew_status?: string;
+    expedition_activity?: string;
+    parked_at?: string;
+    wake_hint?: string;
   };
   mission_inputs: MissionInputRecord[];
   mission_chat: MissionChatMessage[];
@@ -1004,8 +1048,8 @@ export default function Dashboard() {
   const [selectedMissionId, setSelectedMissionId] = useState<string | null>(null);
   const [selectedMission, setSelectedMission] = useState<ExpeditionDetail | null>(null);
   const [newMissionObjective, setNewMissionObjective] = useState("");
-  const [missionInputText, setMissionInputText] = useState("");
-  const [missionChatText, setMissionChatText] = useState("");
+  const [missionInputDrafts, setMissionInputDrafts] = useState<Record<string, string>>({});
+  const [missionChatDrafts, setMissionChatDrafts] = useState<Record<string, string>>({});
   const [workbenchFolder, setWorkbenchFolder] = useState("intake");
   const [selectedDraftPath, setSelectedDraftPath] = useState<string | null>(null);
   const [uiNotice, setUiNotice] = useState<UiNotice | null>(null);
@@ -1024,6 +1068,8 @@ export default function Dashboard() {
   const [lastRefresh, setLastRefresh] = useState("demo data");
   const [errorText, setErrorText] = useState("");
   const [selectedRecord, setSelectedRecord] = useState<string | null>(null);
+  const missionInputInFlightRef = useRef<string | null>(null);
+  const missionChatInFlightRef = useRef<string | null>(null);
 
   const loadJson = async <T,>(url: string): Promise<T> => {
     const res = await fetch(url);
@@ -1149,6 +1195,28 @@ export default function Dashboard() {
   }, [packets, selectedRecord]);
 
   const selectedPacket = packets.find((p) => p.recordName === selectedRecord) ?? packets[0] ?? null;
+  const missionInputText = selectedMissionId ? missionInputDrafts[selectedMissionId] || "" : "";
+  const missionChatText = selectedMissionId ? missionChatDrafts[selectedMissionId] || "" : "";
+
+  const setMissionInputDraft = (value: string) => {
+    if (!selectedMissionId) return;
+    setMissionInputDrafts((prev) => ({ ...prev, [selectedMissionId]: value }));
+  };
+
+  const setMissionChatDraft = (value: string) => {
+    if (!selectedMissionId) return;
+    setMissionChatDrafts((prev) => ({ ...prev, [selectedMissionId]: value }));
+  };
+
+  const clearMissionInputDraft = (missionId?: string | null) => {
+    if (!missionId) return;
+    setMissionInputDrafts((prev) => ({ ...prev, [missionId]: "" }));
+  };
+
+  const clearMissionChatDraft = (missionId?: string | null) => {
+    if (!missionId) return;
+    setMissionChatDrafts((prev) => ({ ...prev, [missionId]: "" }));
+  };
 
   const queueCounts = useMemo(() => {
     const events = data.events_recent || [];
@@ -1226,12 +1294,25 @@ export default function Dashboard() {
   const latestDraft = selectedMission?.latest_draft ?? null;
   const latestClarificationPacket = selectedMission?.latest_clarification_packet ?? null;
   const missionSummary = selectedMission?.mission_summary ?? null;
+  const missionParkingStatus = selectedMission?.parking_status ?? null;
   const latestDraftReviewPreview = getRecordObject(latestDraft, "review_preview");
   const latestDraftPreviewPath = getRecordString(latestDraftReviewPreview, "draft_path") || getRecordString(latestDraft, "draft_path");
   const latestDraftSummary =
     getRecordObject(latestDraft, "draft") ? getRecordString(getRecordObject(latestDraft, "draft"), "summary") : "";
   const latestPacketSummary = getRecordString(getRecordObject(latestClarificationPacket, "provisional_answer"), "text");
-  const missionSummaryStatus = missionSummary?.status || selectedMission?.status_badge || selectedMission?.current_state || "unknown";
+  const missionSummaryOperatingStatus = missionSummary?.operating_status || missionSummary?.status || selectedMission?.status_badge || selectedMission?.current_state || "unknown";
+  const missionSummaryLifecycleState = missionSummary?.life_cycle_state || selectedMission?.current_state || "unknown";
+  const missionSummaryOperatorPosture = missionSummary?.operator_posture || selectedMission?.operator_posture || "active";
+  const missionSummaryOperatorReason =
+    missionSummary?.operator_posture_reason || selectedMission?.operator_posture_reason || missionSummary?.clarification_reason || "";
+  const missionSummaryTriageBucket = missionSummary?.triage_bucket || selectedMission?.triage_bucket || "do_now";
+  const missionSummaryCanContinue =
+    missionSummary?.can_continue_without_input ?? !["needs_operator_answer", "parked"].includes(missionSummaryOperatorPosture);
+  const missionSummaryBlockedReason = missionSummary?.blocked_reason || "";
+  const missionSummaryCrewStatus = missionSummary?.crew_status || (missionSummaryCanContinue ? "active" : "recalled");
+  const missionSummaryExpeditionActivity = missionSummary?.expedition_activity || (missionSummaryCanContinue ? "running" : "paused");
+  const missionSummaryParkedAt = missionSummary?.parked_at || "";
+  const missionSummaryWakeHintSeed = missionSummary?.wake_hint || "";
   const missionSummaryBeliefs =
     missionSummary?.what_we_believe?.length
       ? missionSummary.what_we_believe
@@ -1241,16 +1322,67 @@ export default function Dashboard() {
             selectedMission?.objective ||
             "No mission summary has been built yet.",
         ];
+  const missionSummaryConfirmedFacts = missionSummary?.confirmed_facts?.length ? missionSummary.confirmed_facts : [];
+  const missionSummaryAssumptions =
+    missionSummary?.assumptions_active?.length
+      ? missionSummary.assumptions_active
+      : missionSummary?.active_assumptions?.length
+        ? missionSummary.active_assumptions
+        : selectedMission?.assumptions_active?.length
+          ? selectedMission.assumptions_active
+          : [];
+  const missionSummaryOpenQuestions = missionSummary?.open_questions?.length ? missionSummary.open_questions : [];
+  const missionSummaryDeferredQuestions = missionSummary?.deferred_questions?.length ? missionSummary.deferred_questions : [];
+  const missionSummaryBlockingQuestions =
+    missionSummary?.blocking_questions?.length
+      ? missionSummary.blocking_questions
+      : selectedMission?.blocking_questions?.length
+        ? selectedMission.blocking_questions
+        : [];
   const missionSummaryNeeds =
     missionSummary?.what_we_need_from_you?.length
       ? missionSummary.what_we_need_from_you
-      : selectedMission
-        ? ["No missing inputs are currently flagged."]
+      : missionSummaryCanContinue && missionSummaryOpenQuestions.length
+        ? missionSummaryOpenQuestions.slice(0, 2).map((question) => `Optional: ${question}`)
+        : selectedMission
+          ? missionSummaryCanContinue
+            ? ["No immediate input is required."]
+            : ["A blocking clarification is required."]
         : [];
+  const missionSummaryReason =
+    missionSummaryOperatorReason ||
+    missionSummary?.clarification_reason ||
+    (missionSummaryCanContinue ? "Proceeding under explicit assumptions." : missionSummaryBlockedReason || "No clarification block is active.");
+  const missionSummaryQuestion = missionSummary?.next_question || missionSummaryOpenQuestions[0] || "";
+  const missionSummaryQuickReplies =
+    missionSummary?.operator_options?.length
+      ? missionSummary.operator_options
+      : selectedMission?.operator_options?.length
+        ? selectedMission.operator_options
+        : missionSummary?.quick_replies?.length
+          ? missionSummary.quick_replies
+          : missionSummaryOperatorPosture === "parked"
+            ? [
+                { label: "Resume mission", value: "Resume mission" },
+                { label: "Answer blockers", value: "Answer blockers" },
+              ]
+            : [
+                { label: "Proceed with assumptions", value: "Proceed with assumptions" },
+                { label: "Answer blockers", value: "Answer blockers" },
+                { label: "Park mission", value: "Park mission" },
+                ...(latestDraftPreviewPath ? [{ label: "Open review preview", value: "Open review preview" }] : []),
+              ];
   const missionSummaryConfidence = missionSummary
-    ? `${Math.round((missionSummary.confidence ?? 0) * 100)}% (${missionSummary.confidence_label})`
+    ? `${Math.round((missionSummary.confidence ?? 0) * 100)}% (${missionSummary.confidence_label})${
+        (missionSummary.confidence_reduction ?? 0) > 0 ? `, -${Math.round((missionSummary.confidence_reduction ?? 0) * 100)}%` : ""
+      }`
     : "unknown";
   const missionSummaryNextStep = missionSummary?.recommended_next_step || "Add context in mission chat or intake.";
+  const missionSummaryNextAnswer =
+    missionSummary?.next_best_operator_answer ||
+    missionSummaryQuestion ||
+    (missionSummaryCanContinue ? "No immediate reply is required." : "A blocking clarification is required.");
+  const missionSummaryWakeHint = missionSummaryWakeHintSeed || missionSummaryQuestion || missionSummaryBlockedReason;
   const repeatedItemCount = useMemo(() => {
     const counts = new Map<string, number>();
     for (const event of data.events_recent || []) {
@@ -1264,14 +1396,32 @@ export default function Dashboard() {
     const items: MissionAttentionItem[] = [];
 
     for (const expedition of expeditions) {
-      if (expedition.status_badge === "waiting_for_user" || expedition.current_state === "CLARIFICATION_NEEDED") {
+      if (expedition.triage_bucket === "parked" || expedition.operator_posture === "parked") {
+        items.push({
+          key: `parked-${expedition.mission_id}`,
+          mission_id: expedition.mission_id,
+          title: expedition.objective || expedition.mission_id,
+          detail: expedition.operator_posture_reason || expedition.summary || expedition.current_state,
+          badge: "Parked",
+          tone: "watch",
+        });
+      } else if (expedition.triage_bucket === "waiting" || expedition.operator_posture === "needs_operator_answer" || expedition.status_badge === "waiting_for_user") {
         items.push({
           key: `wait-${expedition.mission_id}`,
           mission_id: expedition.mission_id,
           title: expedition.objective || expedition.mission_id,
-          detail: expedition.summary || expedition.current_state,
-          badge: expedition.current_state,
+          detail: expedition.operator_posture_reason || expedition.summary || expedition.current_state,
+          badge: "Needs operator",
           tone: "watch",
+        });
+      } else if (expedition.triage_bucket === "do_now" && expedition.operator_posture === "proceed_with_assumptions") {
+        items.push({
+          key: `assume-${expedition.mission_id}`,
+          mission_id: expedition.mission_id,
+          title: expedition.objective || expedition.mission_id,
+          detail: expedition.operator_posture_reason || expedition.summary || "Can continue under assumptions",
+          badge: "Assumption-capable",
+          tone: "good",
         });
       } else if (expedition.status_badge === "ready_for_review" || expedition.current_state === "PACKAGE_READY") {
         items.push({
@@ -1281,15 +1431,6 @@ export default function Dashboard() {
           detail: expedition.summary || "ready for review",
           badge: "Ready for review",
           tone: "good",
-        });
-      } else if (expedition.current_state === "RECONSIDERATION_REQUESTED") {
-        items.push({
-          key: `reconsider-${expedition.mission_id}`,
-          mission_id: expedition.mission_id,
-          title: expedition.objective || expedition.mission_id,
-          detail: expedition.summary || "reconsideration requested",
-          badge: "Reconsider",
-          tone: "watch",
         });
       }
     }
@@ -1411,8 +1552,8 @@ export default function Dashboard() {
       setSelectedMissionId(payload.item.mission_id);
       setSelectedMission(payload.item);
       setWorkbenchFolder(payload.item.workbench.folders[0]?.name || "intake");
-      setMissionInputText("");
-      setMissionChatText("");
+      clearMissionInputDraft(payload.item.mission_id);
+      clearMissionChatDraft(payload.item.mission_id);
       setUiNotice({
         tone: "good",
         title: "Expedition created",
@@ -1429,7 +1570,8 @@ export default function Dashboard() {
   };
 
   const sendMissionInput = async () => {
-    if (!selectedMissionId) {
+    const missionId = selectedMissionId;
+    if (!missionId) {
       setErrorText("Select an expedition first");
       return;
     }
@@ -1438,10 +1580,15 @@ export default function Dashboard() {
       setErrorText("Mission input cannot be empty");
       return;
     }
+    const submissionKey = `${missionId}:${content}`;
+    if (missionInputInFlightRef.current === submissionKey) {
+      return;
+    }
     try {
+      missionInputInFlightRef.current = submissionKey;
       setMissionSaving(true);
       setMissionActionLabel("Sending mission input");
-      const res = await fetch(`${API_BASE}/expeditions/${selectedMissionId}/input`, {
+      const res = await fetch(`${API_BASE}/expeditions/${missionId}/input`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content }),
@@ -1455,26 +1602,28 @@ export default function Dashboard() {
       if (!res.ok || !payload.ok) {
         throw new Error(payload.error || `HTTP ${res.status}`);
       }
-      setMissionInputText("");
+      clearMissionInputDraft(missionId);
       if (payload.mission) {
         setSelectedMission(payload.mission);
       }
       setUiNotice({
         tone: "good",
         title: "Mission intake saved",
-        detail: "The input landed in the workbench intake folder as unreviewed mission input.",
+        detail: "The input landed once in the workbench intake folder as unreviewed mission input.",
       });
       await load();
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : "Mission input failed");
     } finally {
+      missionInputInFlightRef.current = null;
       setMissionSaving(false);
       setMissionActionLabel("");
     }
   };
 
   const sendMissionChat = async (content: string, quickReply?: string) => {
-    if (!selectedMissionId) {
+    const missionId = selectedMissionId;
+    if (!missionId) {
       setErrorText("Select an expedition first");
       return;
     }
@@ -1483,10 +1632,15 @@ export default function Dashboard() {
       setErrorText("Chat message cannot be empty");
       return;
     }
+    const submissionKey = `${missionId}:${quickReply || ""}:${message}`;
+    if (missionChatInFlightRef.current === submissionKey) {
+      return;
+    }
     try {
+      missionChatInFlightRef.current = submissionKey;
       setMissionSaving(true);
       setMissionActionLabel("Sending mission chat");
-      const res = await fetch(`${API_BASE}/expeditions/${selectedMissionId}/chat`, {
+      const res = await fetch(`${API_BASE}/expeditions/${missionId}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: message, quick_reply: quickReply || undefined }),
@@ -1501,22 +1655,31 @@ export default function Dashboard() {
       if (!res.ok || !payload.ok) {
         throw new Error(payload.error || `HTTP ${res.status}`);
       }
-      setMissionChatText("");
+      clearMissionChatDraft(missionId);
       if (payload.item) {
         setSelectedMission(payload.item);
       }
       setUiNotice({
         tone: "good",
         title: "Mission chat updated",
-        detail: quickReply ? `Quick reply sent: ${quickReply}` : "Your message was recorded in the mission chat.",
+        detail: quickReply ? `Quick reply sent once: ${quickReply}` : "Your message was accepted and added once to the mission chat.",
       });
       await load();
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : "Mission chat failed");
     } finally {
+      missionChatInFlightRef.current = null;
       setMissionSaving(false);
       setMissionActionLabel("");
     }
+  };
+
+  const runMissionQuickReply = async (reply: { label: string; value: string }) => {
+    if (reply.value === "Open review preview") {
+      openReviewPreview(latestDraftPreviewPath);
+      return;
+    }
+    await sendMissionChat(reply.value, reply.value);
   };
 
   return (
@@ -1855,12 +2018,19 @@ export default function Dashboard() {
                           </div>
                           <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
                             <span style={styles.badge}>{expedition.current_state}</span>
+                            {expedition.operator_posture ? <span style={styles.badge}>{expedition.operator_posture}</span> : null}
+                            {expedition.triage_bucket ? <span style={styles.badge}>{expedition.triage_bucket}</span> : null}
                             <span style={styles.badge}>{expedition.latest_run_id || "no run yet"}</span>
                             <span style={styles.badge}>{expedition.last_updated || "no updates"}</span>
                           </div>
                           {expedition.summary ? (
                             <div style={{ marginTop: 10, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
                               {expedition.summary}
+                            </div>
+                          ) : null}
+                          {expedition.operator_posture_reason ? (
+                            <div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8", lineHeight: 1.5 }}>
+                              {expedition.operator_posture_reason}
                             </div>
                           ) : null}
                         </motion.button>
@@ -1889,23 +2059,56 @@ export default function Dashboard() {
                         <div style={styles.subtleText}>Plain-language summary to keep the operator out of artifact archaeology.</div>
                       </div>
                       <span style={{ ...styles.badge, ...statusStripToneStyles[expeditionStatusTone[selectedMission.status_badge]] }}>
-                        {missionSummaryStatus}
+                        {missionSummaryOperatingStatus}
                       </span>
                     </div>
 
                     <div style={{ marginTop: 12, display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))" }}>
                       <div style={styles.previewBox}>
                         <div style={styles.subtleText}>Status</div>
-                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f5d0fe" }}>{missionSummaryStatus}</div>
+                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f5d0fe" }}>{missionSummaryOperatingStatus}</div>
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5" }}>Lifecycle state: {missionSummaryLifecycleState}</div>
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5" }}>
+                          Operator posture: {missionSummaryOperatorPosture} · Triage: {missionSummaryTriageBucket}
+                        </div>
                         <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                          {missionSummary?.summary || "No structured summary is available yet."}
+                          {missionSummary?.latest_summary || missionSummary?.summary || "No structured summary is available yet."}
                         </div>
                       </div>
                       <div style={styles.previewBox}>
                         <div style={styles.subtleText}>Confidence</div>
                         <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f5d0fe" }}>{missionSummaryConfidence}</div>
                         <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5" }}>
-                          Derived from Hermes, drafts, clarification packets, manifest, and mission inputs.
+                          Derived from Hermes, drafts, clarification packets, manifest, mission inputs, and current assumptions.
+                        </div>
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5" }}>
+                          Confidence reduction is explicit when assumptions are being carried forward.
+                        </div>
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Crew status</div>
+                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: missionSummaryCrewStatus === "recalled" ? "#fde68a" : "#bbf7d0" }}>
+                          {missionSummaryCrewStatus}
+                        </div>
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
+                          Expedition activity is currently {missionSummaryExpeditionActivity}.
+                          {missionSummaryParkedAt ? ` Parked at ${missionSummaryParkedAt}.` : ""}
+                        </div>
+                        {missionParkingStatus?.status === "parked" ? (
+                          <div style={{ marginTop: 6, fontSize: 12, color: "#fde68a", lineHeight: 1.5 }}>
+                            Parked because: {missionParkingStatus.reason || missionSummaryReason}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Can continue without input</div>
+                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: missionSummaryCanContinue ? "#bbf7d0" : "#fecaca" }}>
+                          {missionSummaryCanContinue ? "Yes" : "No"}
+                        </div>
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
+                          {missionSummaryCanContinue
+                            ? "The mission can continue under explicit assumptions while the remaining question stays deferred."
+                            : "The mission is truly blocked because the missing answer changes the safe path or review path."}
                         </div>
                       </div>
                       <div style={styles.previewBox}>
@@ -1917,6 +2120,26 @@ export default function Dashboard() {
                     </div>
 
                     <div style={{ marginTop: 12, display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>{missionSummaryCanContinue ? "Why it is continuing" : "Why it is blocked"}</div>
+                        <div style={{ marginTop: 8, fontSize: 13, color: "#fde68a", lineHeight: 1.55 }}>
+                          {missionSummaryReason}
+                        </div>
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Next question</div>
+                        <div style={{ marginTop: 8, fontSize: 13, color: "#bbf7d0", lineHeight: 1.55 }}>
+                          {missionSummaryQuestion || "No clarification question is needed right now."}
+                        </div>
+                        <div style={{ marginTop: 8, fontSize: 12, color: "#cbd5f5", lineHeight: 1.55 }}>
+                          Next best operator answer: {missionSummaryNextAnswer}
+                        </div>
+                        {!missionSummaryCanContinue ? (
+                          <div style={{ marginTop: 8, fontSize: 12, color: "#fde68a", lineHeight: 1.55 }}>
+                            Waking input: {missionSummaryWakeHint || "Send the missing detail to resume expedition activity."}
+                          </div>
+                        ) : null}
+                      </div>
                       <div style={styles.previewBox}>
                         <div style={styles.subtleText}>What we believe</div>
                         <div style={{ marginTop: 8, display: "flex", flexDirection: "column" as const, gap: 8 }}>
@@ -1936,6 +2159,131 @@ export default function Dashboard() {
                               • {belief}
                             </div>
                           ))}
+                        </div>
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Confirmed facts</div>
+                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                          {missionSummaryConfirmedFacts.length ? (
+                            missionSummaryConfirmedFacts.map((fact, index) => (
+                              <div
+                                key={`${fact}-${index}`}
+                                style={{
+                                  borderRadius: 12,
+                                  border: "1px solid rgba(52,211,153,0.2)",
+                                  background: "rgba(6,78,59,0.16)",
+                                  padding: "8px 10px",
+                                  fontSize: 12,
+                                  color: "#bbf7d0",
+                                  lineHeight: 1.45,
+                                }}
+                              >
+                                • {fact}
+                              </div>
+                            ))
+                          ) : (
+                            <div style={styles.subtleText}>No operator-confirmed facts have been captured yet.</div>
+                          )}
+                        </div>
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Assumptions in use</div>
+                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                          {missionSummaryAssumptions.length ? (
+                            missionSummaryAssumptions.map((assumption, index) => (
+                              <div
+                                key={`${assumption}-${index}`}
+                                style={{
+                                  borderRadius: 12,
+                                  border: "1px solid rgba(192,132,252,0.18)",
+                                  background: "rgba(2,6,23,0.45)",
+                                  padding: "8px 10px",
+                                  fontSize: 12,
+                                  color: "#cbd5f5",
+                                  lineHeight: 1.45,
+                                }}
+                              >
+                                • {assumption}
+                              </div>
+                            ))
+                          ) : (
+                            <div style={styles.subtleText}>No active assumptions are needed right now.</div>
+                          )}
+                        </div>
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Open questions</div>
+                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                          {missionSummaryOpenQuestions.length ? (
+                            missionSummaryOpenQuestions.map((question, index) => (
+                              <div
+                                key={`${question}-${index}`}
+                                style={{
+                                  borderRadius: 12,
+                                  border: "1px solid rgba(251,191,36,0.2)",
+                                  background: "rgba(120,53,15,0.18)",
+                                  padding: "8px 10px",
+                                  fontSize: 12,
+                                  color: "#fde68a",
+                                  lineHeight: 1.45,
+                                }}
+                              >
+                                • {question}
+                              </div>
+                            ))
+                          ) : (
+                            <div style={styles.subtleText}>No unanswered questions are queued right now.</div>
+                          )}
+                        </div>
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Blocking questions</div>
+                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                          {missionSummaryBlockingQuestions.length ? (
+                            missionSummaryBlockingQuestions.map((question, index) => (
+                              <div
+                                key={`${question}-${index}`}
+                                style={{
+                                  borderRadius: 12,
+                                  border: "1px solid rgba(251,113,133,0.22)",
+                                  background: "rgba(127,29,29,0.2)",
+                                  padding: "8px 10px",
+                                  fontSize: 12,
+                                  color: "#fecaca",
+                                  lineHeight: 1.45,
+                                }}
+                              >
+                                • {question}
+                              </div>
+                            ))
+                          ) : (
+                            <div style={styles.subtleText}>No hard blockers are active right now.</div>
+                          )}
+                        </div>
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Deferred questions</div>
+                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                          {missionSummaryDeferredQuestions.length ? (
+                            missionSummaryDeferredQuestions.map((question, index) => (
+                              <div
+                                key={`${question}-${index}`}
+                                style={{
+                                  borderRadius: 12,
+                                  border: "1px solid rgba(148,163,184,0.2)",
+                                  background: "rgba(15,23,42,0.5)",
+                                  padding: "8px 10px",
+                                  fontSize: 12,
+                                  color: "#cbd5f5",
+                                  lineHeight: 1.45,
+                                }}
+                              >
+                                • {question}
+                              </div>
+                            ))
+                          ) : (
+                            <div style={styles.subtleText}>No deferred questions are queued right now.</div>
+                          )}
                         </div>
                       </div>
                       <div style={styles.previewBox}>
@@ -1964,6 +2312,24 @@ export default function Dashboard() {
                         </div>
                       </div>
                     </div>
+
+                    {missionSummaryQuickReplies.length ? (
+                      <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
+                        {missionSummaryQuickReplies.map((reply) => (
+                          <motion.button
+                            key={reply.label}
+                            type="button"
+                            onClick={() => runMissionQuickReply(reply)}
+                            disabled={missionSaving}
+                            style={styles.secondaryButton}
+                            whileHover={{ scale: 1.02 }}
+                            whileTap={{ scale: 0.98 }}
+                          >
+                            {reply.label}
+                          </motion.button>
+                        ))}
+                      </div>
+                    ) : null}
                   </motion.div>
 
                   <div style={styles.recordCard}>
@@ -1978,6 +2344,8 @@ export default function Dashboard() {
                     </div>
                     <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
                       <span style={styles.badge}>{selectedMission.current_state}</span>
+                      <span style={styles.badge}>{missionSummaryOperatorPosture}</span>
+                      <span style={styles.badge}>{missionSummaryTriageBucket}</span>
                       <span style={styles.badge}>latest run {selectedMission.latest_run_id || "none"}</span>
                       <span style={styles.badge}>updated {selectedMission.last_updated || "unknown"}</span>
                       <span style={{ ...styles.badge, ...styles.badgeGood }}>Workbench Only</span>
@@ -2142,26 +2510,28 @@ export default function Dashboard() {
                     <div style={styles.previewBox}>
                       <textarea
                         value={missionChatText}
-                        onChange={(event) => setMissionChatText(event.target.value)}
+                        onChange={(event) => setMissionChatDraft(event.target.value)}
                         placeholder="Ask a question, add more context, or give the mission a direct instruction."
+                        autoComplete="off"
                         style={{ ...styles.fieldTextarea, minHeight: 96 }}
                       />
+                      <div style={{ marginTop: 8, ...styles.subtleText }}>
+                        {missionChatText.trim()
+                          ? "Draft only. This text stays local until you explicitly send it."
+                          : "No unsent chat draft."}
+                      </div>
                       <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
-                        {[
-                          "Yes",
-                          "No",
-                          "Write more information",
-                        ].map((quickReply) => (
+                        {missionSummaryQuickReplies.map((quickReply) => (
                           <motion.button
-                            key={quickReply}
+                            key={quickReply.label}
                             type="button"
-                            onClick={() => sendMissionChat(quickReply, quickReply)}
+                            onClick={() => runMissionQuickReply(quickReply)}
                             disabled={missionSaving}
                             style={styles.secondaryButton}
                             whileHover={{ scale: 1.02 }}
                             whileTap={{ scale: 0.98 }}
                           >
-                            {quickReply}
+                            {quickReply.label}
                           </motion.button>
                         ))}
                       </div>
@@ -2169,7 +2539,7 @@ export default function Dashboard() {
                         <motion.button
                           type="button"
                           onClick={() => sendMissionChat(missionChatText)}
-                          disabled={missionSaving}
+                          disabled={missionSaving || !missionChatText.trim()}
                           style={styles.refreshButton}
                           whileHover={{ scale: 1.02 }}
                           whileTap={{ scale: 0.98 }}
@@ -2178,7 +2548,7 @@ export default function Dashboard() {
                         </motion.button>
                         <motion.button
                           type="button"
-                          onClick={() => setMissionChatText("")}
+                          onClick={() => clearMissionChatDraft(selectedMissionId)}
                           style={styles.secondaryButton}
                           whileHover={{ scale: 1.02 }}
                           whileTap={{ scale: 0.98 }}
@@ -2249,15 +2619,21 @@ export default function Dashboard() {
                     <div style={{ marginTop: 12, display: "flex", flexDirection: "column" as const, gap: 10 }}>
                       <textarea
                         value={missionInputText}
-                        onChange={(event) => setMissionInputText(event.target.value)}
+                        onChange={(event) => setMissionInputDraft(event.target.value)}
                         placeholder="Add safe mission input for intake, review, or follow-up."
+                        autoComplete="off"
                         style={styles.fieldTextarea}
                       />
+                      <div style={styles.subtleText}>
+                        {missionInputText.trim()
+                          ? "Draft only. This input stays local until you explicitly send it."
+                          : "No unsent mission input draft."}
+                      </div>
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const }}>
                         <motion.button
                           type="button"
                           onClick={sendMissionInput}
-                          disabled={missionSaving}
+                          disabled={missionSaving || !missionInputText.trim()}
                           style={styles.refreshButton}
                           whileHover={{ scale: 1.02 }}
                           whileTap={{ scale: 0.98 }}
@@ -2266,7 +2642,7 @@ export default function Dashboard() {
                         </motion.button>
                         <motion.button
                           type="button"
-                          onClick={() => setMissionInputText("")}
+                          onClick={() => clearMissionInputDraft(selectedMissionId)}
                           style={styles.secondaryButton}
                           whileHover={{ scale: 1.02 }}
                           whileTap={{ scale: 0.98 }}

@@ -12,6 +12,7 @@ from repo_paths import repo_root
 ROOT = repo_root()
 EXPEDITIONS_ACTIVE_DIR = ROOT / "expeditions" / "active"
 MISSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+WORKING_MEMORY_FILENAME = "working_memory.json"
 
 ALLOWED_TRANSITIONS = {
     "MISSION_DEFINED": ["CITADEL_ACTIVE"],
@@ -63,6 +64,11 @@ def mission_brief_path(mission_id: str) -> Path:
 def mission_manifest_path(mission_id: str) -> Path:
     mission = normalize_mission_id(mission_id)
     return EXPEDITIONS_ACTIVE_DIR / mission / "mission_manifest.json"
+
+
+def working_memory_path(mission_id: str) -> Path:
+    mission = normalize_mission_id(mission_id)
+    return EXPEDITIONS_ACTIVE_DIR / mission / WORKING_MEMORY_FILENAME
 
 
 def artifact_index_path(mission_id: str) -> Path:
@@ -145,6 +151,70 @@ def read_mission_brief(mission_id: str) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         return None
     return payload
+
+
+def read_working_memory(mission_id: str) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    path = working_memory_path(mission)
+    if not path.exists():
+        return {
+            "mission_id": mission,
+            "confirmed_facts": [],
+            "active_assumptions": [],
+            "open_questions": [],
+            "deferred_questions": [],
+            "latest_summary": "",
+            "latest_confidence": 0.0,
+            "confidence_reduction": 0.0,
+            "last_operator_reply_at": "",
+            "updated_at": "",
+            "operating_status": "low_confidence_continue",
+            "blocked_reason": "",
+            "can_continue_without_input": True,
+            "crew_status": "active",
+            "crew_recalled": False,
+            "expedition_activity": "running",
+            "wake_hint": "",
+            "parked_at": "",
+        }
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload.setdefault("mission_id", mission)
+    payload.setdefault("confirmed_facts", [])
+    payload.setdefault("active_assumptions", [])
+    payload.setdefault("open_questions", [])
+    payload.setdefault("deferred_questions", [])
+    payload.setdefault("latest_summary", "")
+    payload.setdefault("latest_confidence", 0.0)
+    payload.setdefault("confidence_reduction", 0.0)
+    payload.setdefault("last_operator_reply_at", "")
+    payload.setdefault("updated_at", "")
+    payload.setdefault("operating_status", "low_confidence_continue")
+    payload.setdefault("blocked_reason", "")
+    payload.setdefault("can_continue_without_input", True)
+    payload.setdefault("crew_status", "active")
+    payload.setdefault("crew_recalled", False)
+    payload.setdefault("expedition_activity", "running")
+    payload.setdefault("wake_hint", "")
+    payload.setdefault("parked_at", "")
+    return payload
+
+
+def write_working_memory(mission_id: str, payload: dict[str, Any]) -> Path:
+    mission = normalize_mission_id(mission_id)
+    path = working_memory_path(mission)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = dict(payload)
+    record["mission_id"] = mission
+    if not str(record.get("updated_at") or "").strip():
+        record["updated_at"] = iso_now()
+    path.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    upsert_artifact_index_entry(mission, "working_memory", path, created_at=str(record["updated_at"]))
+    return path
 
 
 def write_mission_brief(mission_id: str, task_text: str, mode: str, latest_run_id: str) -> Path:
