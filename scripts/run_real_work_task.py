@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from datetime import datetime, timezone
@@ -13,6 +14,7 @@ import review_and_submit_petition
 import run_hermes_v1 as hermes_runner
 from load_expert_policy import load_runtime_policy
 from repo_paths import repo_root
+from state_machine import advance_state, normalize_mission_id, upsert_artifact_index_entry, write_mission_brief
 from validate_clarification_packet import validate_clarification_packet
 
 
@@ -23,6 +25,14 @@ RUNS_DIR = ROOT / "logs" / "hermes" / "runs"
 
 def utc_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _short_digest(seed: str) -> str:
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:6]
 
 
 def write_json(path: Path, data: dict[str, Any]) -> None:
@@ -70,6 +80,14 @@ def load_task_text(task_text: str | None, task_file: Path | None) -> tuple[str, 
     return text, "inline"
 
 
+def resolve_mission_id(provided_mission_id: str | None, task_text: str, mode: str) -> str:
+    if provided_mission_id:
+        return normalize_mission_id(provided_mission_id)
+    stamp = utc_stamp()
+    seed = f"{task_text}|{mode}|{stamp}"
+    return normalize_mission_id(f"mission_{stamp}_{_short_digest(seed)}")
+
+
 def _task_requires_clarification(task_text: str, hermes_result: dict[str, Any]) -> bool:
     task_lower = f" {task_text.strip().lower()} "
     personal_or_open = (
@@ -105,6 +123,7 @@ def run_task(
     mode: str,
     task: str | None,
     task_file: Path | None,
+    mission_id: str | None,
     onboarding_model_key: str | None,
     skip_draft: bool,
     explain: bool,
@@ -112,6 +131,7 @@ def run_task(
 ) -> int:
     task_text, task_source = load_task_text(task, task_file)
     emit_draft_preview = not packet_only and not skip_draft
+    mission_id = resolve_mission_id(mission_id, task_text, mode)
 
     runtime_policy = load_runtime_policy(EXPERT_ID)
     runtime_config = hermes_runner.load_hermes_runtime_config()
@@ -132,6 +152,8 @@ def run_task(
     live_snapshot = hermes_runner.build_snapshot()
     snapshot = hermes_runner.merge_snapshot(live_snapshot, {"subject": task_text})
     run_id = str(snapshot.get("run_id") or live_snapshot["run_id"])
+    advance_state(mission_id, "CITADEL_ACTIVE")
+    write_mission_brief(mission_id, task_text, mode, run_id)
     prompt = hermes_runner.build_prompt(mode, snapshot, run_id)
 
     raw_response = hermes_runner.invoke_model(model_key, prompt, runtime_config)
@@ -151,32 +173,45 @@ def run_task(
     run_record = hermes_runner.normalize_response_object(parsed)
     run_record_path = RUNS_DIR / f"{run_id}_{mode}.json"
     write_json(run_record_path, run_record)
+    upsert_artifact_index_entry(mission_id, "hermes_run", run_record_path, created_at=iso_now())
 
     clarification_path: Path | None = None
     clarification_packet: dict[str, Any] | None = None
-    if _task_requires_clarification(task_text, run_record):
+    draft_path: Path | None = None
+    preview: dict[str, Any] | None = None
+    draft: dict[str, Any] | None = None
+    validated_run = hermes_to_petition.validate_hermes_run(run_record)
+    if emit_draft_preview:
+        draft = hermes_to_petition.build_draft(validated_run)
+
+    clarification_triggered = _task_requires_clarification(task_text, run_record)
+    next_state = "PACKAGE_READY"
+    if clarification_triggered:
+        next_state = "CLARIFICATION_NEEDED"
+    elif emit_draft_preview and draft is not None:
+        next_state = "RELEASE_REQUESTED"
+    advance_state(mission_id, next_state)
+
+    if clarification_triggered:
         packet = build_clarification_packet(task_text, run_record)
         clarification_packet = validate_clarification_packet(packet)
         clarification_path = write_clarification_packet(clarification_packet)
+        upsert_artifact_index_entry(mission_id, "clarification_packet", clarification_path, created_at=clarification_packet["created_at"])
 
-    draft_path: Path | None = None
-    preview: dict[str, Any] | None = None
-
-    if emit_draft_preview:
-        validated_run = hermes_to_petition.validate_hermes_run(run_record)
-        draft = hermes_to_petition.build_draft(validated_run)
-        if draft is not None:
-            validated_draft = review_and_submit_petition.validate_draft_petition(draft)
-            draft_path = hermes_to_petition.write_draft(validated_draft)
-            preview = review_and_submit_petition.build_review_payload(
-                validated_draft,
-                draft_path=draft_path,
-                return_all=review_and_submit_petition.read_return_all_state(),
-                nanny=review_and_submit_petition.read_nanny_state(),
-            )
+    if emit_draft_preview and draft is not None:
+        validated_draft = review_and_submit_petition.validate_draft_petition(draft)
+        draft_path = hermes_to_petition.write_draft(validated_draft)
+        upsert_artifact_index_entry(mission_id, "draft", draft_path, created_at=iso_now())
+        preview = review_and_submit_petition.build_review_payload(
+            validated_draft,
+            draft_path=draft_path,
+            return_all=review_and_submit_petition.read_return_all_state(),
+            nanny=review_and_submit_petition.read_nanny_state(),
+        )
 
     print("=== TASK ===")
     print(f"task_source={task_source}")
+    print(f"mission_id={mission_id}")
     if packet_only:
         print("packet_only=True")
     print(f"task={task_text}")
@@ -249,6 +284,10 @@ def main() -> int:
         help="Read task text from a UTF-8 text file instead of typing a long shell-quoted string.",
     )
     parser.add_argument(
+        "--mission-id",
+        help="Reuse an existing mission container instead of creating a new one at task start.",
+    )
+    parser.add_argument(
         "--onboarding-model-key",
         help="Run a specific onboarding candidate instead of the production default.",
     )
@@ -274,6 +313,7 @@ def main() -> int:
             mode=args.mode,
             task=args.task,
             task_file=args.task_file,
+            mission_id=args.mission_id,
             onboarding_model_key=args.onboarding_model_key,
             skip_draft=args.skip_draft,
             explain=args.explain,

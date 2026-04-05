@@ -9,6 +9,7 @@ Start here:
 - [Autonomy Phase Plan](autonomy_phase_plan_v1.md)
 - [UI Wiring Plan](ui_wiring_plan_v1.md)
 - [Record Schemas](record_schemas.md)
+- [Artifact Kind Convention](artifact_kind_convention_v1.md)
 - [Support Orchestration Contract](support_orchestration_contract_v1.md)
 - [Helper Catalog](helper_catalog_v1.md)
 - [Support Channel Schema](support_channel_schema_v1.md)
