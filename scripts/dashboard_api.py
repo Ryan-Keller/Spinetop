@@ -510,6 +510,107 @@ def _latest_clarification_summary(mission_id: str) -> dict[str, Any] | None:
     return payload
 
 
+def _mission_summary_payload(
+    *,
+    mission_id: str,
+    objective: str,
+    current_state: str,
+    manifest: dict[str, Any] | None,
+    latest_run: dict[str, Any] | None,
+    latest_draft: dict[str, Any] | None,
+    latest_packet: dict[str, Any] | None,
+    mission_inputs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    believed: list[str] = []
+    if objective:
+        believed.append(f"Objective: {objective}")
+    if latest_run:
+        run_summary = str(latest_run.get("summary") or "").strip()
+        if run_summary:
+            believed.append(run_summary)
+        recommended_action = str(latest_run.get("recommended_action") or "").strip()
+        if recommended_action:
+            believed.append(f"Hermes recommended: {recommended_action}")
+    if latest_packet:
+        provisional = str((latest_packet.get("provisional_answer") or {}).get("text") or "").strip()
+        if provisional:
+            believed.append(provisional)
+        confidence_analysis = latest_packet.get("confidence_analysis")
+        if isinstance(confidence_analysis, dict):
+            current_conf = confidence_analysis.get("current_confidence")
+            if isinstance(current_conf, (int, float)):
+                believed.append(f"Clarification confidence: {float(current_conf):.2f}")
+    if manifest:
+        manifest_summary = str(manifest.get("summary") or "").strip()
+        if manifest_summary:
+            believed.append(manifest_summary)
+    if latest_draft:
+        draft_summary = str((latest_draft.get("draft") or {}).get("summary") or latest_draft.get("summary") or "").strip()
+        if draft_summary:
+            believed.append(draft_summary)
+
+    believed = [item for item in believed if item][:5]
+    confidence = 0.25
+    if latest_run:
+        confidence += 0.25
+    if latest_draft:
+        confidence += 0.15
+    if latest_packet:
+        confidence += 0.2
+    if manifest:
+        confidence += 0.1
+    if mission_inputs:
+        confidence += min(0.1, len(mission_inputs) * 0.02)
+    if current_state in {"CLARIFICATION_NEEDED", "RECONSIDERATION_REQUESTED"}:
+        confidence -= 0.1
+    confidence = max(0.05, min(0.95, confidence))
+    confidence_label = "low" if confidence < 0.4 else "moderate" if confidence < 0.7 else "high"
+
+    missing_inputs: list[str] = []
+    packet_missing = []
+    if isinstance(latest_packet, dict):
+        packet_missing = list(latest_packet.get("missing_facts") or [])
+    if packet_missing:
+        missing_inputs.extend([str(item) for item in packet_missing[:4] if str(item).strip()])
+    elif current_state in {"CLARIFICATION_NEEDED", "RECONSIDERATION_REQUESTED"}:
+        missing_inputs.append("One clear operator clarification would unblock the mission.")
+    elif not latest_run:
+        missing_inputs.append("No Hermes run has been recorded yet.")
+    elif not latest_draft and current_state in {"PACKAGE_READY", "BRIDGE_CONSIDERATION"}:
+        missing_inputs.append("A preview draft may still be needed before review.")
+
+    if not missing_inputs and mission_inputs:
+        latest_input = str(mission_inputs[0].get("content") or "").strip()
+        if latest_input:
+            missing_inputs.append(f"Confirm whether this latest input should steer the mission: {latest_input[:90]}")
+
+    if current_state in {"CLARIFICATION_NEEDED", "RECONSIDERATION_REQUESTED"}:
+        recommended_next_step = "Send one focused mission input or answer the latest clarification question."
+    elif current_state in {"PACKAGE_READY", "BRIDGE_CONSIDERATION"}:
+        recommended_next_step = "Open the review preview and decide whether to submit the draft."
+    elif current_state in {"MISSION_CLOSED", "ARCHIVE_REVIEW"}:
+        recommended_next_step = "Review the archive summary or reopen the mission if new work is needed."
+    elif current_state in {"RELEASE_REQUESTED", "RELEASE_PREPARED", "EXPEDITION_ACTIVE"}:
+        recommended_next_step = "Continue the run, then refresh mission detail for the latest state."
+    else:
+        recommended_next_step = "Add context in mission chat or intake and keep the expedition moving."
+
+    summary_text = f"{current_state.replace('_', ' ').lower()} mission for {mission_id}."
+    if objective:
+        summary_text = f"{summary_text[:-1]} focused on {objective}."
+
+    return {
+        "mission_id": mission_id,
+        "status": current_state,
+        "summary": summary_text,
+        "what_we_believe": believed or [objective or "No objective recorded yet."],
+        "confidence": round(confidence, 2),
+        "confidence_label": confidence_label,
+        "what_we_need_from_you": missing_inputs[:4],
+        "recommended_next_step": recommended_next_step,
+    }
+
+
 def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
     mission = normalize_mission_id(mission_id)
     mission_dir = _mission_root(mission)
@@ -523,6 +624,9 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
     objective = str(brief.get("objective") or brief.get("task_text") or "").strip()
     mission_inputs = _mission_inputs(mission)
     mission_chat = _mission_chat_messages(mission)
+    latest_run = _latest_run_summary(mission)
+    latest_draft = _latest_draft_summary(mission)
+    latest_packet = _latest_clarification_summary(mission)
     workbench_files = _workbench_files(mission)
     workbench_folders = []
     for folder_name in ["intake", "scratch", "code", "test_runs", "notes", "outputs"]:
@@ -561,9 +665,19 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
         "manifest": manifest,
         "artifact_index": artifact_index,
         "artifact_refs": (manifest or {}).get("artifact_refs") if isinstance(manifest, dict) else [],
-        "latest_hermes_run": _latest_run_summary(mission),
-        "latest_draft": _latest_draft_summary(mission),
-        "latest_clarification_packet": _latest_clarification_summary(mission),
+        "latest_hermes_run": latest_run,
+        "latest_draft": latest_draft,
+        "latest_clarification_packet": latest_packet,
+        "mission_summary": _mission_summary_payload(
+            mission_id=mission,
+            objective=objective,
+            current_state=current_state,
+            manifest=manifest if isinstance(manifest, dict) else None,
+            latest_run=latest_run if isinstance(latest_run, dict) else None,
+            latest_draft=latest_draft if isinstance(latest_draft, dict) else None,
+            latest_packet=latest_packet if isinstance(latest_packet, dict) else None,
+            mission_inputs=mission_inputs,
+        ),
         "mission_inputs": mission_inputs,
         "mission_chat": mission_chat,
         "workbench": {
@@ -623,7 +737,7 @@ def _list_expeditions() -> list[dict[str, Any]]:
             "created_at": detail["created_at"],
             "artifact_count": detail["artifact_count"],
             "input_count": detail["input_count"],
-            "summary": str((detail.get("manifest") or {}).get("summary") or ""),
+            "summary": str((detail.get("mission_summary") or {}).get("summary") or (detail.get("manifest") or {}).get("summary") or ""),
             "manifest_status": str((detail.get("manifest") or {}).get("status") or ""),
             "path": mission_dir.relative_to(ROOT).as_posix(),
         })

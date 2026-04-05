@@ -328,6 +328,16 @@ type ExpeditionDetail = {
   latest_hermes_run?: HermesRun | Record<string, unknown> | null;
   latest_draft?: DraftRecord | Record<string, unknown> | null;
   latest_clarification_packet?: Record<string, unknown> | null;
+  mission_summary?: {
+    mission_id: string;
+    status: string;
+    summary: string;
+    what_we_believe: string[];
+    confidence: number;
+    confidence_label: "low" | "moderate" | "high";
+    what_we_need_from_you: string[];
+    recommended_next_step: string;
+  };
   mission_inputs: MissionInputRecord[];
   mission_chat: MissionChatMessage[];
   workbench: WorkbenchSummary;
@@ -1215,11 +1225,32 @@ export default function Dashboard() {
   const latestHermesRun = selectedMission?.latest_hermes_run ?? null;
   const latestDraft = selectedMission?.latest_draft ?? null;
   const latestClarificationPacket = selectedMission?.latest_clarification_packet ?? null;
+  const missionSummary = selectedMission?.mission_summary ?? null;
   const latestDraftReviewPreview = getRecordObject(latestDraft, "review_preview");
   const latestDraftPreviewPath = getRecordString(latestDraftReviewPreview, "draft_path") || getRecordString(latestDraft, "draft_path");
   const latestDraftSummary =
     getRecordObject(latestDraft, "draft") ? getRecordString(getRecordObject(latestDraft, "draft"), "summary") : "";
   const latestPacketSummary = getRecordString(getRecordObject(latestClarificationPacket, "provisional_answer"), "text");
+  const missionSummaryStatus = missionSummary?.status || selectedMission?.status_badge || selectedMission?.current_state || "unknown";
+  const missionSummaryBeliefs =
+    missionSummary?.what_we_believe?.length
+      ? missionSummary.what_we_believe
+      : [
+          getRecordString(latestHermesRun, "summary") ||
+            getRecordString(selectedMission?.manifest, "summary") ||
+            selectedMission?.objective ||
+            "No mission summary has been built yet.",
+        ];
+  const missionSummaryNeeds =
+    missionSummary?.what_we_need_from_you?.length
+      ? missionSummary.what_we_need_from_you
+      : selectedMission
+        ? ["No missing inputs are currently flagged."]
+        : [];
+  const missionSummaryConfidence = missionSummary
+    ? `${Math.round((missionSummary.confidence ?? 0) * 100)}% (${missionSummary.confidence_label})`
+    : "unknown";
+  const missionSummaryNextStep = missionSummary?.recommended_next_step || "Add context in mission chat or intake.";
   const repeatedItemCount = useMemo(() => {
     const counts = new Map<string, number>();
     for (const event of data.events_recent || []) {
@@ -1670,12 +1701,25 @@ export default function Dashboard() {
                     style={styles.fieldInput}
                   />
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const }}>
-                    <button type="button" onClick={createMission} disabled={missionSaving} style={styles.refreshButton}>
+                    <motion.button
+                      type="button"
+                      onClick={createMission}
+                      disabled={missionSaving}
+                      style={styles.refreshButton}
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                    >
                       {missionSaving && missionActionLabel === "Creating expedition" ? "Creating..." : "Create Expedition"}
-                    </button>
-                    <button type="button" onClick={() => setNewMissionObjective("")} style={styles.secondaryButton}>
+                    </motion.button>
+                    <motion.button
+                      type="button"
+                      onClick={() => setNewMissionObjective("")}
+                      style={styles.secondaryButton}
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                    >
                       Clear
-                    </button>
+                    </motion.button>
                   </div>
                 </div>
               </div>
@@ -1788,7 +1832,7 @@ export default function Dashboard() {
                               : styles.badge;
 
                       return (
-                        <button
+                        <motion.button
                           key={expedition.mission_id}
                           type="button"
                           onClick={() => focusMission(expedition.mission_id, expedition.summary || expedition.objective || expedition.mission_id)}
@@ -1799,6 +1843,8 @@ export default function Dashboard() {
                             borderColor: isSelected ? "rgba(252,211,77,0.45)" : "rgba(192,132,252,0.2)",
                             background: isSelected ? "rgba(124,58,237,0.18)" : "rgba(2,6,23,0.55)",
                           }}
+                          whileHover={{ scale: 1.01 }}
+                          whileTap={{ scale: 0.98 }}
                         >
                           <div style={styles.recordMetaRow}>
                             <div>
@@ -1817,7 +1863,7 @@ export default function Dashboard() {
                               {expedition.summary}
                             </div>
                           ) : null}
-                        </button>
+                        </motion.button>
                       );
                     })
                   ) : (
@@ -1830,6 +1876,96 @@ export default function Dashboard() {
             <div style={styles.stack}>
               {selectedMission ? (
                 <>
+                  <motion.div
+                    key={`${selectedMission.mission_id}-summary`}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.22 }}
+                    style={styles.recordCard}
+                  >
+                    <div style={styles.recordMetaRow}>
+                      <div>
+                        <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Mission Summary</div>
+                        <div style={styles.subtleText}>Plain-language summary to keep the operator out of artifact archaeology.</div>
+                      </div>
+                      <span style={{ ...styles.badge, ...statusStripToneStyles[expeditionStatusTone[selectedMission.status_badge]] }}>
+                        {missionSummaryStatus}
+                      </span>
+                    </div>
+
+                    <div style={{ marginTop: 12, display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))" }}>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Status</div>
+                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f5d0fe" }}>{missionSummaryStatus}</div>
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
+                          {missionSummary?.summary || "No structured summary is available yet."}
+                        </div>
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Confidence</div>
+                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f5d0fe" }}>{missionSummaryConfidence}</div>
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5" }}>
+                          Derived from Hermes, drafts, clarification packets, manifest, and mission inputs.
+                        </div>
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Recommended next step</div>
+                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f5d0fe", lineHeight: 1.5 }}>
+                          {missionSummaryNextStep}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ marginTop: 12, display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>What we believe</div>
+                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                          {missionSummaryBeliefs.map((belief, index) => (
+                            <div
+                              key={`${belief}-${index}`}
+                              style={{
+                                borderRadius: 12,
+                                border: "1px solid rgba(192,132,252,0.18)",
+                                background: "rgba(2,6,23,0.45)",
+                                padding: "8px 10px",
+                                fontSize: 12,
+                                color: "#cbd5f5",
+                                lineHeight: 1.45,
+                              }}
+                            >
+                              • {belief}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>What we need from you</div>
+                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                          {missionSummaryNeeds.length ? (
+                            missionSummaryNeeds.map((need, index) => (
+                              <div
+                                key={`${need}-${index}`}
+                                style={{
+                                  borderRadius: 12,
+                                  border: "1px solid rgba(251,191,36,0.2)",
+                                  background: "rgba(120,53,15,0.18)",
+                                  padding: "8px 10px",
+                                  fontSize: 12,
+                                  color: "#fde68a",
+                                  lineHeight: 1.45,
+                                }}
+                              >
+                                • {need}
+                              </div>
+                            ))
+                          ) : (
+                            <div style={styles.subtleText}>No missing inputs are currently flagged.</div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </motion.div>
+
                   <div style={styles.recordCard}>
                     <div style={styles.recordMetaRow}>
                       <div>
@@ -1849,25 +1985,35 @@ export default function Dashboard() {
                       <span style={{ ...styles.badge, ...styles.badgeOutline }}>Preview Only</span>
                     </div>
                     <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
-                      <button
+                      <motion.button
                         type="button"
                         onClick={() => refreshMissionDetail()}
                         style={styles.refreshButton}
                         disabled={missionLoading || missionSaving || loading}
+                        whileHover={{ scale: 1.02 }}
+                        whileTap={{ scale: 0.98 }}
                       >
                         {missionActionLabel === "Refreshing mission detail" ? "Refreshing..." : "Refresh mission detail"}
-                      </button>
-                      <button type="button" onClick={openDiagnosticsView} style={styles.secondaryButton}>
+                      </motion.button>
+                      <motion.button
+                        type="button"
+                        onClick={openDiagnosticsView}
+                        style={styles.secondaryButton}
+                        whileHover={{ scale: 1.02 }}
+                        whileTap={{ scale: 0.98 }}
+                      >
                         Open diagnostics
-                      </button>
+                      </motion.button>
                       {latestDraftPreviewPath ? (
-                        <button
+                        <motion.button
                           type="button"
                           onClick={() => openReviewPreview(latestDraftPreviewPath)}
                           style={styles.secondaryButton}
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
                         >
                           Open review preview
-                        </button>
+                        </motion.button>
                       ) : null}
                     </div>
                     <div style={styles.previewBox}>
@@ -2006,29 +2152,39 @@ export default function Dashboard() {
                           "No",
                           "Write more information",
                         ].map((quickReply) => (
-                          <button
+                          <motion.button
                             key={quickReply}
                             type="button"
                             onClick={() => sendMissionChat(quickReply, quickReply)}
                             disabled={missionSaving}
                             style={styles.secondaryButton}
+                            whileHover={{ scale: 1.02 }}
+                            whileTap={{ scale: 0.98 }}
                           >
                             {quickReply}
-                          </button>
+                          </motion.button>
                         ))}
                       </div>
                       <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
-                        <button
+                        <motion.button
                           type="button"
                           onClick={() => sendMissionChat(missionChatText)}
                           disabled={missionSaving}
                           style={styles.refreshButton}
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
                         >
                           {missionSaving && missionActionLabel === "Sending mission chat" ? "Sending..." : "Send chat"}
-                        </button>
-                        <button type="button" onClick={() => setMissionChatText("")} style={styles.secondaryButton}>
+                        </motion.button>
+                        <motion.button
+                          type="button"
+                          onClick={() => setMissionChatText("")}
+                          style={styles.secondaryButton}
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
+                        >
                           Clear
-                        </button>
+                        </motion.button>
                       </div>
                       <div style={{ marginTop: 10, ...styles.subtleText }}>
                         Chat stays in <span style={styles.mono}>workbench/missions/{selectedMission.mission_id}/notes/chat.jsonl</span> and never writes to
@@ -2098,12 +2254,25 @@ export default function Dashboard() {
                         style={styles.fieldTextarea}
                       />
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const }}>
-                        <button type="button" onClick={sendMissionInput} disabled={missionSaving} style={styles.refreshButton}>
+                        <motion.button
+                          type="button"
+                          onClick={sendMissionInput}
+                          disabled={missionSaving}
+                          style={styles.refreshButton}
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
+                        >
                           {missionSaving && missionActionLabel === "Sending mission input" ? "Sending..." : "Send to Mission"}
-                        </button>
-                        <button type="button" onClick={() => setMissionInputText("")} style={styles.secondaryButton}>
+                        </motion.button>
+                        <motion.button
+                          type="button"
+                          onClick={() => setMissionInputText("")}
+                          style={styles.secondaryButton}
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
+                        >
                           Clear
-                        </button>
+                        </motion.button>
                       </div>
                       <div style={styles.subtleText}>
                         This lands in <span style={styles.mono}>workbench/missions/{selectedMission.mission_id}/intake/</span> as{" "}
