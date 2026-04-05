@@ -10,6 +10,7 @@ from typing import Any
 
 from build_clarification_packet import build_clarification_packet, write_clarification_packet
 import hermes_to_petition
+from manifest_writer import write_mission_manifest
 import review_and_submit_petition
 import run_hermes_v1 as hermes_runner
 from load_expert_policy import load_runtime_policy
@@ -209,6 +210,8 @@ def run_task(
             nanny=review_and_submit_petition.read_nanny_state(),
         )
 
+    manifest_path, manifest = write_mission_manifest(mission_id)
+
     print("=== TASK ===")
     print(f"task_source={task_source}")
     print(f"mission_id={mission_id}")
@@ -266,6 +269,13 @@ def run_task(
         print("packet_path=none")
         print("status=not_created")
         print("reason=clarification trigger did not fire")
+
+    print("")
+    print("=== MANIFEST ===")
+    print(f"manifest_id={manifest.get('manifest_id')}")
+    print(f"status={manifest.get('status')}")
+    print(f"manifest_path={manifest_path.as_posix()}")
+    print(f"summary={manifest.get('summary')}")
 
     return 0
 

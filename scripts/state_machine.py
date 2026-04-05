@@ -60,6 +60,11 @@ def mission_brief_path(mission_id: str) -> Path:
     return EXPEDITIONS_ACTIVE_DIR / mission / "mission_brief.json"
 
 
+def mission_manifest_path(mission_id: str) -> Path:
+    mission = normalize_mission_id(mission_id)
+    return EXPEDITIONS_ACTIVE_DIR / mission / "mission_manifest.json"
+
+
 def artifact_index_path(mission_id: str) -> Path:
     mission = normalize_mission_id(mission_id)
     return EXPEDITIONS_ACTIVE_DIR / mission / "artifact_index.json"
@@ -194,7 +199,7 @@ def read_artifact_index(mission_id: str) -> dict[str, Any]:
         if not isinstance(item, dict):
             continue
         kind = str(item.get("kind") or "").strip()
-        path_value = str(item.get("path") or "").strip()
+        path_value = Path(str(item.get("path") or "").strip()).as_posix()
         created_at = str(item.get("created_at") or "").strip()
         if not kind or not path_value or not created_at:
             continue

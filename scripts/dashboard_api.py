@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import urllib.request
 from collections import Counter
@@ -9,6 +10,16 @@ from typing import Any
 from flask import Flask, jsonify, request
 
 from validate_clarification_packet import validate_clarification_packet
+from state_machine import (
+    mission_brief_path,
+    mission_manifest_path,
+    normalize_mission_id,
+    read_artifact_index,
+    read_mission_brief,
+    read_state,
+    upsert_artifact_index_entry,
+    write_state,
+)
 from governance_utils import can_bridge_to_honcho, read_nanny_state
 from review_and_submit_petition import build_review_payload, validate_draft_petition
 from run_hermes_v1 import validate_response_object
@@ -17,6 +28,8 @@ ROOT = Path(__file__).resolve().parents[1]
 EVENT_LOG = ROOT / "logs" / "topology" / "events.jsonl"
 HERMES_RUNS_DIR = ROOT / "logs" / "hermes" / "runs"
 CLARIFICATION_PACKETS_DIR = ROOT / "logs" / "citadel" / "clarification_packets"
+EXPEDITIONS_ACTIVE_DIR = ROOT / "expeditions" / "active"
+WORKBENCH_MISSIONS_DIR = ROOT / "workbench" / "missions"
 MEMORY_DIR = ROOT / "memory"
 DISPATCH_DIR = MEMORY_DIR / "dispatch"
 GOVERNANCE_DIR = ROOT / "logs" / "governance"
@@ -197,6 +210,294 @@ def log_topology_event(event_type: str, record_name: str, status: str, detail: s
     }
     with EVENT_LOG.open("a", encoding="utf-8") as f:
         f.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def _short_digest(seed: str) -> str:
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:6]
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _load_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _mission_root(mission_id: str) -> Path:
+    return EXPEDITIONS_ACTIVE_DIR / normalize_mission_id(mission_id)
+
+
+def _workbench_root(mission_id: str) -> Path:
+    return WORKBENCH_MISSIONS_DIR / normalize_mission_id(mission_id)
+
+
+def _ensure_workbench_structure(mission_id: str) -> Path:
+    root = _workbench_root(mission_id)
+    for folder in ["intake", "scratch", "code", "test_runs", "notes", "outputs"]:
+        (root / folder).mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _mission_manifest_payload(mission_id: str) -> dict[str, Any] | None:
+    path = mission_manifest_path(mission_id)
+    if not path.exists():
+        return None
+    payload = _load_json(path)
+    return payload if isinstance(payload, dict) else None
+
+
+def _latest_mtime(paths: list[Path]) -> str:
+    latest: float | None = None
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            mtime = path.stat().st_mtime
+        except Exception:
+            continue
+        if latest is None or mtime > latest:
+            latest = mtime
+    if latest is None:
+        return ""
+    return datetime.fromtimestamp(latest, tz=timezone.utc).isoformat()
+
+
+def _latest_index_item(index_items: list[dict[str, Any]], kind: str) -> dict[str, Any] | None:
+    for item in reversed(index_items):
+        if str(item.get("kind") or "").strip() == kind:
+            return item
+    return None
+
+
+def _relative_or_absolute(path: Path | str) -> Path:
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return candidate
+    return (ROOT / candidate).resolve()
+
+
+def _load_index_artifact(mission_id: str, kind: str) -> dict[str, Any] | None:
+    index = read_artifact_index(mission_id)
+    item = _latest_index_item(list(index.get("items") or []), kind)
+    if not item:
+        return None
+    path_text = str(item.get("path") or "").strip()
+    if not path_text:
+        return None
+    path = _relative_or_absolute(path_text)
+    payload = _load_json(path)
+    return payload if isinstance(payload, dict) else None
+
+
+def _workbench_files(mission_id: str) -> list[dict[str, Any]]:
+    root = _workbench_root(mission_id)
+    if not root.exists():
+        return []
+    files: list[dict[str, Any]] = []
+    for path in sorted((p for p in root.rglob("*") if p.is_file()), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            stat = path.stat()
+        except Exception:
+            continue
+        rel = path.relative_to(root)
+        folder = rel.parts[0] if rel.parts else "root"
+        files.append({
+            "path": path.relative_to(ROOT).as_posix(),
+            "folder": folder,
+            "name": path.name,
+            "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+            "bytes": stat.st_size,
+            "bytes_label": _format_bytes(stat.st_size),
+        })
+    return files[:200]
+
+
+def _mission_inputs(mission_id: str) -> list[dict[str, Any]]:
+    intake_dir = _workbench_root(mission_id) / "intake"
+    if not intake_dir.exists():
+        return []
+    inputs: list[dict[str, Any]] = []
+    for path in sorted((p for p in intake_dir.glob("*.json") if p.is_file()), key=lambda p: p.stat().st_mtime, reverse=True):
+        payload = _load_json(path)
+        if not isinstance(payload, dict):
+            continue
+        inputs.append({
+            "input_id": str(payload.get("input_id") or path.stem),
+            "mission_id": str(payload.get("mission_id") or mission_id),
+            "source_type": str(payload.get("source_type") or "user_provided"),
+            "status": str(payload.get("status") or "unreviewed"),
+            "content": str(payload.get("content") or ""),
+            "created_at": str(payload.get("created_at") or ""),
+            "path": path.relative_to(ROOT).as_posix(),
+        })
+    return inputs[:200]
+
+
+def _mission_status_badge(current_state: str, manifest_status: str, latest_run_id: str, input_count: int) -> str:
+    if current_state in {"MISSION_CLOSED", "ARCHIVE_REVIEW"}:
+        return "idle"
+    if current_state in {"PACKAGE_READY", "BRIDGE_CONSIDERATION"} or manifest_status in {"ready_for_review"}:
+        return "ready_for_review"
+    if current_state in {
+        "CITADEL_ACTIVE",
+        "RELEASE_REQUESTED",
+        "RELEASE_PREPARED",
+        "EXPEDITION_ACTIVE",
+        "WAREHOUSE_INTAKE",
+        "WAREHOUSE_PROCESSING",
+        "CITADEL_REVIEW_LOOP",
+    }:
+        return "researching"
+    if current_state in {"CLARIFICATION_NEEDED", "MISSION_DEFINED", "RECONSIDERATION_REQUESTED"}:
+        return "waiting_for_user"
+    if not latest_run_id and input_count == 0:
+        return "waiting_for_user"
+    return "researching"
+
+
+def _latest_run_summary(mission_id: str) -> dict[str, Any] | None:
+    payload = _load_index_artifact(mission_id, "hermes_run")
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _latest_draft_summary(mission_id: str) -> dict[str, Any] | None:
+    payload = _load_index_artifact(mission_id, "draft")
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _latest_clarification_summary(mission_id: str) -> dict[str, Any] | None:
+    payload = _load_index_artifact(mission_id, "clarification_packet")
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    mission_dir = _mission_root(mission)
+    brief = read_mission_brief(mission) or {}
+    state = read_state(mission)
+    manifest = _mission_manifest_payload(mission)
+    artifact_index = read_artifact_index(mission)
+    artifact_items = list(artifact_index.get("items") or [])
+    latest_run_id = str(brief.get("latest_run_id") or (manifest or {}).get("run_id") or "").strip()
+    current_state = str(state.get("current_state") or "MISSION_DEFINED").strip() or "MISSION_DEFINED"
+    objective = str(brief.get("objective") or brief.get("task_text") or "").strip()
+    mission_inputs = _mission_inputs(mission)
+    workbench_files = _workbench_files(mission)
+    workbench_folders = []
+    for folder_name in ["intake", "scratch", "code", "test_runs", "notes", "outputs"]:
+        folder_path = _workbench_root(mission) / folder_name
+        folder_files = [item for item in workbench_files if item.get("folder") == folder_name]
+        newest_modified_at = ""
+        if folder_files:
+            newest_modified_at = max(str(item.get("modified_at") or "") for item in folder_files)
+        workbench_folders.append({
+            "name": folder_name,
+            "path": folder_path.relative_to(ROOT).as_posix(),
+            "available": folder_path.exists(),
+            "file_count": len(folder_files),
+            "newest_modified_at": newest_modified_at,
+        })
+    manifest_status = str((manifest or {}).get("status") or "").strip()
+    status_badge = _mission_status_badge(current_state, manifest_status, latest_run_id, len(mission_inputs))
+    last_updated = _latest_mtime([
+        mission_dir / "state.json",
+        mission_dir / "mission_brief.json",
+        mission_dir / "artifact_index.json",
+        mission_dir / "mission_manifest.json",
+        *[ROOT / str(item.get("path") or "") for item in workbench_files if str(item.get("path") or "").strip()],
+    ])
+
+    return {
+        "mission_id": mission,
+        "objective": objective,
+        "current_state": current_state,
+        "status_badge": status_badge,
+        "latest_run_id": latest_run_id,
+        "last_updated": last_updated,
+        "created_at": str(brief.get("created_at") or (manifest or {}).get("created_at") or ""),
+        "mission_brief": brief,
+        "state": state,
+        "manifest": manifest,
+        "artifact_index": artifact_index,
+        "artifact_refs": (manifest or {}).get("artifact_refs") if isinstance(manifest, dict) else [],
+        "latest_hermes_run": _latest_run_summary(mission),
+        "latest_draft": _latest_draft_summary(mission),
+        "latest_clarification_packet": _latest_clarification_summary(mission),
+        "mission_inputs": mission_inputs,
+        "workbench": {
+            "root": _workbench_root(mission).relative_to(ROOT).as_posix(),
+            "folders": workbench_folders,
+            "files": workbench_files,
+        },
+        "artifact_count": len(artifact_items),
+        "input_count": len(mission_inputs),
+    }
+
+
+def _mission_exists(mission_id: str) -> bool:
+    mission = normalize_mission_id(mission_id)
+    return _mission_root(mission).exists() or _workbench_root(mission).exists()
+
+
+def _list_expeditions() -> list[dict[str, Any]]:
+    if not EXPEDITIONS_ACTIVE_DIR.exists():
+        return []
+    missions: list[dict[str, Any]] = []
+    for mission_dir in sorted((path for path in EXPEDITIONS_ACTIVE_DIR.iterdir() if path.is_dir()), key=lambda path: path.stat().st_mtime, reverse=True):
+        mission_id = mission_dir.name
+        try:
+            detail = _build_expedition_detail(mission_id)
+        except Exception:
+            continue
+        missions.append({
+            "mission_id": detail["mission_id"],
+            "objective": detail["objective"],
+            "current_state": detail["current_state"],
+            "status_badge": detail["status_badge"],
+            "latest_run_id": detail["latest_run_id"],
+            "last_updated": detail["last_updated"],
+            "created_at": detail["created_at"],
+            "artifact_count": detail["artifact_count"],
+            "input_count": detail["input_count"],
+            "summary": str((detail.get("manifest") or {}).get("summary") or ""),
+            "manifest_status": str((detail.get("manifest") or {}).get("status") or ""),
+            "path": mission_dir.relative_to(ROOT).as_posix(),
+        })
+    return missions
+
+
+def _generate_mission_id() -> str:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    seed = f"{stamp}|{ROOT.as_posix()}|expedition"
+    return normalize_mission_id(f"mission_{stamp}_{_short_digest(seed)}")
+
+
+def _create_mission_brief(mission_id: str, objective: str) -> Path:
+    mission = normalize_mission_id(mission_id)
+    brief_path = mission_brief_path(mission)
+    created_at = iso_now()
+    payload = {
+        "mission_id": mission,
+        "objective": objective,
+        "task_text": objective,
+        "created_at": created_at,
+        "status": "active",
+        "latest_run_id": "",
+    }
+    _write_json(brief_path, payload)
+    upsert_artifact_index_entry(mission, "mission_brief", brief_path, created_at=created_at)
+    return brief_path
 
 
 def read_return_all_state() -> dict[str, Any]:
@@ -479,6 +780,14 @@ def _latest_json_files(directory: Path, limit: int) -> list[Path]:
     if not directory.exists():
         return []
     files = [path for path in directory.glob("*.json") if path.is_file()]
+    files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return files[:limit]
+
+
+def _latest_mission_manifest_files(limit: int) -> list[Path]:
+    if not EXPEDITIONS_ACTIVE_DIR.exists():
+        return []
+    files = [path for path in EXPEDITIONS_ACTIVE_DIR.glob("*/mission_manifest.json") if path.is_file()]
     files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
     return files[:limit]
 
@@ -885,6 +1194,60 @@ def read_latest_clarification_packet() -> dict[str, Any]:
     }
 
 
+def read_latest_mission_manifest() -> dict[str, Any]:
+    latest = _latest_mission_manifest_files(1)
+    source_root = _safe_relative_path(EXPEDITIONS_ACTIVE_DIR)
+    if not latest:
+        return {
+            "ok": True,
+            "available": False,
+            "source_root": source_root,
+            "item": None,
+        }
+
+    path = latest[0]
+    source_path = _safe_relative_path(path)
+    try:
+        payload = _load_json(path)
+        if not isinstance(payload, dict):
+            raise ValueError("mission manifest must be a JSON object")
+        required = [
+            "manifest_id",
+            "mission_id",
+            "run_id",
+            "status",
+            "summary",
+            "artifact_counts",
+            "artifact_refs",
+            "priority_views",
+            "mission_signals",
+            "open_questions",
+            "recommended_next_step",
+            "created_at",
+            "updated_at",
+        ]
+        missing = [field for field in required if field not in payload]
+        if missing:
+            raise ValueError(f"mission manifest missing field(s): {', '.join(missing)}")
+    except Exception as exc:
+        return {
+            "ok": False,
+            "available": False,
+            "source_root": source_root,
+            "source_path": source_path,
+            "error": str(exc),
+            "item": None,
+        }
+
+    return {
+        "ok": True,
+        "available": True,
+        "source_root": source_root,
+        "source_path": source_path,
+        "item": payload,
+    }
+
+
 def read_dispatch_counts() -> dict[str, int]:
     counts = {"pending": 0, "approved": 0, "deferred": 0, "rejected": 0}
     for petition in read_dispatch_petitions():
@@ -1042,6 +1405,133 @@ def api_petition_drafts():
 @app.get("/api/clarification/latest")
 def api_clarification_latest():
     return jsonify(read_latest_clarification_packet())
+
+
+@app.get("/api/mission-manifest/latest")
+def api_mission_manifest_latest():
+    return jsonify(read_latest_mission_manifest())
+
+
+@app.get("/api/expeditions")
+def api_expeditions_list():
+    return jsonify({
+        "ok": True,
+        "source_root": _safe_relative_path(EXPEDITIONS_ACTIVE_DIR),
+        "items": _list_expeditions(),
+    })
+
+
+@app.get("/api/expeditions/<mission_id>")
+def api_expedition_detail(mission_id: str):
+    try:
+        exists = _mission_exists(mission_id)
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "available": False,
+            "error": str(exc),
+            "item": None,
+        }), 400
+    if not exists:
+        return jsonify({
+            "ok": False,
+            "available": False,
+            "error": "mission not found",
+            "item": None,
+        }), 404
+    try:
+        item = _build_expedition_detail(mission_id)
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "available": False,
+            "error": str(exc),
+            "item": None,
+        }), 400
+    return jsonify({
+        "ok": True,
+        "available": True,
+        "item": item,
+    })
+
+
+@app.post("/api/expeditions")
+def api_expeditions_create():
+    try:
+        payload = request.get_json(force=True) or {}
+    except Exception:
+        payload = {}
+
+    objective = str(payload.get("objective") or payload.get("task_text") or "").strip()
+    if not objective:
+        return jsonify({
+            "ok": False,
+            "error": "objective is required",
+        }), 400
+
+    mission_id = _generate_mission_id()
+    mission_dir = _mission_root(mission_id)
+    mission_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_workbench_structure(mission_id)
+    write_state(mission_id, "MISSION_DEFINED")
+    _create_mission_brief(mission_id, objective)
+
+    detail = _build_expedition_detail(mission_id)
+    return jsonify({
+        "ok": True,
+        "item": detail,
+    })
+
+
+@app.post("/api/expeditions/<mission_id>/input")
+def api_expedition_input(mission_id: str):
+    try:
+        mission = normalize_mission_id(mission_id)
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+        }), 400
+    if not _mission_exists(mission):
+        return jsonify({
+            "ok": False,
+            "error": "mission not found",
+        }), 404
+    try:
+        payload = request.get_json(force=True) or {}
+    except Exception:
+        payload = {}
+
+    content = str(payload.get("content") or payload.get("text") or "").strip()
+    if not content:
+        return jsonify({
+            "ok": False,
+            "error": "content is required",
+        }), 400
+
+    created_at = iso_now()
+    input_id = f"input_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{_short_digest(f'{mission}|{content}|{created_at}')}"
+    intake_dir = _ensure_workbench_structure(mission) / "intake"
+    intake_dir.mkdir(parents=True, exist_ok=True)
+    input_path = intake_dir / f"{input_id}.json"
+    record = {
+        "input_id": input_id,
+        "mission_id": mission,
+        "source_type": "user_provided",
+        "status": "unreviewed",
+        "content": content,
+        "created_at": created_at,
+    }
+    _write_json(input_path, record)
+
+    return jsonify({
+        "ok": True,
+        "item": {
+            **record,
+            "path": input_path.relative_to(ROOT).as_posix(),
+        },
+        "mission": _build_expedition_detail(mission),
+    })
 
 
 @app.get("/api/governance/return-all")

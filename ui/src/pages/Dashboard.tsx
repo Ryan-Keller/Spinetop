@@ -239,6 +239,85 @@ type DraftRecord = {
   error?: string;
 };
 
+type ExpeditionStatusBadge = "waiting_for_user" | "researching" | "ready_for_review" | "idle";
+
+type ExpeditionSummary = {
+  mission_id: string;
+  objective: string;
+  current_state: string;
+  status_badge: ExpeditionStatusBadge;
+  latest_run_id: string;
+  last_updated: string;
+  created_at: string;
+  artifact_count: number;
+  input_count: number;
+  summary: string;
+  manifest_status: string;
+  path: string;
+};
+
+type MissionInputRecord = {
+  input_id: string;
+  mission_id: string;
+  source_type: string;
+  status: string;
+  content: string;
+  created_at: string;
+  path: string;
+};
+
+type WorkbenchFile = {
+  path: string;
+  folder: string;
+  name: string;
+  modified_at: string;
+  bytes: number;
+  bytes_label: string;
+};
+
+type WorkbenchFolder = {
+  name: string;
+  path: string;
+  available: boolean;
+  file_count: number;
+  newest_modified_at: string;
+};
+
+type WorkbenchSummary = {
+  root: string;
+  folders: WorkbenchFolder[];
+  files: WorkbenchFile[];
+};
+
+type ExpeditionDetail = {
+  mission_id: string;
+  objective: string;
+  current_state: string;
+  status_badge: ExpeditionStatusBadge;
+  latest_run_id: string;
+  last_updated: string;
+  created_at: string;
+  mission_brief: Record<string, unknown>;
+  state: Record<string, unknown>;
+  manifest?: Record<string, unknown> | null;
+  artifact_index: {
+    mission_id: string;
+    items: {
+      kind: string;
+      path: string;
+      created_at: string;
+    }[];
+  };
+  artifact_refs: Record<string, unknown>[];
+  latest_hermes_run?: HermesRun | Record<string, unknown> | null;
+  latest_draft?: DraftRecord | Record<string, unknown> | null;
+  latest_clarification_packet?: Record<string, unknown> | null;
+  mission_inputs: MissionInputRecord[];
+  workbench: WorkbenchSummary;
+  artifact_count: number;
+  input_count: number;
+};
+
 type StatusResponse = {
   ok: boolean;
   workspace_id: string;
@@ -253,6 +332,19 @@ type StatusResponse = {
   support_helper_activity?: SupportHelperActivity;
   mirror_door_test: MirrorDoorTestStatus;
   storage_overview?: StorageOverview;
+};
+
+type ExpeditionsResponse = {
+  ok: boolean;
+  source_root?: string;
+  items: ExpeditionSummary[];
+};
+
+type ExpeditionDetailResponse = {
+  ok: boolean;
+  available: boolean;
+  item: ExpeditionDetail | null;
+  error?: string;
 };
 
 const fallbackData: StatusResponse = {
@@ -440,6 +532,8 @@ const fallbackData: StatusResponse = {
     compactor_last_run: {},
   },
 };
+
+const fallbackExpeditions: ExpeditionSummary[] = [];
 
 const gateLabels = ["Inbox", "Promotion", "Collective", "Honcho"];
 const gateX = [8, 33, 58, 83];
@@ -649,6 +743,75 @@ const styles = {
     background: "rgba(15,23,42,0.75)",
     padding: 12,
   } as const,
+  fieldInput: {
+    width: "100%",
+    borderRadius: 14,
+    border: "1px solid rgba(192,132,252,0.24)",
+    background: "rgba(2,6,23,0.65)",
+    color: "#e2e8f0",
+    padding: "10px 12px",
+    fontSize: 14,
+    outline: "none",
+    boxSizing: "border-box" as const,
+  } as const,
+  fieldTextarea: {
+    width: "100%",
+    minHeight: 110,
+    borderRadius: 14,
+    border: "1px solid rgba(192,132,252,0.24)",
+    background: "rgba(2,6,23,0.65)",
+    color: "#e2e8f0",
+    padding: "12px",
+    fontSize: 14,
+    outline: "none",
+    resize: "vertical" as const,
+    boxSizing: "border-box" as const,
+    fontFamily: "inherit",
+  } as const,
+  secondaryButton: {
+    borderRadius: 12,
+    border: "1px solid rgba(192,132,252,0.3)",
+    background: "rgba(15,23,42,0.9)",
+    color: "#e9d5ff",
+    padding: "8px 14px",
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: "pointer",
+  } as const,
+  expeditionList: {
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: 10,
+    maxHeight: 420,
+    overflowY: "auto" as const,
+    paddingRight: 2,
+  } as const,
+  tabRow: {
+    display: "flex",
+    flexWrap: "wrap" as const,
+    gap: 8,
+  } as const,
+  tabButton: {
+    borderRadius: 999,
+    border: "1px solid rgba(148,163,184,0.3)",
+    background: "rgba(15,23,42,0.8)",
+    color: "#cbd5f5",
+    padding: "6px 12px",
+    fontSize: 12,
+    cursor: "pointer",
+  } as const,
+  tabButtonActive: {
+    border: "1px solid rgba(192,132,252,0.4)",
+    background: "rgba(124,58,237,0.22)",
+    color: "#fff",
+  } as const,
+  scrollArea: {
+    maxHeight: 240,
+    overflowY: "auto" as const,
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: 10,
+  } as const,
   gridSplit: {
     display: "grid",
     gap: 24,
@@ -770,10 +933,29 @@ function formatAgeMinutes(value?: number | null): string {
   return `${days.toFixed(days < 10 ? 1 : 0)} d ago`;
 }
 
+function getRecordString(record: unknown, key: string): string {
+  if (!record || typeof record !== "object") return "";
+  const value = (record as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : "";
+}
+
+function getRecordObject(record: unknown, key: string): Record<string, unknown> | null {
+  if (!record || typeof record !== "object") return null;
+  const value = (record as Record<string, unknown>)[key];
+  if (!value || typeof value !== "object") return null;
+  return value as Record<string, unknown>;
+}
+
 export default function Dashboard() {
   const [data, setData] = useState<StatusResponse>(fallbackData);
   const [hermesRuns, setHermesRuns] = useState<HermesRun[]>([]);
   const [petitionDrafts, setPetitionDrafts] = useState<DraftRecord[]>([]);
+  const [expeditions, setExpeditions] = useState<ExpeditionSummary[]>(fallbackExpeditions);
+  const [selectedMissionId, setSelectedMissionId] = useState<string | null>(null);
+  const [selectedMission, setSelectedMission] = useState<ExpeditionDetail | null>(null);
+  const [newMissionObjective, setNewMissionObjective] = useState("");
+  const [missionInputText, setMissionInputText] = useState("");
+  const [workbenchFolder, setWorkbenchFolder] = useState("intake");
   const [loading, setLoading] = useState(false);
   const [lastRefresh, setLastRefresh] = useState("demo data");
   const [errorText, setErrorText] = useState("");
@@ -788,7 +970,7 @@ export default function Dashboard() {
   const load = async () => {
     setLoading(true);
     try {
-      const [statusResult, runsResult, draftsResult] = await Promise.all([
+      const [statusResult, runsResult, draftsResult, expeditionsResult] = await Promise.all([
         loadJson<StatusResponse>("http://127.0.0.1:5051/api/status")
           .then((value) => ({ ok: true as const, value }))
           .catch((error) => ({ ok: false as const, error })),
@@ -796,6 +978,9 @@ export default function Dashboard() {
           .then((value) => ({ ok: true as const, value }))
           .catch((error) => ({ ok: false as const, error })),
         loadJson<{ ok: boolean; items: DraftRecord[] }>("http://127.0.0.1:5051/api/petition-drafts?limit=6")
+          .then((value) => ({ ok: true as const, value }))
+          .catch((error) => ({ ok: false as const, error })),
+        loadJson<ExpeditionsResponse>("http://127.0.0.1:5051/api/expeditions")
           .then((value) => ({ ok: true as const, value }))
           .catch((error) => ({ ok: false as const, error })),
       ]);
@@ -823,6 +1008,14 @@ export default function Dashboard() {
         errors.push(`drafts: ${draftsResult.error instanceof Error ? draftsResult.error.message : "request failed"}`);
       }
 
+      if (expeditionsResult.ok) {
+        const items = Array.isArray(expeditionsResult.value.items) ? expeditionsResult.value.items : [];
+        setExpeditions(items);
+      } else {
+        setExpeditions([]);
+        errors.push(`expeditions: ${expeditionsResult.error instanceof Error ? expeditionsResult.error.message : "request failed"}`);
+      }
+
       setErrorText(errors.length ? `Using fallback data - ${errors.join(" | ")}` : "");
       setLastRefresh(new Date().toLocaleTimeString());
     } catch (err) {
@@ -831,6 +1024,8 @@ export default function Dashboard() {
       setLastRefresh("fallback mode");
       setHermesRuns([]);
       setPetitionDrafts([]);
+      setExpeditions([]);
+      setSelectedMission(null);
     } finally {
       setLoading(false);
     }
@@ -841,6 +1036,39 @@ export default function Dashboard() {
     const timer = window.setInterval(load, 5000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!selectedMissionId && expeditions[0]?.mission_id) {
+      setSelectedMissionId(expeditions[0].mission_id);
+    }
+  }, [expeditions, selectedMissionId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!selectedMissionId) {
+      setSelectedMission(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    loadJson<ExpeditionDetailResponse>(`http://127.0.0.1:5051/api/expeditions/${selectedMissionId}`)
+      .then((response) => {
+        if (cancelled) return;
+        setSelectedMission(response.ok && response.item ? response.item : null);
+        const folders = response.ok && response.item?.workbench?.folders ? response.item.workbench.folders : [];
+        if (folders.length && !folders.some((folder) => folder.name === workbenchFolder)) {
+          setWorkbenchFolder(folders[0].name);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setSelectedMission(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedMissionId, workbenchFolder, lastRefresh]);
 
   const packets = useMemo(() => groupPackets(data.events_recent || []), [data.events_recent]);
 
@@ -889,10 +1117,10 @@ export default function Dashboard() {
     fixture_categories: [],
     fixture_files: 0,
   };
-  const helperLaneSummary = [
+  const helperLaneSummary = ([
     ["orchestration", supportActivity.lane_counts["orchestration"] ?? 0],
     ["retrieval", supportActivity.lane_counts["retrieval"] ?? 0],
-  ]
+  ] as Array<[string, number]>)
     .filter(([, count]) => count > 0)
     .map(([lane, count]) => `${count} ${lane}`)
     .join(", ") || "no helper records";
@@ -916,6 +1144,81 @@ export default function Dashboard() {
   const storageOverview = (data.storage_overview ?? fallbackData.storage_overview) as StorageOverview;
   const compactorLastRun = (storageOverview.compactor_last_run ?? {}) as CompactorLastRunSummary;
   const storageHotspots = storageOverview.hotspots?.length ? storageOverview.hotspots : (storageOverview.areas || []).slice(0, 6);
+  const selectedMissionFolders = selectedMission?.workbench?.folders ?? [];
+  const selectedMissionFiles = selectedMission?.workbench?.files ?? [];
+  const selectedMissionArtifacts = selectedMission?.artifact_index?.items ?? [];
+  const selectedMissionInputs = selectedMission?.mission_inputs ?? [];
+  const workbenchFilesForFolder = selectedMissionFiles.filter((file) => file.folder === workbenchFolder);
+  const selectedMissionArtifactRefs = (selectedMission?.artifact_refs?.length ? selectedMission.artifact_refs : selectedMissionArtifacts)
+    .slice(-12)
+    .reverse();
+  const latestHermesRun = selectedMission?.latest_hermes_run ?? null;
+  const latestDraft = selectedMission?.latest_draft ?? null;
+  const latestClarificationPacket = selectedMission?.latest_clarification_packet ?? null;
+
+  const expeditionStatusTone: Record<ExpeditionStatusBadge, StripTone> = {
+    waiting_for_user: "watch",
+    researching: "good",
+    ready_for_review: "good",
+    idle: "off",
+  };
+
+  const createMission = async () => {
+    const objective = newMissionObjective.trim();
+    if (!objective) {
+      setErrorText("Using fallback data - objective is required to create an expedition");
+      return;
+    }
+    try {
+      const res = await fetch("http://127.0.0.1:5051/api/expeditions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ objective }),
+      });
+      const payload = (await res.json()) as { ok?: boolean; item?: ExpeditionDetail; error?: string };
+      if (!res.ok || !payload.ok || !payload.item) {
+        throw new Error(payload.error || `HTTP ${res.status}`);
+      }
+      setNewMissionObjective("");
+      setSelectedMissionId(payload.item.mission_id);
+      setSelectedMission(payload.item);
+      setWorkbenchFolder(payload.item.workbench.folders[0]?.name || "intake");
+      setMissionInputText("");
+      await load();
+    } catch (error) {
+      setErrorText(`Using fallback data - ${error instanceof Error ? error.message : "mission creation failed"}`);
+    }
+  };
+
+  const sendMissionInput = async () => {
+    if (!selectedMissionId) {
+      setErrorText("Using fallback data - select an expedition first");
+      return;
+    }
+    const content = missionInputText.trim();
+    if (!content) {
+      setErrorText("Using fallback data - mission input cannot be empty");
+      return;
+    }
+    try {
+      const res = await fetch(`http://127.0.0.1:5051/api/expeditions/${selectedMissionId}/input`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      });
+      const payload = (await res.json()) as { ok?: boolean; item?: MissionInputRecord; mission?: ExpeditionDetail; error?: string };
+      if (!res.ok || !payload.ok) {
+        throw new Error(payload.error || `HTTP ${res.status}`);
+      }
+      setMissionInputText("");
+      if (payload.mission) {
+        setSelectedMission(payload.mission);
+      }
+      await load();
+    } catch (error) {
+      setErrorText(`Using fallback data - ${error instanceof Error ? error.message : "mission input failed"}`);
+    }
+  };
 
   return (
     <div style={styles.page}>
@@ -997,9 +1300,350 @@ export default function Dashboard() {
           </div>
         </div>
 
+        <div style={styles.panel}>
+          <div style={styles.sectionTitleRow}>
+            <div>
+              <h2 style={styles.sectionTitle}>Expeditions</h2>
+              <div style={styles.sectionSubtitle}>
+                Operator-managed mission containers with a focused readout, safe intake, and a workbench that stays outside governed memory.
+              </div>
+            </div>
+            <div style={styles.pillRow}>
+              <span style={{ ...styles.badge, ...styles.badgeGood }}>Workbench Only</span>
+              <span style={{ ...styles.badge, ...styles.badgeWarn }}>Unreviewed</span>
+              <span style={{ ...styles.badge, ...styles.badgeOutline }}>Preview Only</span>
+            </div>
+          </div>
+
+          <div style={styles.gridSplit}>
+            <div style={styles.stack}>
+              <div style={styles.recordCard}>
+                <div style={styles.recordMetaRow}>
+                  <div>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Create Expedition</div>
+                    <div style={styles.subtleText}>
+                      Generates a new mission_id, creates the mission brief, and opens the focused view.
+                    </div>
+                  </div>
+                  <span style={{ ...styles.badge, ...styles.badgeGood }}>safe zone</span>
+                </div>
+                <div style={{ marginTop: 12, display: "flex", flexDirection: "column" as const, gap: 10 }}>
+                  <input
+                    type="text"
+                    value={newMissionObjective}
+                    onChange={(event) => setNewMissionObjective(event.target.value)}
+                    placeholder="Objective, for example: review recent anomalies and suggest action"
+                    style={styles.fieldInput}
+                  />
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const }}>
+                    <button type="button" onClick={createMission} style={styles.refreshButton}>
+                      Create Expedition
+                    </button>
+                    <button type="button" onClick={() => setNewMissionObjective("")} style={styles.secondaryButton}>
+                      Clear
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div style={styles.recordCard}>
+                <div style={styles.recordMetaRow}>
+                  <div>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Expedition List</div>
+                    <div style={styles.subtleText}>Click one to focus the mission details.</div>
+                  </div>
+                  <span style={{ ...styles.badge, ...styles.badgeGood }}>{expeditions.length} active</span>
+                </div>
+
+                <div style={styles.expeditionList}>
+                  {expeditions.length ? (
+                    expeditions.map((expedition) => {
+                      const isSelected = selectedMissionId === expedition.mission_id;
+                      const tone =
+                        expedition.status_badge === "researching"
+                          ? styles.badgeGood
+                          : expedition.status_badge === "ready_for_review"
+                            ? styles.badgeOutline
+                            : expedition.status_badge === "waiting_for_user"
+                              ? styles.badgeWarn
+                              : styles.badge;
+
+                      return (
+                        <button
+                          key={expedition.mission_id}
+                          type="button"
+                          onClick={() => setSelectedMissionId(expedition.mission_id)}
+                          style={{
+                            ...styles.recordCard,
+                            cursor: "pointer",
+                            textAlign: "left" as const,
+                            borderColor: isSelected ? "rgba(252,211,77,0.45)" : "rgba(192,132,252,0.2)",
+                            background: isSelected ? "rgba(124,58,237,0.18)" : "rgba(2,6,23,0.55)",
+                          }}
+                        >
+                          <div style={styles.recordMetaRow}>
+                            <div>
+                              <div style={{ fontSize: 15, fontWeight: 600, color: "#e2e8f0" }}>{expedition.mission_id}</div>
+                              <div style={styles.subtleText}>{expedition.objective || "No objective recorded yet."}</div>
+                            </div>
+                            <span style={{ ...styles.badge, ...tone }}>{expedition.status_badge}</span>
+                          </div>
+                          <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
+                            <span style={styles.badge}>{expedition.current_state}</span>
+                            <span style={styles.badge}>{expedition.latest_run_id || "no run yet"}</span>
+                            <span style={styles.badge}>{expedition.last_updated || "no updates"}</span>
+                          </div>
+                          {expedition.summary ? (
+                            <div style={{ marginTop: 10, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
+                              {expedition.summary}
+                            </div>
+                          ) : null}
+                        </button>
+                      );
+                    })
+                  ) : (
+                    <div style={styles.recordCard}>No expeditions exist yet. Create one above to open the focused view.</div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div style={styles.stack}>
+              {selectedMission ? (
+                <>
+                  <div style={styles.recordCard}>
+                    <div style={styles.recordMetaRow}>
+                      <div>
+                        <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>{selectedMission.mission_id}</div>
+                        <div style={styles.subtleText}>{selectedMission.objective || "No objective recorded yet."}</div>
+                      </div>
+                      <span style={{ ...styles.badge, ...statusStripToneStyles[expeditionStatusTone[selectedMission.status_badge]] }}>
+                        {selectedMission.status_badge}
+                      </span>
+                    </div>
+                    <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
+                      <span style={styles.badge}>{selectedMission.current_state}</span>
+                      <span style={styles.badge}>latest run {selectedMission.latest_run_id || "none"}</span>
+                      <span style={styles.badge}>updated {selectedMission.last_updated || "unknown"}</span>
+                    </div>
+                    <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
+                      <span style={{ ...styles.badge, ...styles.badgeGood }}>Workbench Only</span>
+                      <span style={{ ...styles.badge, ...styles.badgeWarn }}>Unreviewed</span>
+                      <span style={{ ...styles.badge, ...styles.badgeOutline }}>Preview Only</span>
+                    </div>
+                  </div>
+
+                  <div style={styles.recordCard}>
+                    <div style={styles.recordMetaRow}>
+                      <div>
+                        <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Mission Activity</div>
+                        <div style={styles.subtleText}>
+                          Latest Hermes run, draft, clarification packet, and manifest summary.
+                        </div>
+                      </div>
+                      <span style={{ ...styles.badge, ...styles.badgeGood }}>focused view</span>
+                    </div>
+                    <div style={{ marginTop: 12, display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Latest Hermes run</div>
+                        <div style={{ marginTop: 4, fontSize: 13, fontWeight: 600, color: "#f5d0fe" }}>
+                          {getRecordString(latestHermesRun, "run_id") || selectedMission.latest_run_id || "none"}
+                        </div>
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
+                          {getRecordString(latestHermesRun, "summary") || "No Hermes run recorded yet."}
+                        </div>
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Latest draft</div>
+                        <div style={{ marginTop: 4, fontSize: 13, fontWeight: 600, color: "#f5d0fe" }}>
+                          {getRecordString(latestDraft, "petition_id") || "none"}
+                        </div>
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
+                          {getRecordString(latestDraft, "summary") || "No draft exists yet for this mission."}
+                        </div>
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Clarification packet</div>
+                        <div style={{ marginTop: 4, fontSize: 13, fontWeight: 600, color: "#f5d0fe" }}>
+                          {getRecordString(latestClarificationPacket, "packet_id") || "none"}
+                        </div>
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
+                          {getRecordString(getRecordObject(latestClarificationPacket, "provisional_answer"), "text") ||
+                            "No clarification packet exists yet."}
+                        </div>
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Manifest</div>
+                        <div style={{ marginTop: 4, fontSize: 13, fontWeight: 600, color: "#f5d0fe" }}>
+                          {getRecordString(selectedMission.manifest, "status") || "not yet written"}
+                        </div>
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
+                          {getRecordString(selectedMission.manifest, "summary") || "No manifest summary yet."}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={styles.recordCard}>
+                    <div style={styles.recordMetaRow}>
+                      <div>
+                        <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Mission Artifacts</div>
+                        <div style={styles.subtleText}>Recent artifact records from the mission-local manifest or artifact index.</div>
+                      </div>
+                      <span style={{ ...styles.badge, ...styles.badgeOutline }}>{selectedMission.artifact_count} records</span>
+                    </div>
+                    <div style={{ marginTop: 12, display: "flex", flexDirection: "column" as const, gap: 10, maxHeight: 260, overflowY: "auto" }}>
+                      {selectedMissionArtifactRefs.length ? (
+                        selectedMissionArtifactRefs.map((item, index) => {
+                          const kind = getRecordString(item, "artifact_kind") || getRecordString(item, "kind") || "artifact";
+                          const stage = getRecordString(item, "artifact_stage") || "n/a";
+                          const role = getRecordString(item, "problem_role") || "";
+                          const quality = getRecordString(item, "quality_signal") || "";
+                          const reusable = getRecordString(item, "reusability_class") || "";
+                          const path = getRecordString(item, "path");
+                          const createdAt = getRecordString(item, "created_at");
+
+                          return (
+                            <div key={`${kind}-${path}-${index}`} style={styles.recordCard}>
+                              <div style={styles.recordMetaRow}>
+                                <div>
+                                  <div style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0" }}>{kind}</div>
+                                  <div style={styles.subtleText}>{path}</div>
+                                </div>
+                                <span style={styles.badge}>{stage}</span>
+                              </div>
+                              <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
+                                {role ? <span style={styles.badge}>{role}</span> : null}
+                                {quality ? <span style={styles.badge}>{quality}</span> : null}
+                                {reusable ? <span style={styles.badge}>{reusable}</span> : null}
+                                {createdAt ? <span style={styles.badge}>{createdAt}</span> : null}
+                              </div>
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <div style={styles.recordCard}>No mission artifacts have been indexed yet.</div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div style={styles.recordCard}>
+                    <div style={styles.recordMetaRow}>
+                      <div>
+                        <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Mission Inputs</div>
+                        <div style={styles.subtleText}>Send to Mission (Unreviewed Input) writes into the workbench intake folder only.</div>
+                      </div>
+                      <span style={{ ...styles.badge, ...styles.badgeWarn }}>Unreviewed</span>
+                    </div>
+                    <div style={{ marginTop: 12, display: "flex", flexDirection: "column" as const, gap: 10 }}>
+                      <textarea
+                        value={missionInputText}
+                        onChange={(event) => setMissionInputText(event.target.value)}
+                        placeholder="Send to Mission (Unreviewed Input)"
+                        style={styles.fieldTextarea}
+                      />
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const }}>
+                        <button type="button" onClick={sendMissionInput} style={styles.refreshButton}>
+                          Send to Mission (Unreviewed Input)
+                        </button>
+                        <button type="button" onClick={() => setMissionInputText("")} style={styles.secondaryButton}>
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+                    <div style={{ marginTop: 12, ...styles.scrollArea }}>
+                      {selectedMissionInputs.length ? (
+                        selectedMissionInputs.map((input) => (
+                          <div key={input.input_id} style={styles.recordCard}>
+                            <div style={styles.recordMetaRow}>
+                              <div>
+                                <div style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0" }}>{input.input_id}</div>
+                                <div style={styles.subtleText}>{input.created_at}</div>
+                              </div>
+                              <span style={{ ...styles.badge, ...styles.badgeWarn }}>{input.status}</span>
+                            </div>
+                            <div style={{ marginTop: 8, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>{input.content}</div>
+                            <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
+                              <span style={styles.badge}>{input.source_type}</span>
+                              <span style={styles.badge}>{input.path}</span>
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <div style={styles.recordCard}>No mission inputs have been sent to this expedition yet.</div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div style={styles.recordCard}>
+                    <div style={styles.recordMetaRow}>
+                      <div>
+                        <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Workbench (Not Governed Memory)</div>
+                        <div style={styles.subtleText}>
+                          Messy sandbox for code, experiments, notes, and raw outputs. It is not bridge-submittable directly.
+                        </div>
+                      </div>
+                      <span style={{ ...styles.badge, ...styles.badgeGood }}>Workbench Only</span>
+                    </div>
+                    <div style={{ marginTop: 12, ...styles.tabRow }}>
+                      {selectedMissionFolders.length ? (
+                        selectedMissionFolders.map((folder) => (
+                          <button
+                            key={folder.name}
+                            type="button"
+                            onClick={() => setWorkbenchFolder(folder.name)}
+                            style={{
+                              ...styles.tabButton,
+                              ...(workbenchFolder === folder.name ? styles.tabButtonActive : null),
+                            }}
+                          >
+                            {folder.name} ({folder.file_count})
+                          </button>
+                        ))
+                      ) : (
+                        <span style={styles.subtleText}>Workbench folders will appear after the first mission is created.</span>
+                      )}
+                    </div>
+                    <div style={{ marginTop: 12, fontSize: 12, color: "#94a3b8" }}>
+                      root <span style={styles.mono}>{selectedMission.workbench.root}</span>
+                    </div>
+                    <div style={{ marginTop: 12, ...styles.scrollArea }}>
+                      {workbenchFilesForFolder.length ? (
+                        workbenchFilesForFolder.map((file) => (
+                          <div key={file.path} style={styles.recordCard}>
+                            <div style={styles.recordMetaRow}>
+                              <div>
+                                <div style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0" }}>{file.name}</div>
+                                <div style={styles.subtleText}>{file.path}</div>
+                              </div>
+                              <span style={styles.badge}>{file.bytes_label}</span>
+                            </div>
+                            <div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8" }}>
+                              modified {file.modified_at}
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <div style={styles.recordCard}>
+                          No files yet in <span style={styles.mono}>{workbenchFolder}</span>.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div style={styles.recordCard}>
+                  Select an expedition to inspect its mission brief, run summary, intake files, and workbench.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
         <div style={styles.metrics}>
           {metricCard("Events", (data.events_recent || []).length, "live flow", Activity)}
           {metricCard("Sessions", data.honcho_sessions_total ?? "ï¿½", "active memory links", Database)}
+          {metricCard("Expeditions", expeditions.length, "mission containers", ClipboardList)}
           {metricCard("Hermes Runs", hermesRuns.filter((item) => item.ok).length, "saved run JSON artifacts", FileText)}
           {metricCard("Drafts", petitionDrafts.filter((item) => item.ok).length, "memory/drafts records", ClipboardList)}
           {metricCard(

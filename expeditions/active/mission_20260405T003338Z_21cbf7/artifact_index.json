@@ -1,0 +1,25 @@
+{
+  "mission_id": "mission_20260405T003338Z_21cbf7",
+  "items": [
+    {
+      "kind": "mission_brief",
+      "path": "expeditions/active/mission_20260405T003338Z_21cbf7/mission_brief.json",
+      "created_at": "2026-04-05T00:33:38.994198+00:00"
+    },
+    {
+      "kind": "hermes_run",
+      "path": "logs/hermes/runs/hermes-20260405T003338Z-4ba5_anomaly_review.json",
+      "created_at": "2026-04-05T00:33:48.770009+00:00"
+    },
+    {
+      "kind": "state",
+      "path": "expeditions/active/mission_20260405T003338Z_21cbf7/state.json",
+      "created_at": "2026-04-05T00:33:48.778521+00:00"
+    },
+    {
+      "kind": "clarification_packet",
+      "path": "logs/citadel/clarification_packets/clarification_20260405T003348Z_2785ff.json",
+      "created_at": "2026-04-05T00:33:48.782955+00:00"
+    }
+  ]
+}
