@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import urllib.request
 from collections import Counter
 from datetime import datetime, timezone
@@ -35,6 +36,7 @@ EXPEDITIONS_ACTIVE_DIR = ROOT / "expeditions" / "active"
 WORKBENCH_MISSIONS_DIR = ROOT / "workbench" / "missions"
 MISSION_CHAT_FILENAME = "chat.jsonl"
 MISSION_PARKING_FILENAME = "parking_status.json"
+RUNNER_RETURNS_DIRNAME = "runner_returns"
 MEMORY_DIR = ROOT / "memory"
 DISPATCH_DIR = MEMORY_DIR / "dispatch"
 GOVERNANCE_DIR = ROOT / "logs" / "governance"
@@ -278,6 +280,10 @@ def _mission_parking_path(mission_id: str) -> Path:
     return _ensure_workbench_structure(mission_id) / "notes" / MISSION_PARKING_FILENAME
 
 
+def _runner_returns_dir(mission_id: str) -> Path:
+    return _ensure_workbench_structure(mission_id) / "notes" / RUNNER_RETURNS_DIRNAME
+
+
 def _mission_manifest_payload(mission_id: str) -> dict[str, Any] | None:
     path = mission_manifest_path(mission_id)
     if not path.exists():
@@ -316,6 +322,37 @@ def _relative_or_absolute(path: Path | str) -> Path:
     return (ROOT / candidate).resolve()
 
 
+def _safe_mission_id(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return normalize_mission_id(text)
+    except Exception:
+        return ""
+
+
+def _mission_id_from_path_ref(value: Any) -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    if not text:
+        return ""
+    match = re.search(r"(?:^|/)(?:workbench/missions|expeditions/active)/([^/]+)/", text)
+    if not match:
+        return ""
+    return _safe_mission_id(match.group(1))
+
+
+def _support_refs(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    refs: list[str] = []
+    for item in value:
+        text = str(item or "").strip()
+        if text:
+            refs.append(text)
+    return refs
+
+
 def _load_index_artifact(mission_id: str, kind: str) -> dict[str, Any] | None:
     index = read_artifact_index(mission_id)
     item = _latest_index_item(list(index.get("items") or []), kind)
@@ -327,6 +364,273 @@ def _load_index_artifact(mission_id: str, kind: str) -> dict[str, Any] | None:
     path = _relative_or_absolute(path_text)
     payload = _load_json(path)
     return payload if isinstance(payload, dict) else None
+
+
+def _helper_output_candidates(instance: dict[str, Any]) -> list[tuple[str, Path]]:
+    refs: list[str] = []
+    refs.extend(_support_refs(instance.get("outputs_refs")))
+    helper_id = str(instance.get("helper_id") or "").strip()
+    artifact_path = SUPPORT_ORCHESTRATION_DIR / "artifacts" / f"{helper_id}.json"
+    try:
+        artifact_payload = _load_json(artifact_path) if artifact_path.exists() else None
+    except Exception:
+        artifact_payload = None
+    if isinstance(artifact_payload, dict):
+        refs.extend(_support_refs(artifact_payload.get("outputs_refs")))
+
+    candidates: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+    for ref in refs:
+        path = _relative_or_absolute(ref)
+        key = path.as_posix()
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append((ref, path))
+
+    helper_type = str(instance.get("helper_type") or "").strip()
+    if helper_id:
+        fallback_paths: list[Path] = []
+        if helper_type == "runner_helper_2b":
+            fallback_paths.append(ROOT / "logs" / "support" / "runs" / f"{helper_id}.json")
+        elif helper_type == "retrieval_helper_2b":
+            fallback_paths.append(ROOT / "logs" / "support" / "retrieval" / f"{helper_id}_result.json")
+        for path in fallback_paths:
+            key = path.as_posix()
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                ref = path.relative_to(ROOT).as_posix()
+            except Exception:
+                ref = path.as_posix()
+            candidates.append((ref, path))
+    return candidates
+
+
+def _load_helper_output(instance: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    for ref, path in _helper_output_candidates(instance):
+        try:
+            payload = _load_json(path) if path.exists() else None
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            return payload, ref
+    return None, ""
+
+
+def _linked_mission_id_for_helper(instance: dict[str, Any], output_payload: dict[str, Any] | None = None) -> str:
+    candidates: list[str] = []
+    for value in [
+        instance.get("mission_id"),
+        (output_payload or {}).get("mission_id"),
+    ]:
+        mission = _safe_mission_id(value)
+        if mission and mission not in candidates:
+            candidates.append(mission)
+
+    for value in [
+        instance.get("request_ref"),
+        instance.get("return_lane"),
+        *(_support_refs(instance.get("inputs_refs"))),
+        *(_support_refs(instance.get("outputs_refs"))),
+        *(_support_refs((output_payload or {}).get("inputs_refs"))),
+        *(_support_refs((output_payload or {}).get("outputs_refs"))),
+        (output_payload or {}).get("source_path"),
+        (output_payload or {}).get("lane"),
+    ]:
+        mission = _mission_id_from_path_ref(value)
+        if mission and mission not in candidates:
+            candidates.append(mission)
+
+    if len(candidates) != 1:
+        return ""
+    return candidates[0]
+
+
+def _runner_return_confidence(instance: dict[str, Any], output_payload: dict[str, Any] | None = None) -> float:
+    helper_type = str(instance.get("helper_type") or "").strip()
+    if helper_type == "retrieval_helper_2b":
+        result_status = str((output_payload or {}).get("result_status") or instance.get("result_status") or "").strip()
+        if result_status == "complete":
+            return 0.58
+        if result_status == "partial":
+            return 0.42
+        if result_status == "none_found":
+            return 0.24
+        return 0.16
+    status = str((output_payload or {}).get("status") or instance.get("status") or "").strip()
+    if status == "complete":
+        return 0.46
+    if status == "blocked":
+        return 0.18
+    return 0.14
+
+
+def _build_runner_return_packet(mission_id: str, instance: dict[str, Any], output_payload: dict[str, Any] | None, *, source_ref: str) -> dict[str, Any]:
+    helper_id = str(instance.get("helper_id") or "").strip()
+    helper_type = str(instance.get("helper_type") or "").strip()
+    lane = str(instance.get("return_lane") or source_ref or "").strip()
+    created_at = str(
+        (output_payload or {}).get("completed_at")
+        or (output_payload or {}).get("last_run_at")
+        or instance.get("updated_at")
+        or instance.get("created_at")
+        or iso_now()
+    ).strip()
+
+    findings: list[str] = []
+    open_questions: list[str] = []
+    recommended_next_step = "Review the helper output before deciding the next bounded mission step."
+    summary = str((output_payload or {}).get("summary") or "").strip()
+
+    if helper_type == "retrieval_helper_2b":
+        query_scope = str((output_payload or {}).get("query_scope") or instance.get("query_scope") or instance.get("task_scope") or "").strip()
+        result_status = str((output_payload or {}).get("result_status") or instance.get("result_status") or instance.get("status") or "").strip()
+        evidence_refs = _support_refs((output_payload or {}).get("evidence_refs"))[:8]
+        findings.extend(evidence_refs)
+        if not findings:
+            findings.extend(_support_refs((output_payload or {}).get("notes"))[:6])
+        if not summary:
+            summary = f"Retrieval helper {result_status or 'returned'} for {query_scope or helper_id}."
+        if result_status == "none_found":
+            open_questions.append(f"No evidence was found for {query_scope or 'the requested query'}.")
+            recommended_next_step = "Refine the retrieval query or provide narrower source guidance."
+        elif result_status == "partial":
+            open_questions.append("The retrieval completed only partially and may need a follow-up pass.")
+            recommended_next_step = "Review the partial evidence and decide whether to retry or proceed."
+        elif result_status == "blocked":
+            open_questions.append("The retrieval helper blocked before it could return a complete evidence bundle.")
+            recommended_next_step = "Inspect the blocked retrieval receipt and decide whether replacement is needed."
+        else:
+            recommended_next_step = "Review the cited evidence and decide whether the mission needs another bounded helper pass."
+    else:
+        step_transcript = (output_payload or {}).get("step_transcript")
+        if isinstance(step_transcript, list):
+            for item in step_transcript[:8]:
+                if not isinstance(item, dict):
+                    continue
+                step_text = str(item.get("step") or "").strip()
+                status_text = str(item.get("status") or "").strip()
+                if step_text:
+                    findings.append(f"{status_text or 'complete'}: {step_text}")
+        if not findings:
+            task_plan = instance.get("task_plan")
+            if isinstance(task_plan, list):
+                findings.extend([str(item).strip() for item in task_plan[:8] if str(item).strip()])
+        reason = str((output_payload or {}).get("reason") or "").strip()
+        if not summary:
+            summary = reason or f"Runner helper returned an operational receipt for {str(instance.get('task_scope') or helper_id).strip()}."
+        if str((output_payload or {}).get("status") or instance.get("status") or "").strip() == "blocked":
+            open_questions.append(reason or "The runner helper did not complete its bounded procedure.")
+            recommended_next_step = "Inspect the blocked operational receipt and decide whether replacement is needed."
+        else:
+            recommended_next_step = "Review the operational receipt and decide whether the mission needs another bounded helper task."
+
+    return {
+        "mission_id": mission_id,
+        "runner_id": helper_type or helper_id,
+        "instance_id": helper_id,
+        "created_at": created_at,
+        "kind": "finding_return",
+        "summary": summary or f"Helper return captured from {helper_id}.",
+        "findings": findings,
+        "confidence": _runner_return_confidence(instance, output_payload),
+        "open_questions": open_questions,
+        "recommended_next_step": recommended_next_step,
+        "lane": lane,
+        "derived_only": True,
+        "helper_type": helper_type,
+        "source_ref": source_ref,
+    }
+
+
+def _iter_helper_instances() -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for root in [SUPPORT_ORCHESTRATION_INSTANCES_DIR, SUPPORT_RETRIEVAL_INSTANCES_DIR]:
+        if not root.exists():
+            continue
+        for path in sorted(root.glob("*.json")):
+            payload = _load_json(path)
+            if not isinstance(payload, dict):
+                continue
+            payload["_instance_path"] = path.relative_to(ROOT).as_posix()
+            items.append(payload)
+    return items
+
+
+def _read_runner_returns(mission_id: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    root = _runner_returns_dir(mission_id)
+    if not root.exists():
+        return rows
+    for path in sorted(root.glob("*.json")):
+        payload = _load_json(path)
+        if not isinstance(payload, dict):
+            continue
+        payload["path"] = path.relative_to(ROOT).as_posix()
+        rows.append(payload)
+    rows.sort(key=lambda item: str(item.get("created_at") or item.get("path") or ""), reverse=True)
+    return rows
+
+
+def _sync_runner_returns(mission_id: str) -> list[dict[str, Any]]:
+    mission = normalize_mission_id(mission_id)
+    returns_dir = _runner_returns_dir(mission)
+    existing = _read_runner_returns(mission)
+    known_instance_ids = {
+        str(item.get("instance_id") or "").strip()
+        for item in existing
+        if str(item.get("instance_id") or "").strip()
+    }
+
+    helper_instances = _iter_helper_instances()
+    for instance in helper_instances:
+        helper_type = str(instance.get("helper_type") or "").strip()
+        if helper_type not in {"runner_helper_2b", "retrieval_helper_2b"}:
+            continue
+        if helper_type == "retrieval_helper_2b" and "query_scope" not in instance:
+            continue
+        status = str(instance.get("status") or "").strip()
+        if status not in {"complete", "partial", "none_found", "blocked", "failed"}:
+            continue
+        instance_id = str(instance.get("helper_id") or "").strip()
+        if not instance_id or instance_id in known_instance_ids:
+            continue
+        output_payload, source_ref = _load_helper_output(instance)
+        linked_mission = _linked_mission_id_for_helper(instance, output_payload)
+        if linked_mission != mission:
+            continue
+        packet = _build_runner_return_packet(mission, instance, output_payload, source_ref=source_ref)
+        packet_path = returns_dir / f"{instance_id}.json"
+        _write_json(packet_path, packet)
+        known_instance_ids.add(instance_id)
+
+    return _read_runner_returns(mission)
+
+
+def _sync_runner_returns_result(mission_id: str) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    before = _read_runner_returns(mission)
+    before_ids = {
+        str(item.get("instance_id") or "").strip()
+        for item in before
+        if str(item.get("instance_id") or "").strip()
+    }
+    after = _sync_runner_returns(mission)
+    after_ids = {
+        str(item.get("instance_id") or "").strip()
+        for item in after
+        if str(item.get("instance_id") or "").strip()
+    }
+    new_ids = sorted(after_ids - before_ids)
+    return {
+        "mission_id": mission,
+        "created_count": len(new_ids),
+        "created_instance_ids": new_ids,
+        "runner_return_count": len(after),
+        "latest_runner_return": after[0] if after else None,
+    }
 
 
 def _workbench_files(mission_id: str) -> list[dict[str, Any]]:
@@ -625,6 +929,87 @@ def _question_is_blocking(question: str) -> bool:
             "publish",
         ]
     )
+
+
+def _is_general_instruction_task(objective: str) -> bool:
+    normalized = _normalize_mission_objective(objective)
+    if not normalized:
+        return False
+    prefixes = (
+        "how do i ",
+        "how to ",
+        "what is ",
+        "explain ",
+        "teach me ",
+        "show me ",
+        "walk me through ",
+        "help me understand ",
+        "write a ",
+        "write an ",
+        "create a ",
+        "make a ",
+        "draft a ",
+        "give me a ",
+    )
+    if normalized.startswith(prefixes):
+        return True
+    tokens = normalized.split()
+    instructional_markers = {"how", "teach", "explain", "guide", "steps", "example", "script"}
+    return any(marker in tokens for marker in instructional_markers)
+
+
+def _mission_requires_external_artifact(objective: str) -> bool:
+    normalized = _normalize_mission_objective(objective)
+    if not normalized:
+        return False
+    external_patterns = [
+        r"\bsummarize\s+(this|my|the)\s+(text|article|document|essay|note|transcript)\b",
+        r"\bfix\s+(this|my|the)\s+(code|script|program|bug|error|stack trace)\b",
+        r"\bdebug\s+(this|my|the)\s+(code|script|program|bug|error|stack trace|log)\b",
+        r"\banalyze\s+(this|my|the)\s+(dataset|data|csv|spreadsheet|table|report)\b",
+        r"\breview\s+(this|my|the)\s+(code|script|document|dataset|report)\b",
+    ]
+    return any(re.search(pattern, normalized) for pattern in external_patterns)
+
+
+def _mission_inputs_supply_artifact(inputs: Any, latest_packet: dict[str, Any] | None) -> bool:
+    for item in _dict_list(inputs):
+        content = str(item.get("content") or item.get("text") or "").strip()
+        if len(content) >= 40 or "\n" in content or "```" in content:
+            return True
+    if isinstance(latest_packet, dict):
+        provisional = str((latest_packet.get("provisional_answer") or {}).get("text") or "").strip()
+        if provisional:
+            return True
+    return False
+
+
+def _missing_artifact_question(objective: str) -> str:
+    normalized = _normalize_mission_objective(objective)
+    if "summarize" in normalized and "text" in normalized:
+        return "Please provide the text you want summarized."
+    if any(token in normalized for token in ["fix", "debug", "code", "script"]):
+        return "Please provide the code or error output you want fixed."
+    if any(token in normalized for token in ["analyze", "dataset", "data", "csv", "spreadsheet"]):
+        return "Please provide the dataset or data sample you want analyzed."
+    return "Please provide the missing file, text, or data needed for this mission."
+
+
+def _is_sufficient_to_proceed(
+    objective: str,
+    inputs: Any,
+    current_state: str,
+    latest_packet: dict[str, Any] | None,
+) -> tuple[bool, str]:
+    del current_state
+    normalized = _normalize_mission_objective(objective)
+    if not normalized:
+        return False, "Please provide the mission objective."
+    if _mission_requires_external_artifact(objective) and not _mission_inputs_supply_artifact(inputs, latest_packet):
+        return False, _missing_artifact_question(objective)
+    if _is_general_instruction_task(objective):
+        return True, "general_instruction_task"
+    return True, "self_contained_objective"
 
 
 def _question_quick_replies(question: str, *, can_continue_without_input: bool) -> list[dict[str, str]]:
@@ -978,17 +1363,12 @@ def _operator_options(
     parking_status: dict[str, Any],
 ) -> list[dict[str, str]]:
     options: list[dict[str, str]] = []
-    if operator_posture == "parked":
-        options.append({"label": "Resume mission", "value": "Resume mission", "kind": "resume"})
-    else:
+    if operator_posture != "parked":
         options.append({"label": "Proceed with assumptions", "value": "Proceed with assumptions", "kind": "assume"})
-        options.append({"label": "Park mission", "value": "Park mission", "kind": "park"})
     if blocking_questions:
         options.append({"label": "Answer blockers", "value": "Answer blockers", "kind": "blockers"})
     if has_review_preview:
         options.append({"label": "Open review preview", "value": "Open review preview", "kind": "review"})
-    if operator_posture != "parked" and str(parking_status.get("status") or "active") == "parked":
-        options.insert(0, {"label": "Resume mission", "value": "Resume mission", "kind": "resume"})
     return options[:5]
 
 
@@ -1026,17 +1406,13 @@ def _clarification_reply_text(message: str, quick_reply: str | None, detail: dic
     assumption_lines = _assumption_summary_lines(_dict_list(working_memory.get("active_assumptions")))
     open_questions = _question_summary_lines(_dict_list(working_memory.get("open_questions")))
     blocking_questions = list(summary.get("blocking_questions") or detail.get("blocking_questions") or [])
+    can_continue_without_input = bool(summary.get("can_continue_without_input", True))
     review_preview = _record_object(detail.get("latest_draft"), "review_preview") if isinstance(detail, dict) else None
 
-    if quick == "park mission":
-        wake_hint = str(parking_status.get("resume_hint") or summary.get("next_best_operator_answer") or next_question or blocked_reason or "").strip()
-        if wake_hint:
-            return f"Mission parked. Expedition activity is paused until new input arrives. To wake it cleanly, answer this: {wake_hint}", "watch"
-        return "Mission parked. Expedition activity is paused until new input arrives.", "watch"
-    if quick == "resume mission":
-        if assumption_lines:
-            return f"Mission resumed. I’m back in active review and proceeding under the current assumptions: {'; '.join(assumption_lines[:2])}.", "good"
-        return "Mission resumed. I’m back in active review with the current mission context.", "good"
+    if quick in {"park mission", "resume mission"}:
+        if quick == "park mission":
+            return "Parking is controlled by the mission parking button; this chat note does not change parking state.", "watch"
+        return "Parking is controlled by the mission parking button; this chat note does not change parking state.", "watch"
     if quick == "answer blockers":
         if blocking_questions:
             return f"The top blocker is: {blocking_questions[0]}", "watch"
@@ -1099,6 +1475,18 @@ def _clarification_reply_text(message: str, quick_reply: str | None, detail: dic
             return f"The mission is parked. One clear answer would wake it: {wake_hint}", "watch"
         return "The mission is parked until you send fresh input to wake it.", "watch"
 
+    if can_continue_without_input and operator_posture != "needs_operator_answer":
+        if quick == "not sure":
+            return "No problem. There is no blocking clarification right now; the mission can proceed with the current objective.", "good"
+        if quick in {"write more information", "more info", "more information"}:
+            return "More context is optional here. The mission is already sufficient to proceed.", "good"
+        if message.strip():
+            if assumption_lines:
+                preview = "; ".join(assumption_lines[:2])
+                return f"Thanks - I've recorded that as mission input. The mission can keep moving under these assumptions: {preview}.", "good"
+            return "Thanks - I've recorded that as mission input. No additional clarification is required to proceed.", "good"
+        return "No immediate clarification is required. The mission can proceed with the current objective.", "good"
+
     if "?" in message_lower or current_state in {"CLARIFICATION_NEEDED", "RECONSIDERATION_REQUESTED"}:
         if blocked_reason:
             return f"I’m blocked on one answer: {blocked_reason}", "watch"
@@ -1132,21 +1520,7 @@ def _chat_reply(message: str, quick_reply: str | None, detail: dict[str, Any]) -
 
 def _append_chat_exchange(mission_id: str, message: str, *, quick_reply: str | None = None) -> dict[str, Any]:
     mission = normalize_mission_id(mission_id)
-    action = _normalize_question_text(quick_reply or message)
     detail = _build_expedition_detail(mission)
-    summary = detail.get("mission_summary") if isinstance(detail.get("mission_summary"), dict) else {}
-    if action == "park mission":
-        _write_parking_status(
-            mission,
-            status="parked",
-            reason=str(summary.get("operator_posture_reason") or summary.get("blocked_reason") or summary.get("clarification_reason") or "").strip(),
-            parked_by="operator",
-            resume_hint=str(summary.get("next_best_operator_answer") or summary.get("next_question") or "").strip(),
-        )
-        detail = _build_expedition_detail(mission)
-    elif action in {"resume mission", "proceed with assumptions"}:
-        _write_parking_status(mission, status="active", reason=str(message).strip(), parked_by="operator", resume_hint="")
-        detail = _build_expedition_detail(mission)
     path = _mission_chat_path(mission)
     user_item = {
         "message_id": f"chat_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{_short_digest(f'{mission}|user|{message}')}",
@@ -1255,6 +1629,7 @@ def _mission_summary_payload(
     latest_run: dict[str, Any] | None,
     latest_draft: dict[str, Any] | None,
     latest_packet: dict[str, Any] | None,
+    latest_runner_return: dict[str, Any] | None,
     mission_inputs: list[dict[str, Any]],
     working_memory: dict[str, Any] | None = None,
     parking_status: dict[str, Any] | None = None,
@@ -1349,6 +1724,12 @@ def _mission_summary_payload(
     parked = str(parking_status.get("status") or "active") == "parked"
     parking_reason = str(parking_status.get("reason") or "").strip()
     parking_resume_hint = str(parking_status.get("resume_hint") or "").strip()
+    sufficient_to_proceed, sufficiency_reason = _is_sufficient_to_proceed(
+        objective,
+        mission_inputs,
+        current_state,
+        latest_packet,
+    )
 
     summary_operating_status = operating_status
     if not summary_operating_status:
@@ -1365,51 +1746,57 @@ def _mission_summary_payload(
         else:
             summary_operating_status = "proceeding_with_assumptions"
 
-    if summary_operating_status == "blocked":
-        can_continue_without_input = False
-    if summary_operating_status in {"proceeding_with_assumptions", "needs_clarification_but_continuing", "low_confidence_continue"}:
+    if parked:
+        operator_posture = "parked"
+        operator_posture_reason = parking_reason or "The mission is parked in the mission console until new operator input arrives."
+        triage_bucket = "parked"
+    elif current_state in {"MISSION_CLOSED", "ARCHIVE_REVIEW"}:
+        operator_posture = "active"
+        operator_posture_reason = "The mission is not waiting on operator clarification."
+        triage_bucket = "do_now"
         can_continue_without_input = True
-    if current_state in {"PACKAGE_READY", "BRIDGE_CONSIDERATION"}:
+    elif current_state in {"PACKAGE_READY", "BRIDGE_CONSIDERATION"}:
         operator_posture = "ready_for_review"
         operator_posture_reason = "A package or review artifact exists, so the next operator step is review."
         triage_bucket = "review"
-    elif parked:
-        operator_posture = "parked"
-        operator_posture_reason = parking_reason or blocked_reason or "The mission is parked in the mission console until new operator input arrives."
-        triage_bucket = "parked"
-    elif blocking_questions:
-        operator_posture = "needs_operator_answer"
-        operator_posture_reason = blocking_questions[0]
-        triage_bucket = "waiting"
-    elif current_state == "CLARIFICATION_NEEDED":
-        if active_assumptions or can_continue_without_input:
-            operator_posture = "proceed_with_assumptions"
-            operator_posture_reason = "Clarification would help, but the mission can continue safely under bounded assumptions."
-            triage_bucket = "do_now"
-        else:
-            operator_posture = "needs_operator_answer"
-            operator_posture_reason = blocked_reason or "A material clarification is still required."
-            triage_bucket = "waiting"
-    else:
-        operator_posture = "active"
-        operator_posture_reason = "The mission is in motion and does not need immediate operator intervention."
-        triage_bucket = "do_now"
-
-    if operator_posture in {"parked", "needs_operator_answer"}:
-        can_continue_without_input = False
-    elif operator_posture in {"proceed_with_assumptions", "active", "ready_for_review"}:
         can_continue_without_input = True
+    elif sufficient_to_proceed:
+        if current_state in {"CLARIFICATION_NEEDED", "RECONSIDERATION_REQUESTED"}:
+            summary_operating_status = "proceeding_with_assumptions"
+            operator_posture = "proceed_with_assumptions"
+            operator_posture_reason = "The objective is already sufficient to proceed without additional operator input."
+        else:
+            operator_posture = "active"
+            operator_posture_reason = "The mission is available for work and does not need immediate operator intervention."
+        triage_bucket = "do_now"
+        can_continue_without_input = True
+        blocking_questions = []
+        open_questions = []
+        deferred_questions = []
+        blocked_reason = ""
+    else:
+        summary_operating_status = "blocked"
+        operator_posture = "needs_operator_answer"
+        operator_posture_reason = sufficiency_reason
+        triage_bucket = "waiting"
+        can_continue_without_input = False
+        blocked_reason = sufficiency_reason
+        blocking_questions = [sufficiency_reason]
+        open_questions = [sufficiency_reason]
+        deferred_questions = []
 
     if operator_posture == "parked":
         clarification_reason = operator_posture_reason
     elif operator_posture == "needs_operator_answer":
-        clarification_reason = blocked_reason or (blocking_questions[0] if blocking_questions else "A blocking clarification is required before continuing.")
+        clarification_reason = sufficiency_reason
     elif operator_posture == "ready_for_review":
         clarification_reason = "The mission is ready for review."
-    elif active_assumptions:
-        clarification_reason = "The mission is proceeding under explicit assumptions."
     else:
-        clarification_reason = "The mission is continuing cautiously."
+        clarification_reason = (
+            "The mission is active and can continue through the normal path."
+            if sufficiency_reason == "self_contained_objective"
+            else "The mission is sufficient to proceed without additional clarification."
+        )
 
     next_question = ""
     if operator_posture == "parked":
@@ -1430,8 +1817,8 @@ def _mission_summary_payload(
         next_best_operator_answer = blocking_questions[0]
     elif next_question:
         next_best_operator_answer = next_question
-    elif operator_posture == "proceed_with_assumptions":
-        next_best_operator_answer = "No immediate reply is required; the mission can proceed with the current assumptions."
+    elif active_assumptions:
+        next_best_operator_answer = "No immediate reply is required; the mission can continue with the current assumptions."
     else:
         next_best_operator_answer = "Add more context if you want to reduce uncertainty."
 
@@ -1443,7 +1830,7 @@ def _mission_summary_payload(
     )
 
     if operator_posture == "needs_operator_answer":
-        what_we_need_from_you = blocking_questions[:2] or [blocked_reason or "A blocking clarification is required before continuing."]
+        what_we_need_from_you = [sufficiency_reason]
     elif operator_posture == "parked":
         what_we_need_from_you = [parking_resume_hint or next_question or "Send fresh mission input when you want this expedition to resume."]
     elif open_questions:
@@ -1452,8 +1839,6 @@ def _mission_summary_payload(
             what_we_need_from_you = [f"Optional: {item}" for item in what_we_need_from_you]
     elif operator_posture == "ready_for_review":
         what_we_need_from_you = ["Confirm whether the review preview should be opened."]
-    elif operator_posture == "proceed_with_assumptions":
-        what_we_need_from_you = []
     else:
         what_we_need_from_you = ["No immediate input is required."]
 
@@ -1470,7 +1855,7 @@ def _mission_summary_payload(
         recommended_next_step = "Answer the top blocking question before continuing."
     elif operator_posture == "ready_for_review":
         recommended_next_step = "Open the review preview and decide whether to submit the draft."
-    elif operator_posture == "proceed_with_assumptions" or summary_operating_status == "needs_clarification_but_continuing":
+    elif active_assumptions or summary_operating_status == "needs_clarification_but_continuing":
         recommended_next_step = "Continue under the current assumptions and answer the top question when ready."
     elif summary_operating_status == "low_confidence_continue":
         recommended_next_step = "Continue cautiously and add context if it would reduce uncertainty."
@@ -1538,6 +1923,8 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
     latest_run = _latest_run_summary(mission)
     latest_draft = _latest_draft_summary(mission)
     latest_packet = _latest_clarification_summary(mission)
+    runner_returns = _read_runner_returns(mission)
+    latest_runner_return = runner_returns[0] if runner_returns else None
     working_memory = read_working_memory(mission)
     parking_status = _read_parking_status(mission)
     workbench_files = _workbench_files(mission)
@@ -1564,6 +1951,7 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
         latest_run=latest_run if isinstance(latest_run, dict) else None,
         latest_draft=latest_draft if isinstance(latest_draft, dict) else None,
         latest_packet=latest_packet if isinstance(latest_packet, dict) else None,
+        latest_runner_return=latest_runner_return if isinstance(latest_runner_return, dict) else None,
         mission_inputs=mission_inputs,
         working_memory=working_memory,
         parking_status=parking_status,
@@ -1602,6 +1990,8 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
         "latest_hermes_run": latest_run,
         "latest_draft": latest_draft,
         "latest_clarification_packet": latest_packet,
+        "latest_runner_return": latest_runner_return,
+        "runner_return_count": len(runner_returns),
         "working_memory": working_memory,
         "parking_status": parking_status,
         "operator_posture": str(summary_preview.get("operator_posture") or ""),
@@ -1650,9 +2040,22 @@ def _mission_exists(mission_id: str) -> bool:
     return _mission_root(mission).exists() or _workbench_root(mission).exists()
 
 
-def _list_expeditions() -> list[dict[str, Any]]:
+def _normalize_mission_objective(objective: str) -> str:
+    text = re.sub(r"[^\w\s]+", " ", str(objective or "").lower().strip())
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _list_expeditions() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if not EXPEDITIONS_ACTIVE_DIR.exists():
-        return []
+        return [], {
+            "total_missions": 0,
+            "total_groups": 0,
+            "duplicate_groups": 0,
+            "duplicate_candidates": 0,
+            "hidden_duplicate_count": 0,
+        }
+
     missions: list[dict[str, Any]] = []
     for mission_dir in sorted((path for path in EXPEDITIONS_ACTIVE_DIR.iterdir() if path.is_dir()), key=lambda path: path.stat().st_mtime, reverse=True):
         mission_id = mission_dir.name
@@ -1663,6 +2066,7 @@ def _list_expeditions() -> list[dict[str, Any]]:
         missions.append({
             "mission_id": detail["mission_id"],
             "objective": detail["objective"],
+            "objective_normalized": _normalize_mission_objective(detail["objective"]),
             "current_state": detail["current_state"],
             "status_badge": detail["status_badge"],
             "latest_run_id": detail["latest_run_id"],
@@ -1677,7 +2081,60 @@ def _list_expeditions() -> list[dict[str, Any]]:
             "operator_posture_reason": str(detail.get("operator_posture_reason") or ""),
             "path": mission_dir.relative_to(ROOT).as_posix(),
         })
-    return missions
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for mission in missions:
+        group_key = mission["objective_normalized"] or mission["mission_id"]
+        grouped.setdefault(group_key, []).append(mission)
+
+    grouped_counts = {
+        "total_missions": len(missions),
+        "total_groups": len(grouped),
+        "duplicate_groups": 0,
+        "duplicate_candidates": 0,
+        "hidden_duplicate_count": 0,
+    }
+
+    for group_key, items in grouped.items():
+        items.sort(
+            key=lambda item: (
+                str(item.get("last_updated") or ""),
+                str(item.get("created_at") or ""),
+                str(item.get("mission_id") or ""),
+            ),
+            reverse=True,
+        )
+        duplicate_count = len(items)
+        if duplicate_count > 1:
+            grouped_counts["duplicate_groups"] += 1
+            grouped_counts["duplicate_candidates"] += duplicate_count
+            grouped_counts["hidden_duplicate_count"] += duplicate_count - 1
+
+        for rank, item in enumerate(items, start=1):
+            item["duplicate_group_key"] = group_key
+            item["duplicate_count"] = duplicate_count
+            item["duplicate_rank"] = rank
+            item["is_duplicate_candidate"] = duplicate_count > 1
+            item["is_group_primary"] = rank == 1
+            item["duplicate_of_mission_id"] = None if rank == 1 else items[0]["mission_id"]
+
+    missions.sort(
+        key=lambda item: (
+            str(item.get("last_updated") or ""),
+            str(item.get("created_at") or ""),
+            str(item.get("mission_id") or ""),
+        ),
+        reverse=True,
+    )
+    missions.sort(
+        key=lambda item: (
+            0 if item.get("is_group_primary") else 1,
+            str(item.get("duplicate_group_key") or ""),
+            str(item.get("duplicate_rank") or 0),
+        )
+    )
+
+    return missions, grouped_counts
 
 
 def _generate_mission_id() -> str:
@@ -2617,10 +3074,12 @@ def api_mission_manifest_latest():
 
 @app.get("/api/expeditions")
 def api_expeditions_list():
+    items, grouped_counts = _list_expeditions()
     return jsonify({
         "ok": True,
         "source_root": _safe_relative_path(EXPEDITIONS_ACTIVE_DIR),
-        "items": _list_expeditions(),
+        "items": items,
+        "grouped_counts": grouped_counts,
     })
 
 
@@ -2654,6 +3113,35 @@ def api_expedition_detail(mission_id: str):
     return jsonify({
         "ok": True,
         "available": True,
+        "item": item,
+    })
+
+
+@app.post("/api/expeditions/<mission_id>/sync-runner-returns")
+def api_expedition_sync_runner_returns(mission_id: str):
+    try:
+        exists = _mission_exists(mission_id)
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+        }), 400
+    if not exists:
+        return jsonify({
+            "ok": False,
+            "error": "mission not found",
+        }), 404
+    try:
+        sync = _sync_runner_returns_result(mission_id)
+        item = _build_expedition_detail(mission_id)
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+        }), 400
+    return jsonify({
+        "ok": True,
+        "sync": sync,
         "item": item,
     })
 
@@ -2713,9 +3201,6 @@ def api_expedition_input(mission_id: str):
             "error": "content is required",
         }), 400
 
-    parking_status = _read_parking_status(mission)
-    if str(parking_status.get("status") or "active") == "parked":
-        _write_parking_status(mission, status="active", reason=content, parked_by="operator", resume_hint="")
     item = _write_mission_input(mission, content)
     _refresh_working_memory(mission, operator_text=content, operator_reply_at=str(item.get("created_at") or ""), source="mission intake")
 
@@ -2801,10 +3286,6 @@ def api_expedition_chat(mission_id: str):
         }), 400
 
     quick_reply = str(payload.get("quick_reply") or payload.get("preset") or "").strip() or None
-    if _normalize_question_text(quick_reply or content) not in {"park mission"}:
-        parking_status = _read_parking_status(mission)
-        if str(parking_status.get("status") or "active") == "parked":
-            _write_parking_status(mission, status="active", reason=content, parked_by="operator", resume_hint="")
     exchange = _append_chat_exchange(mission, content, quick_reply=quick_reply)
     assistant_message = ""
     assistant_tone = "info"

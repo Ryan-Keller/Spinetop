@@ -12,6 +12,7 @@ from repo_paths import repo_root
 ROOT = repo_root()
 REGISTRY = ROOT / "config" / "model_registry.json"
 POLICY = ROOT / "config" / "expert_model_policy.json"
+HELPER_REGISTRY = ROOT / "config" / "helper_model_registry.json"
 EXPERTS_DIR = ROOT / "experts"
 SPINELAB_EXPERTS_DIR = ROOT.parent / "Spinelab" / "experts"
 RETURN_ALL_PATH = ROOT / "logs" / "governance" / "return_all.json"
@@ -174,6 +175,58 @@ def validate_custodial_files() -> list[str]:
     return issues
 
 
+def validate_helper_models(models: set[str]) -> list[str]:
+    payload, error = try_load_json(HELPER_REGISTRY)
+    if error:
+        return [f"helper_model_registry.json {error}"]
+
+    assert payload is not None
+    roles = payload.get("roles")
+    if not isinstance(roles, dict):
+        return ["helper_model_registry.json roles must be an object"]
+
+    issues: list[str] = []
+    for role_id, role in sorted(roles.items()):
+        if not isinstance(role_id, str) or not role_id.strip():
+            issues.append("helper_model_registry.json contains a blank role id")
+            continue
+        if not isinstance(role, dict):
+            issues.append(f"helper role {role_id} must be an object")
+            continue
+
+        execution_backend = str(role.get("execution_backend") or "").strip()
+        if execution_backend not in {"scripted", "model_backed"}:
+            issues.append(f"helper role {role_id} execution_backend must be scripted or model_backed")
+
+        allowed_model_keys = role.get("allowed_model_keys", [])
+        if not isinstance(allowed_model_keys, list) or not all(isinstance(item, str) for item in allowed_model_keys):
+            issues.append(f"helper role {role_id} allowed_model_keys must be a list of strings")
+            allowed_model_keys = []
+        normalized_allowed = [item.strip() for item in allowed_model_keys if isinstance(item, str) and item.strip()]
+        missing_allowed = [key for key in normalized_allowed if key not in models]
+        if missing_allowed:
+            issues.append(f"helper role {role_id} allowed_model_keys missing in registry: {sorted(set(missing_allowed))}")
+
+        provider_requirement = str(role.get("provider_requirement") or "any").strip() or "any"
+        if provider_requirement not in {"any", "local_only"}:
+            issues.append(f"helper role {role_id} provider_requirement must be any or local_only")
+
+        for field_name in ("default_model_key", "fallback_model_key"):
+            model_key = str(role.get(field_name) or "").strip()
+            if model_key and model_key not in models:
+                issues.append(f"helper role {role_id} {field_name} not in registry: {model_key}")
+            if model_key and model_key not in normalized_allowed:
+                issues.append(f"helper role {role_id} {field_name} must also appear in allowed_model_keys: {model_key}")
+        if execution_backend == "model_backed" and not str(role.get("default_model_key") or "").strip():
+            issues.append(f"helper role {role_id} requires default_model_key when execution_backend is model_backed")
+
+        mapped_helpers = role.get("mapped_helpers", [])
+        if not isinstance(mapped_helpers, list) or not all(isinstance(item, str) and item.strip() for item in mapped_helpers):
+            issues.append(f"helper role {role_id} mapped_helpers must be a list of non-empty strings")
+
+    return issues
+
+
 def main() -> int:
     failures = 0
     sections: list[tuple[str, list[str]]] = []
@@ -194,6 +247,7 @@ def main() -> int:
         if issues:
             expert_issues.append(f"{payload.get('expert_id', path.stem)}: " + "; ".join(issues))
     sections.append(("Expert / model", expert_issues))
+    sections.append(("Helper models", validate_helper_models(models)))
     sections.append(("Governance", validate_governance()))
     sections.append(("Dispatch", validate_dispatch()))
     sections.append(("Custodial", validate_custodial_files()))

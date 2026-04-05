@@ -16,6 +16,18 @@ memory/inbox/*
 memory/promotion/*
 memory/collective/*
 !memory/**/README.md
+memory/drafts/*.json
+
+# Mission runtime artifacts
+expeditions/active/**
+!expeditions/active/**/.gitkeep
+workbench/missions/**
+!workbench/missions/**/.gitkeep
+
+# Launcher runtime state
+services/launcher/state/*.pid
+services/launcher/state/launcher.json
+services/launcher/state/logs/
 
 # OS
 .DS_Store

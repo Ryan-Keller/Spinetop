@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from governance_utils import can_create_dispatch, read_nanny_state, read_return_all_state
-from record_schemas import build_dispatch_petition_record, build_governance_decision_record, utc_now_iso
+from record_schemas import build_dispatch_petition_record, utc_now_iso
 from repo_paths import repo_root
 
 
@@ -51,8 +51,8 @@ def build_petition_payload(
     petition_id: str = "",
 ) -> tuple[dict[str, Any], Path, str, dict[str, Any] | None, Path | None]:
     status = status.strip().lower()
-    if status not in {"pending", "approved", "deferred", "rejected"}:
-        raise ValueError(f"Unsupported petition status: {status}")
+    if status != "pending":
+        raise ValueError("Dispatch petition creation is pending-only; governance outcomes must be recorded separately")
 
     target_dir = DISPATCH_DIR / status
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -75,10 +75,7 @@ def build_petition_payload(
     )
 
     if not gate.allowed:
-        status = "deferred"
-        target_dir = DISPATCH_DIR / status
-        target_dir.mkdir(parents=True, exist_ok=True)
-        record_name = f"dispatch_{petition_id}_{status}.json"
+        raise ValueError(f"Dispatch petition creation blocked: {gate.reason}")
 
     requires_operator_approval = ask_count > 1 or not gate.allowed
     if not reason:
@@ -141,41 +138,7 @@ def build_petition_payload(
     payload["record_name"] = record_name
     decision_record: dict[str, Any] | None = None
     decision_path: Path | None = None
-    if status in {"approved", "deferred", "rejected"}:
-        decision_outcome = {
-            "approved": "approve_collective",
-            "deferred": "defer",
-            "rejected": "reject",
-        }[status]
-        decision = build_governance_decision_record(
-            petition_id=petition_id,
-            petition_kind=petition_kind,
-            decision_outcome=decision_outcome,
-            created_by=agent_id,
-            summary=summary,
-            reason=reason,
-            evidence_refs=evidence_refs or [],
-            risk_level=risk_level,
-            requires_operator_review=status != "approved",
-            review_state="final",
-            operator_id=operator_id,
-            source_host=source_host,
-            legacy_compatibility=False,
-        )
-        decision["governance_decision_ref"] = f"decision:{decision['decision_id']}"
-        decision["governance_review_state"] = "approved" if status == "approved" else status
-        decision["governance_review_timestamp"] = now_iso
-        decision["governance_review_reason"] = reason or summary
-        payload["governance_decision_id"] = decision["decision_id"]
-        payload["governance_decision_ref"] = f"decision:{decision['decision_id']}"
-        payload["governance_decision_outcome"] = decision_outcome
-        payload["governance_review_state"] = status
-        payload["governance_review_reason"] = reason or summary
-        payload["governance_review_timestamp"] = now_iso
     path = target_dir / record_name
-    if status in {"approved", "deferred", "rejected"}:
-        decision_path = target_dir / f"decision_{decision['decision_id']}.json"
-        decision_record = decision
     return payload, path, petition_id, decision_record, decision_path
 
 
@@ -232,7 +195,7 @@ def create_dispatch_petition_from_fields(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("status", choices=["pending", "approved", "deferred", "rejected"])
+    parser.add_argument("status", choices=["pending"])
     parser.add_argument("agent_id")
     parser.add_argument("workspace")
     parser.add_argument("task")

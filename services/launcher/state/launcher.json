@@ -1,5 +1,5 @@
 ﻿{
-    "updated_at":  "2026-04-04T23:00:35.8349742-07:00",
+    "updated_at":  "2026-04-05T00:26:16.0208554-07:00",
     "repo_root":  "D:\\spine_desk\\Spinetop",
     "ui_root":  "D:\\spine_desk\\Spinetop\\ui",
     "wsl_distro":  "Ubuntu-24.04",
@@ -13,58 +13,42 @@
     "launcher":  {
                      "frontend_api_base":  "/api",
                      "frontend_bind_address":  "0.0.0.0",
-                     "lan_ui_reachable":  true,
-                     "lan_firewall_state":  {
-                                                "is_admin":  true,
-                                                "ensured":  true,
-                                                "listen_address":  "192.168.0.150",
-                                                "rules":  [
-                                                              {
-                                                                  "port":  5173,
-                                                                  "rule_name":  "Spinetop Launcher LAN 5173",
-                                                                  "state":  "enabled"
-                                                              },
-                                                              {
-                                                                  "port":  5051,
-                                                                  "rule_name":  "Spinetop Launcher LAN 5051",
-                                                                  "state":  "enabled"
-                                                              }
-                                                          ]
-                                            }
+                     "lan_ui_reachable":  null,
+                     "lan_firewall_state":  null
                  },
     "lan_proxy":  {
                       "name":  "frontend-lan-proxy",
                       "pid_file":  "D:\\spine_desk\\Spinetop\\services\\launcher\\state\\frontend-lan-proxy.pid",
-                      "pid":  190780,
-                      "platform":  "windows",
+                      "pid":  null,
+                      "platform":  "unknown",
                       "port":  5173,
-                      "port_open":  true,
-                      "state":  "running",
-                      "detail":  "launcher-owned process alive",
+                      "port_open":  false,
+                      "state":  "stopped",
+                      "detail":  "not running",
                       "listen_address":  "192.168.0.150",
                       "target_address":  "127.0.0.1",
                       "target_port":  5173
                   },
-    "note":  "launcher started",
+    "note":  "launcher stopped",
     "backend":  {
                     "name":  "backend",
                     "pid_file":  "D:\\spine_desk\\Spinetop\\services\\launcher\\state\\backend.pid",
-                    "pid":  180514,
-                    "platform":  "wsl",
+                    "pid":  null,
+                    "platform":  "unknown",
                     "port":  5051,
-                    "port_open":  true,
-                    "state":  "running",
-                    "detail":  "launcher-owned process alive"
+                    "port_open":  false,
+                    "state":  "stopped",
+                    "detail":  "not running"
                 },
     "frontend":  {
                      "name":  "frontend",
                      "pid_file":  "D:\\spine_desk\\Spinetop\\services\\launcher\\state\\frontend.pid",
-                     "pid":  180602,
-                     "platform":  "wsl",
+                     "pid":  null,
+                     "platform":  "unknown",
                      "port":  5173,
-                     "port_open":  true,
-                     "state":  "running",
-                     "detail":  "launcher-owned process alive"
+                     "port_open":  false,
+                     "state":  "stopped",
+                     "detail":  "not running"
                  },
     "logs":  {
                  "backend":  "D:\\spine_desk\\Spinetop\\services\\launcher\\state\\logs\\backend.log",

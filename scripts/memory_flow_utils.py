@@ -124,7 +124,6 @@ def validate_file(path: Path) -> dict[str, Any]:
     data = load_json(path)
     data = normalize_record(data, path)
     validate_schema(data, path)
-    write_json(path, data)
     return data
 
 

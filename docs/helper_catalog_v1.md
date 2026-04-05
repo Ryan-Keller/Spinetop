@@ -5,6 +5,9 @@ This catalog is fixed for v1.
 The helpers below are disposable support workers, not truth authorities.
 They may support bounded operations, but they may not define legitimacy.
 
+Helper runtime selection is governed separately through `config/helper_model_registry.json`.
+In the current implementation, `helper_2b` remains `scripted` by default even though the registry can name future local model keys for that role.
+
 If this file conflicts with [`support_orchestration_contract_v1.md`](./support_orchestration_contract_v1.md), the contract wins.
 
 ## `retrieval_helper_2b`

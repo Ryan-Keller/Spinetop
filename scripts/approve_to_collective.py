@@ -13,7 +13,6 @@ from governance_utils import (
 )
 from record_schemas import (
     build_collective_record_from_candidate,
-    build_governance_decision_record,
     normalize_candidate_memory_record,
     utc_now_iso,
 )
@@ -60,24 +59,12 @@ def main() -> int:
 
     decision_path, decision = find_governance_decision_for_petition(related_petition_id)
     if not decision:
-        decision = build_governance_decision_record(
-            petition_id=petition["petition_id"],
-            petition_kind=str(petition.get("petition_kind") or "memory_admission"),
-            decision_outcome="approve_collective",
-            created_by=str(petition.get("created_by") or data.get("submitted_by") or "unknown"),
-            summary=str(petition.get("summary") or data.get("summary") or "governance decision"),
-            reason=str(petition.get("reason") or petition.get("summary") or "governance approval"),
-            evidence_refs=list(petition.get("evidence_refs") or []),
-            risk_level=str(petition.get("risk_level") or "medium"),
-            requires_operator_review=False,
-            review_state="final",
-            operator_id=str(petition.get("operator_id") or data.get("submitted_by") or ""),
-            source_host=str(petition.get("source_host") or ""),
-            decision_notes="created by governed admission ritual",
-            governance_notes=str(petition.get("governance_notes") or ""),
-            legacy_compatibility=bool(data.get("legacy_compatibility", False)),
-        )
-        decision_path = (petition_path.parent if petition_path else (memory_dir("dispatch") / "approved")) / f"decision_{decision['decision_id']}.json"
+        data["governance_review_state"] = "deferred"
+        data["governance_review_reason"] = f"missing governance decision for approved dispatch petition {related_petition_id}"
+        data["governance_review_timestamp"] = utc_now_iso()
+        write_json(source, data)
+        print(f"Deferred: {source} (missing governance decision)", file=sys.stderr)
+        return 0
 
     gate = can_admit_to_collective(
         data,

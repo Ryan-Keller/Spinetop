@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from helper_model_runtime import load_helper_runtime_profile
 import support_orchestration
 from repo_paths import repo_root
 from support_validation import (
@@ -20,8 +21,10 @@ from support_validation import (
 
 ROOT = repo_root()
 HELPER_TYPE = "runner_helper_2b"
+RUNTIME_ROLE = "helper_2b"
 RUN_DIR = ROOT / "logs" / "support" / "runs"
 RUN_DIR.mkdir(parents=True, exist_ok=True)
+HELPER_RUNTIME_PROFILE = load_helper_runtime_profile(RUNTIME_ROLE)
 
 ALLOWED_INSTANCE_STATUSES = {"active", "complete", "failed", "blocked", "replaced", "expired"}
 
@@ -58,6 +61,14 @@ CONTRACT = {
     "allowed_statuses": sorted(ALLOWED_INSTANCE_STATUSES),
     "write_scope": ["logs/support/orchestration/", "logs/support/runs/", "memory/drafts/"],
     "return_lane": "logs/support/orchestration/",
+    "runtime_role": RUNTIME_ROLE,
+    "runtime_profile": {
+        "execution_backend": HELPER_RUNTIME_PROFILE.execution_backend,
+        "allowed_model_keys": HELPER_RUNTIME_PROFILE.allowed_model_keys,
+        "default_model_key": HELPER_RUNTIME_PROFILE.default_model_key,
+        "fallback_model_key": HELPER_RUNTIME_PROFILE.fallback_model_key,
+        "provider_requirement": HELPER_RUNTIME_PROFILE.provider_requirement,
+    },
     "expected_outputs": [
         "run transcript",
         "task result",
@@ -86,6 +97,13 @@ def _is_under(path: Path, root: Path) -> bool:
     path = path.resolve()
     root = root.resolve()
     return path == root or root in path.parents
+
+
+def _scope_to_path(scope: str) -> Path:
+    candidate = Path(scope)
+    if candidate.is_absolute():
+        return candidate.resolve()
+    return (ROOT / candidate).resolve()
 
 
 def _load_json(path: Path) -> Any:
@@ -199,8 +217,22 @@ def _build_step_transcript(task_plan: list[str]) -> list[dict[str, Any]]:
     return transcript
 
 
-def _output_path(helper_id: str) -> Path:
-    return RUN_DIR / f"{helper_id}.json"
+def _output_target(instance: dict[str, Any]) -> Path:
+    lane = _scope_to_path(str(instance["return_lane"]))
+    if lane.suffix:
+        return lane
+    if lane.exists() and lane.is_file():
+        return lane
+    lane.mkdir(parents=True, exist_ok=True)
+    return lane / f"{instance['helper_id']}.json"
+
+
+def _can_write(target: Path, write_scope: list[str]) -> bool:
+    for scope in write_scope:
+        scope_path = _scope_to_path(scope)
+        if _is_under(target, scope_path):
+            return True
+    return False
 
 
 def _build_receipt(
@@ -235,7 +267,9 @@ def _build_receipt(
 
 def run_instance(instance_path: Path) -> int:
     instance = validate_runner_instance(_load_json(instance_path), path=instance_path)
-    output_path = _output_path(instance["helper_id"])
+    output_path = _output_target(instance)
+    if not _can_write(output_path, list(instance.get("write_scope") or [])):
+        raise RunnerHelperError(f"output path {output_path} is outside write_scope{_path_hint(instance_path)}")
     artifact_ref = _path_to_ref(output_path)
 
     expires_at = _parse_iso(instance["expires_at"], path=instance_path, field="expires_at")

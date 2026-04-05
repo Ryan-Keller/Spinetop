@@ -1,0 +1,26 @@
+{
+  "notes": [
+    "Runtime seam for helper roles only; helper execution remains scripted unless explicitly switched.",
+    "Default helper policy is local-only and inert until a role is moved from scripted to model_backed."
+  ],
+  "roles": {
+    "helper_2b": {
+      "execution_backend": "scripted",
+      "allowed_model_keys": [
+        "local_onboarding_gemma4_e4b_4k",
+        "local_production_qwen2_5_coder_14b"
+      ],
+      "default_model_key": "",
+      "fallback_model_key": "",
+      "provider_requirement": "local_only",
+      "mapped_helpers": [
+        "retrieval_helper_2b",
+        "runner_helper_2b"
+      ],
+      "notes": [
+        "Shared seam for smallest bounded helpers.",
+        "Set execution_backend to model_backed and choose a local model key only after operator approval."
+      ]
+    }
+  }
+}

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from helper_model_runtime import load_helper_runtime_profile
 from repo_paths import repo_root
 from support_validation import (
     normalize_write_scope,
@@ -23,6 +24,7 @@ from support_validation import (
 
 ROOT = repo_root()
 HELPER_TYPE = "retrieval_helper_2b"
+RUNTIME_ROLE = "helper_2b"
 ALLOWED_WRITE_SCOPE = ["logs/support/orchestration/", "logs/support/retrieval/", "memory/drafts/"]
 ALLOWED_RESULT_STATUSES = {"complete", "partial", "none_found", "blocked", "failed"}
 ALLOWED_INSTANCE_STATUSES = {
@@ -56,6 +58,7 @@ LOG_ROOT = ROOT / "logs" / "support" / "retrieval"
 INSTANCE_DIR = LOG_ROOT / "instances"
 ARTIFACT_DIR = LOG_ROOT / "artifacts"
 EVENT_LOG = LOG_ROOT / "events.jsonl"
+HELPER_RUNTIME_PROFILE = load_helper_runtime_profile(RUNTIME_ROLE)
 
 CONTRACT = {
     "helper_type": HELPER_TYPE,
@@ -80,6 +83,14 @@ CONTRACT = {
     "allowed_replacement_reasons": sorted(ALLOWED_REPLACEMENT_REASONS),
     "approved_read_roots": [path.relative_to(ROOT).as_posix() for path in APPROVED_READ_ROOTS],
     "support_write_root": "logs/support/",
+    "runtime_role": RUNTIME_ROLE,
+    "runtime_profile": {
+        "execution_backend": HELPER_RUNTIME_PROFILE.execution_backend,
+        "allowed_model_keys": HELPER_RUNTIME_PROFILE.allowed_model_keys,
+        "default_model_key": HELPER_RUNTIME_PROFILE.default_model_key,
+        "fallback_model_key": HELPER_RUNTIME_PROFILE.fallback_model_key,
+        "provider_requirement": HELPER_RUNTIME_PROFILE.provider_requirement,
+    },
 }
 
 

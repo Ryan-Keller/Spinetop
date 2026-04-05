@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from helper_model_runtime import load_helper_runtime_profile
 from repo_paths import repo_root
 from support_validation import (
     validate_support_event_record,
@@ -23,6 +24,7 @@ REQUEST_DIR = ORCH_ROOT / "requests"
 INSTANCE_DIR = ORCH_ROOT / "instances"
 ARTIFACT_DIR = ORCH_ROOT / "artifacts"
 EVENT_LOG = ORCH_ROOT / "events.jsonl"
+HELPER_2B_RUNTIME_PROFILE = load_helper_runtime_profile("helper_2b")
 
 HELPER_CATALOG: dict[str, dict[str, Any]] = {
     "retrieval_helper_2b": {
@@ -47,6 +49,14 @@ HELPER_CATALOG: dict[str, dict[str, Any]] = {
             "memory/drafts/",
         ],
         "default_ttl_seconds": 900,
+        "runtime_role": "helper_2b",
+        "runtime_profile": {
+            "execution_backend": HELPER_2B_RUNTIME_PROFILE.execution_backend,
+            "allowed_model_keys": HELPER_2B_RUNTIME_PROFILE.allowed_model_keys,
+            "default_model_key": HELPER_2B_RUNTIME_PROFILE.default_model_key,
+            "fallback_model_key": HELPER_2B_RUNTIME_PROFILE.fallback_model_key,
+            "provider_requirement": HELPER_2B_RUNTIME_PROFILE.provider_requirement,
+        },
         "expected_outputs": [
             "support log receipt",
             "retrieval bundle artifact",
@@ -83,6 +93,14 @@ HELPER_CATALOG: dict[str, dict[str, Any]] = {
             "max_items": 12,
         },
         "default_ttl_seconds": 1200,
+        "runtime_role": "helper_2b",
+        "runtime_profile": {
+            "execution_backend": HELPER_2B_RUNTIME_PROFILE.execution_backend,
+            "allowed_model_keys": HELPER_2B_RUNTIME_PROFILE.allowed_model_keys,
+            "default_model_key": HELPER_2B_RUNTIME_PROFILE.default_model_key,
+            "fallback_model_key": HELPER_2B_RUNTIME_PROFILE.fallback_model_key,
+            "provider_requirement": HELPER_2B_RUNTIME_PROFILE.provider_requirement,
+        },
         "expected_outputs": [
             "support log receipt",
             "run receipt artifact",
