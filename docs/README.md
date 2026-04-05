@@ -7,6 +7,7 @@ Start here:
 - [World Contract](doctrine.md)
 - [State Machine](state_machine_v1.md)
 - [Autonomy Phase Plan](autonomy_phase_plan_v1.md)
+- [Tool Use Governance](tool_use_governance_v1.md)
 - [UI Wiring Plan](ui_wiring_plan_v1.md)
 - [Record Schemas](record_schemas.md)
 - [Artifact Kind Convention](artifact_kind_convention_v1.md)
