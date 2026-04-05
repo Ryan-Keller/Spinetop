@@ -46,6 +46,23 @@ def main() -> int:
     _assert(summary["triage_bucket"] == "do_now", "dog sit triage should be do_now")
     _assert(summary["can_continue_without_input"] is True, "dog sit should continue without input")
     _assert(summary["blocking_questions"] == [], "dog sit should not have blocking questions")
+    dog_reply, dog_tone = dashboard_api._clarification_reply_text(
+        "",
+        None,
+        {
+            "objective": "how do I teach my dog to sit",
+            "current_state": "CLARIFICATION_NEEDED",
+            "assumptions": [],
+            "blocking_questions": [],
+            "mission_summary": summary,
+            "working_memory": {
+                "open_questions": [{"question": "Need more detail?", "impact": "medium"}],
+                "blocked_reason": "",
+            },
+        },
+    )
+    _assert(dog_tone == "good", "dog sit clarification reply should be actionable")
+    _assert("use a treat to guide the dog into a sit" in dog_reply, "dog sit should return a first-pass answer")
 
     sufficient, reason = dashboard_api._is_sufficient_to_proceed(
         "write a python csv script",
@@ -69,6 +86,26 @@ def main() -> int:
     _assert(summary["operator_posture"] == "needs_operator_answer", "summarize text posture should wait")
     _assert(summary["triage_bucket"] == "waiting", "summarize text triage should wait")
     _assert(summary["blocking_questions"] == ["Please provide the text you want summarized."], "summarize text blocker mismatch")
+    summarize_reply, summarize_tone = dashboard_api._clarification_reply_text(
+        "?",
+        None,
+        {
+            "objective": "summarize this text",
+            "current_state": "CLARIFICATION_NEEDED",
+            "assumptions": [],
+            "blocking_questions": ["Please provide the text you want summarized."],
+            "mission_summary": summary,
+            "working_memory": {
+                "open_questions": [{"question": "Need more detail?", "impact": "medium"}],
+                "blocked_reason": "Please provide the text you want summarized.",
+            },
+        },
+    )
+    _assert(summarize_tone == "watch", "summarize reply should stay in blocker posture")
+    _assert(
+        summarize_reply == "I need one concrete blocker answer to continue: Please provide the text you want summarized.",
+        "summarize reply should ask one concrete blocker",
+    )
 
     sufficient, reason = dashboard_api._is_sufficient_to_proceed(
         "fix my code",

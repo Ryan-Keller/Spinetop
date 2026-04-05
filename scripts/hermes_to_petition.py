@@ -44,13 +44,13 @@ def validate_hermes_run(run: dict[str, Any]) -> dict[str, Any]:
     run_id = run.get("run_id")
     mode = run.get("mode")
     if not isinstance(run_id, str) or not run_id.strip():
-        raise SystemExit("Hermes run is missing a non-empty run_id")
+        raise SystemExit("Sentinel run is missing a non-empty run_id")
     if not isinstance(mode, str) or not mode.strip():
-        raise SystemExit("Hermes run is missing a non-empty mode")
+        raise SystemExit("Sentinel run is missing a non-empty mode")
 
     ok, reason = validate_response_object(run, run_id, mode)
     if not ok:
-        raise SystemExit(f"Hermes run validation failed: {reason}")
+        raise SystemExit(f"Sentinel run validation failed: {reason}")
     return run
 
 
@@ -119,8 +119,8 @@ def write_draft(draft: dict[str, Any]) -> Path:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Convert a Hermes v1 run into a draft petition JSON.")
-    parser.add_argument("input", nargs="?", default="-", help="Hermes run JSON file path or - for stdin")
+    parser = argparse.ArgumentParser(description="Convert a Sentinel v1 run into a draft petition JSON.")
+    parser.add_argument("input", nargs="?", default="-", help="Sentinel run JSON file path or - for stdin")
     parser.add_argument("--write", action="store_true", help="Save the draft JSON under memory/drafts/")
     args = parser.parse_args()
 

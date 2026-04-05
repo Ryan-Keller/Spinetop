@@ -1,6 +1,8 @@
-# Hermes-Spinetop v1 Run Schema
+# Sentinel-Spinetop v1 Run Schema
 
-This is a small output contract for Hermes v1 runs.
+This is a small output contract for Sentinel v1 runs.
+
+Compatibility note: the file name and legacy `hermes` artifact references remain in place for staged compatibility with existing runners and stored history.
 
 It is intentionally narrow so a manual runner can print, store, or inspect it without implying autonomy.
 
@@ -28,16 +30,16 @@ It is intentionally narrow so a manual runner can print, store, or inspect it wi
 
 ## Field Notes
 
-- `run_id` is the canonical identity for the Hermes run.
+- `run_id` is the canonical identity for the Sentinel run.
 - `mode` is the operator-selected review mode.
-- `status` tells the operator whether Hermes only summarized, took no action, recommends a petition, or was blocked.
+- `status` tells the operator whether Sentinel only summarized, took no action, recommends a petition, or was blocked.
 - `status` and `recommended_action` must stay paired: `summary_only` or `no_action` use `none` or `defer`; `petition_recommended` uses `operator_review` or `create_dispatch_petition`; `blocked` uses `none` or `defer`.
 - `summary` should be concise and operator-facing.
-- `evidence_refs` must be a list of non-empty strings that point to the exact state or records Hermes used.
+- `evidence_refs` must be a list of non-empty strings that point to the exact state or records Sentinel used.
 - `classification` is optional in practice, but if present it must stay bounded and diagnostic.
 - `repetition_review` should usually classify as `anomaly` or `repair_candidate`, not a new class.
 - `recommended_action` must never imply direct repair execution.
-- `petition_kind` is only set when Hermes recommends a governed petition.
+- `petition_kind` is only set when Sentinel recommends a governed petition.
 - `confidence` should be conservative. If evidence is weak, lower the number and prefer no_action.
 
 ## Example: No Action
@@ -96,7 +98,7 @@ It is intentionally narrow so a manual runner can print, store, or inspect it wi
 
 ## Minimal Manual Runner Expectation
 
-A manual Hermes runner only needs to:
+A manual Sentinel runner only needs to:
 
 1. load the selected state snapshot
 2. fill the prompt template

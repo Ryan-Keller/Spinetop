@@ -49,7 +49,7 @@ A transition is valid only if:
 
 - Operator
 - Watcher
-- Hermes-Spinetop
+- Sentinel-Spinetop
 - Hermes-Spinelab
 - Custodial
 - Nanny
@@ -72,7 +72,7 @@ A transition is valid only if:
 | promotion | Watcher | dispatch/pending | Yes | `related_petition_id`, `petition_kind=memory_admission` | No | Warm/Hot may prefer defer | Governance handoff |
 | promotion | Operator | dispatch/pending | Yes | `related_petition_id`, `petition_kind=memory_admission` | No | Warm/Hot may prefer defer | Manual petition creation |
 | promotion | Watcher | collective | No | - | - | - | Explicitly illegal |
-| promotion | Hermes-Spinetop | collective | No | - | - | - | Explicitly illegal |
+| promotion | Sentinel-Spinetop | collective | No | - | - | - | Explicitly illegal |
 | dispatch/pending | Operator | dispatch/approved | Yes | `approved_at`, `approved_by`, `approval_reason`, `governance_decision_ref` | Yes | Warm/Hot may still allow if manual | Human approval path |
 | dispatch/pending | Operator | dispatch/deferred | Yes | `deferred_at`, `deferred_by`, `defer_reason` | No | Yes | Safe fallback |
 | dispatch/pending | Operator | dispatch/rejected | Yes | `rejected_at`, `rejected_by`, `rejection_reason` | No | No | Terminal denial |
@@ -85,7 +85,7 @@ A transition is valid only if:
 | Source state | Actor | Destination state | Allowed? | Required fields added | Blocked by Return All? | Blocked by Nanny? | Notes |
 |---|---|---:|---|---|---|---|---|
 | none | Watcher | dispatch/pending | Yes | `petition_id`, `created_at`, `created_by`, `status=pending`, `petition_kind`, `requested_action`, `evidence_refs` | No | Warm/Hot may defer | Typical memory admission petition |
-| none | Hermes-Spinetop | dispatch/pending | Yes | same as above | Action-advancing petitions may defer | Warm/Hot may defer | Hermes can initiate, not resolve |
+| none | Sentinel-Spinetop | dispatch/pending | Yes | same as above | Action-advancing petitions may defer | Warm/Hot may defer | Sentinel can initiate, not resolve |
 | none | Hermes-Spinelab | dispatch/pending | Yes | same as above | Action-advancing petitions may defer | Warm/Hot may defer | Proposal only |
 | none | Custodial | dispatch/pending | Yes | same as above plus repair context | Usually yes unless bypass rule | Yes | Narrow repair/self-heal only |
 | dispatch/pending | Operator | dispatch/approved | Yes | approval fields | Yes | Manual override possible | Final authorization |
@@ -96,9 +96,9 @@ A transition is valid only if:
 
 | Source state | Actor | Destination state | Allowed? | Required fields added | Blocked by Return All? | Blocked by Nanny? | Notes |
 |---|---|---:|---|---|---|---|---|
-| observation | Hermes-Spinetop | anomaly classification | Yes | `classification_kind`, `severity`, `boundedness`, `affected_system`, `evidence_summary`, `recommended_next_step` | No | No | Read/diagnose only |
+| observation | Sentinel-Spinetop | anomaly classification | Yes | `classification_kind`, `severity`, `boundedness`, `affected_system`, `evidence_summary`, `recommended_next_step` | No | No | Read/diagnose only |
 | observation | Custodial | anomaly classification | Yes | same as above | No | No | Operational diagnostics |
-| anomaly classification | Hermes-Spinetop | repair candidate | Conditional | `repairability=likely_repairable`, `repair_scope`, `linked_petition_id` | No | Warm/Hot may force defer | Only if bounded and reversible |
+| anomaly classification | Sentinel-Spinetop | repair candidate | Conditional | `repairability=likely_repairable`, `repair_scope`, `linked_petition_id` | No | Warm/Hot may force defer | Only if bounded and reversible |
 | anomaly classification | Operator | review petition | Yes | petition fields | No | No | Human escalation |
 | repair candidate | Custodial | dispatch/pending | Yes | petition fields plus repair context | Usually yes unless bypass rule | Yes | Still not direct action |
 
@@ -225,15 +225,15 @@ A record may only enter collective if:
 - `governance_approval_ref` exists
 - current world state allows it
 
-### Guard B — Hermes Guard
-Hermes may:
+### Guard B — Sentinel Guard
+Sentinel may:
 - observe
 - classify
 - petition
 
-Hermes-Spinetop v1 does not validate or promote. It may only observe, classify, and petition into those governed paths. Validation, promotion, approval, and admission remain system functions outside Hermes authority.
+Sentinel-Spinetop v1 does not validate or promote. It may only observe, classify, and petition into those governed paths. Validation, promotion, approval, and admission remain system functions outside Sentinel authority.
 
-Hermes may not:
+Sentinel may not:
 - approve
 - admit
 - mirror
@@ -251,8 +251,8 @@ The following transitions are explicitly illegal:
 
 - `inbox → collective`
 - `promotion → collective` without approved petition
-- `Hermes → collective`
-- `Hermes → dispatch/approved`
+- `Sentinel → collective`
+- `Sentinel → dispatch/approved`
 - `Honcho Bridge → create memory`
 - `Nanny → admit memory`
 - `Custodial → approve its own petition into collective`

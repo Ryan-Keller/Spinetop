@@ -85,11 +85,11 @@ def _known_facts(task: str, hermes_result: dict[str, Any]) -> list[str]:
 
     mode = _text(hermes_result.get("mode"))
     if mode:
-        facts.append(f"Hermes mode: {mode}")
+        facts.append(f"Sentinel mode: {mode}")
 
     status = _text(hermes_result.get("status"))
     if status:
-        facts.append(f"Hermes status: {status}")
+        facts.append(f"Sentinel status: {status}")
 
     action = _text(hermes_result.get("recommended_action"))
     if action:
@@ -108,7 +108,7 @@ def _known_facts(task: str, hermes_result: dict[str, Any]) -> list[str]:
         facts.append(f"Petition kind: {_text(petition_kind)}")
 
     confidence = _clamp_confidence(hermes_result.get("confidence"), fallback=0.0)
-    facts.append(f"Hermes confidence: {confidence:.2f}")
+    facts.append(f"Sentinel confidence: {confidence:.2f}")
     return facts
 
 
@@ -123,23 +123,23 @@ def _missing_facts(task: str, hermes_result: dict[str, Any]) -> list[str]:
 
     status = _text(hermes_result.get("status"))
     if status == "summary_only":
-        facts.append("Hermes returned a summary-only result rather than a direct action.")
+        facts.append("Sentinel returned a summary-only result rather than a direct action.")
 
     action = _text(hermes_result.get("recommended_action"))
     if action == "defer":
-        facts.append("Hermes recommended defer instead of a concrete action.")
+        facts.append("Sentinel recommended defer instead of a concrete action.")
 
     petition_kind = hermes_result.get("petition_kind")
     if petition_kind is None:
-        facts.append("Hermes did not specify a petition kind.")
+        facts.append("Sentinel did not specify a petition kind.")
 
     evidence_refs = hermes_result.get("evidence_refs")
     if not isinstance(evidence_refs, list) or not evidence_refs:
-        facts.append("No supporting evidence references were present in the Hermes result.")
+        facts.append("No supporting evidence references were present in the Sentinel result.")
 
     classification = hermes_result.get("classification")
     if classification is None:
-        facts.append("No classification metadata was present in the Hermes result.")
+        facts.append("No classification metadata was present in the Sentinel result.")
 
     if not facts:
         facts.append("The request still lacks a concrete subject and enough context to answer confidently.")
@@ -230,9 +230,9 @@ def _assumptions(task: str, hermes_result: dict[str, Any], known_facts: list[str
     summary = _text(hermes_result.get("summary"))
     assumptions.append({
         "assumption_id": "assumption_2",
-        "statement": f"Hermes summary is the best available provisional answer: {summary or 'summary unavailable'}",
+        "statement": f"Sentinel summary is the best available provisional answer: {summary or 'summary unavailable'}",
         "confidence": 0.55,
-        "source": "Hermes result",
+        "source": "Sentinel result",
         "type": "default",
     })
 
@@ -241,7 +241,7 @@ def _assumptions(task: str, hermes_result: dict[str, Any], known_facts: list[str
             "assumption_id": "assumption_3",
             "statement": "The available context is enough to suggest a cautious direction, but not enough to finalize the answer.",
             "confidence": 0.45,
-            "source": "Hermes result",
+            "source": "Sentinel result",
             "type": "pattern_based",
         })
 
@@ -270,7 +270,7 @@ def _deductive_options(task: str, hermes_result: dict[str, Any], missing_facts: 
             "option_id": "option_2",
             "label": "Proceed with a conservative provisional answer",
             "confidence": second_confidence,
-            "reasoning": summary or "Use the Hermes result as a weak provisional answer and avoid overcommitting.",
+            "reasoning": summary or "Use the Sentinel result as a weak provisional answer and avoid overcommitting.",
         },
     ]
 
@@ -322,7 +322,7 @@ def build_clarification_packet(task: str, hermes_result: dict[str, Any]) -> dict
     confidence_limiters = [_limiter_for_fact(fact) for fact in missing_facts]
     assumptions = _assumptions(task_text, hermes_result, known_facts)
     provisional_answer = {
-        "text": summary or "Hermes did not provide a summary, so only a weak provisional answer is available.",
+        "text": summary or "Sentinel did not provide a summary, so only a weak provisional answer is available.",
         "assumption_dependencies": [assumption["assumption_id"] for assumption in assumptions[:2]],
     }
     clarifying_questions = _clarifying_questions(missing_facts)

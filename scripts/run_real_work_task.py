@@ -160,16 +160,16 @@ def run_task(
     raw_response = hermes_runner.invoke_model(model_key, prompt, runtime_config)
     candidate = hermes_runner.extract_json_candidate(raw_response)
     if candidate is None:
-        raise RuntimeError("Hermes response did not contain a JSON object")
+        raise RuntimeError("Sentinel response did not contain a JSON object")
 
     try:
         parsed = json.loads(candidate)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Hermes response is not valid JSON: {exc}") from exc
+        raise RuntimeError(f"Sentinel response is not valid JSON: {exc}") from exc
 
     ok, reason = hermes_runner.validate_response_object(parsed, run_id, mode)
     if not ok:
-        raise RuntimeError(f"Hermes response validation failed: {reason}")
+        raise RuntimeError(f"Sentinel response validation failed: {reason}")
 
     run_record = hermes_runner.normalize_response_object(parsed)
     run_record_path = RUNS_DIR / f"{run_id}_{mode}.json"
@@ -241,7 +241,7 @@ def run_task(
                 print("next_step=none")
             else:
                 print("created=no")
-                print("reason=Hermes result did not require a draft")
+                print("reason=Sentinel result did not require a draft")
                 print("next_step=none")
         else:
             print("created=yes")
@@ -281,8 +281,8 @@ def run_task(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run one manual Hermes work task through draft and dispatch preview.")
-    parser.add_argument("mode", choices=sorted(hermes_runner.ALLOWED_MODES), help="Hermes mode to run.")
+    parser = argparse.ArgumentParser(description="Run one manual Sentinel work task through draft and dispatch preview.")
+    parser.add_argument("mode", choices=sorted(hermes_runner.ALLOWED_MODES), help="Sentinel mode to run.")
     parser.add_argument(
         "task",
         nargs="?",
@@ -304,7 +304,7 @@ def main() -> int:
     parser.add_argument(
         "--skip-draft",
         action="store_true",
-        help="Stop after the validated Hermes run artifact and do not create a draft.",
+        help="Stop after the validated Sentinel run artifact and do not create a draft.",
     )
     parser.add_argument(
         "--explain",

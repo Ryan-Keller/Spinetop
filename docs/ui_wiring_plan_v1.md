@@ -23,7 +23,7 @@ These are the smallest UI surfaces worth wiring now.
 | Surface | Minimum useful UI | Source script or file | Read-only or action-capable | Stable enough to wire now? | Notes |
 |---|---|---|---|---|---|
 | System state | Compact status cards for `return_all`, nanny temperature, dispatch counts, promotion backlog, and collective count | `scripts/dashboard_api.py`, `logs/governance/return_all.json`, `logs/nanny/item_world_status.json`, `memory/dispatch/`, `memory/promotion/`, `memory/collective/` | Read-only | Yes | This is already the best-supported live surface. Keep it as the default landing view. |
-| Hermes runs | Run list and run detail view with `run_id`, `mode`, `status`, `summary`, `evidence_refs`, and `confidence` | `scripts/run_hermes_v1.py`, `docs/hermes_v1_run_schema.md`, optional captured stdout artifacts | Read-only | Yes | Wire as a viewer first. Do not turn it into an executor control. |
+| Sentinel runs | Run list and run detail view with `run_id`, `mode`, `status`, `summary`, `evidence_refs`, and `confidence` | `scripts/run_hermes_v1.py`, `docs/hermes_v1_run_schema.md`, optional captured stdout artifacts | Read-only | Yes | Wire as a viewer first. Do not turn it into an executor control. |
 | Petition drafts | Draft list and draft detail view showing `petition_id`, `petition_kind`, `requested_action`, `summary`, and `source_run_id` | `scripts/hermes_to_petition.py`, `memory/drafts/` | Read-only | Yes | This is a stable, low-risk inspection surface. Draft creation remains outside the UI for now. |
 | Support helper activity | Event stream and helper instance panel showing spawn, replace, complete, failed, blocked, and expired states | `scripts/support_orchestration.py`, `logs/support/orchestration/events.jsonl`, `logs/support/orchestration/instances/`, `logs/support/orchestration/artifacts/` | Read-only | Yes | Good candidate for a live activity feed. Keep it operational, not managerial. |
 | Governance state | Return-all banner plus dispatch queue summary split by pending, approved, deferred, and rejected | `scripts/dashboard_api.py`, `logs/governance/return_all.json`, `memory/dispatch/` | Read-only | Yes | This is safe to wire as a status surface only. No toggle buttons yet. |
@@ -39,12 +39,12 @@ Show:
 
 - system state
 - governance state
-- a small Hermes run summary strip
+- a small Sentinel run summary strip
 - a small support activity strip
 
 This should remain a read-only overview.
 
-### 2. Hermes Run Viewer
+### 2. Sentinel Run Viewer
 
 Keep this as a detail page or panel.
 
@@ -121,7 +121,7 @@ This can live in a QA tab or a footer card on the dashboard.
 ## Surfaces Safe To Wire Now
 
 - System state
-- Hermes runs, as read-only run artifacts
+- Sentinel runs, as read-only run artifacts with legacy `hermes` storage compatibility
 - Petition drafts, as read-only draft records
 - Support helper activity, as read-only operational telemetry
 - Governance state, as read-only status
@@ -194,7 +194,7 @@ That is much easier to render safely than a generalized autonomous agent.
 Wire the default dashboard to the existing read-only state sources first:
 
 1. `scripts/dashboard_api.py` for system state and governance state.
-2. `scripts/run_hermes_v1.py` outputs for Hermes run summaries.
+2. `scripts/run_hermes_v1.py` outputs for Sentinel run summaries.
 3. `scripts/hermes_to_petition.py` and `memory/drafts/` for draft visibility.
 4. `scripts/support_orchestration.py` event logs for helper activity.
 5. `scripts/test_mirror_door_contracts.py` summary output for the mirror-door QA strip.

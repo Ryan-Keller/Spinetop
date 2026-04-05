@@ -93,6 +93,23 @@ def _run_case(temp_root: Path, *, case_name: str, return_lane: str, write_scope:
     payload = json.loads(expected_output.read_text(encoding="utf-8"))
     _assert(payload.get("helper_id") == helper["helper_id"], f"{case_name}: helper_id mismatch")
     _assert(payload.get("return_lane") == return_lane, f"{case_name}: return_lane mismatch")
+    thinking_path = expected_output.with_name(f"{expected_output.stem}.thinking{expected_output.suffix}")
+    _assert(thinking_path.exists(), f"{case_name}: expected internal thinking artifact not found at {thinking_path}")
+    thinking_payload = json.loads(thinking_path.read_text(encoding="utf-8"))
+    _assert(thinking_payload.get("artifact_kind") == "helper_internal_thinking", f"{case_name}: thinking artifact kind mismatch")
+    _assert(
+        thinking_payload.get("output_structure") == [
+            "current context",
+            "key observations",
+            "possible next steps",
+            "open questions",
+        ],
+        f"{case_name}: thinking artifact output structure mismatch",
+    )
+    _assert(
+        thinking_payload.get("highlighted_contradictions") == [],
+        f"{case_name}: complete run should not invent contradictions",
+    )
 
     event_log = temp_root / "logs" / "support" / "orchestration" / "events.jsonl"
     lines = [json.loads(line) for line in event_log.read_text(encoding="utf-8").splitlines() if line.strip()]

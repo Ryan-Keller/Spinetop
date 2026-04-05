@@ -25,6 +25,7 @@ from state_machine import (
     write_state,
 )
 from governance_utils import can_bridge_to_honcho, read_nanny_state
+from helper_model_runtime import load_helper_runtime_profile
 from review_and_submit_petition import build_review_payload, validate_draft_petition
 from run_hermes_v1 import validate_response_object
 
@@ -37,6 +38,8 @@ WORKBENCH_MISSIONS_DIR = ROOT / "workbench" / "missions"
 MISSION_CHAT_FILENAME = "chat.jsonl"
 MISSION_PARKING_FILENAME = "parking_status.json"
 RUNNER_RETURNS_DIRNAME = "runner_returns"
+ASSUMPTIONS_DIRNAME = "assumptions"
+ASSUMPTION_LEDGER_FILENAME = "ledger.json"
 MEMORY_DIR = ROOT / "memory"
 DISPATCH_DIR = MEMORY_DIR / "dispatch"
 GOVERNANCE_DIR = ROOT / "logs" / "governance"
@@ -284,6 +287,14 @@ def _runner_returns_dir(mission_id: str) -> Path:
     return _ensure_workbench_structure(mission_id) / "notes" / RUNNER_RETURNS_DIRNAME
 
 
+def _assumptions_dir(mission_id: str) -> Path:
+    return _ensure_workbench_structure(mission_id) / "notes" / ASSUMPTIONS_DIRNAME
+
+
+def _assumption_ledger_path(mission_id: str) -> Path:
+    return _assumptions_dir(mission_id) / ASSUMPTION_LEDGER_FILENAME
+
+
 def _mission_manifest_payload(mission_id: str) -> dict[str, Any] | None:
     path = mission_manifest_path(mission_id)
     if not path.exists():
@@ -313,6 +324,14 @@ def _latest_index_item(index_items: list[dict[str, Any]], kind: str) -> dict[str
         if str(item.get("kind") or "").strip() == kind:
             return item
     return None
+
+
+def _latest_index_path_ref(mission_id: str, kind: str) -> str:
+    index = read_artifact_index(mission_id)
+    item = _latest_index_item(list(index.get("items") or []), kind)
+    if not isinstance(item, dict):
+        return ""
+    return str(item.get("path") or "").strip()
 
 
 def _relative_or_absolute(path: Path | str) -> Path:
@@ -844,11 +863,415 @@ def _assumption_items_from_packet(latest_packet: dict[str, Any] | None) -> list[
             "assumption_id": str(assumption.get("assumption_id") or f"assumption_{index + 1}"),
             "statement": statement,
             "confidence": float(assumption.get("confidence") or 0.0),
-            "source": str(assumption.get("source") or "Hermes result"),
+            "source": str(assumption.get("source") or "Sentinel result"),
             "type": str(assumption.get("type") or "default"),
             "reason": "Provisional assumption carried forward from the latest clarification packet.",
         })
     return items
+
+
+def _default_assumption_ledger(mission_id: str) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    return {
+        "mission_id": mission,
+        "derived_only": True,
+        "updated_at": "",
+        "entries": [],
+    }
+
+
+def _normalize_assumption_status(value: Any) -> str:
+    status = str(value or "").strip().lower()
+    if status in {"active", "accepted", "rejected", "invalidated", "resolved"}:
+        return status
+    return "active"
+
+
+def _normalize_operator_assumption_status(value: Any) -> str:
+    status = str(value or "").strip().lower()
+    if status in {"unreviewed", "accepted", "rejected"}:
+        return status
+    return "unreviewed"
+
+
+def _normalize_basis_refs(value: Any) -> list[str]:
+    refs: list[str] = []
+    if not isinstance(value, list):
+        return refs
+    for item in value:
+        text = str(item or "").strip()
+        if text and text not in refs:
+            refs.append(text)
+    return refs[:8]
+
+
+def _normalize_invalidation_triggers(value: Any) -> list[str]:
+    triggers: list[str] = []
+    if not isinstance(value, list):
+        return triggers
+    for item in value:
+        text = str(item or "").strip()
+        if text and text not in triggers:
+            triggers.append(text)
+    return triggers[:6]
+
+
+def _normalize_assumption_entry(mission_id: str, payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    mission = normalize_mission_id(mission_id)
+    text = str(payload.get("text") or payload.get("statement") or "").strip()
+    if not text:
+        return None
+    assumption_id = str(payload.get("assumption_id") or f"assumption_{_short_digest(f'{mission}|{text.lower()}')}").strip()
+    created_at = str(payload.get("created_at") or "").strip() or iso_now()
+    updated_at = str(payload.get("updated_at") or "").strip() or created_at
+    raw_confidence = payload.get("confidence")
+    confidence = 0.0
+    if isinstance(raw_confidence, (int, float)):
+        confidence = max(0.0, min(1.0, float(raw_confidence)))
+    confirmation_payload = payload.get("confirmation") if isinstance(payload.get("confirmation"), dict) else {}
+    operator_status = _normalize_operator_assumption_status(confirmation_payload.get("operator_status"))
+    status = _normalize_assumption_status(payload.get("status"))
+    if operator_status == "accepted":
+        status = "accepted"
+    elif operator_status == "rejected":
+        status = "rejected"
+    return {
+        "assumption_id": assumption_id,
+        "mission_id": mission,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "text": text,
+        "reason": str(payload.get("reason") or "").strip(),
+        "confidence": round(confidence, 2),
+        "basis_refs": _normalize_basis_refs(payload.get("basis_refs")),
+        "invalidation_triggers": _normalize_invalidation_triggers(payload.get("invalidation_triggers")),
+        "status": status,
+        "confirmation": {
+            "operator_status": operator_status,
+            "operator_note": str(confirmation_payload.get("operator_note") or "").strip(),
+            "operator_updated_at": str(confirmation_payload.get("operator_updated_at") or "").strip(),
+        },
+        "derived_only": True,
+    }
+
+
+def _assumption_sort_key(item: dict[str, Any]) -> tuple[int, str, str]:
+    status = str(item.get("status") or "").strip()
+    priority = 0 if status in {"active", "accepted"} else 1 if status == "invalidated" else 2
+    return (priority, str(item.get("updated_at") or ""), str(item.get("assumption_id") or ""))
+
+
+def _sorted_assumption_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = sorted(entries, key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
+    rows.sort(key=lambda item: 0 if str(item.get("status") or "").strip() in {"active", "accepted"} else 1 if str(item.get("status") or "").strip() == "invalidated" else 2)
+    return rows
+
+
+def _read_assumption_ledger_entries(mission_id: str) -> list[dict[str, Any]]:
+    mission = normalize_mission_id(mission_id)
+    path = _assumption_ledger_path(mission)
+    if not path.exists():
+        return []
+    payload = _load_json(path)
+    if not isinstance(payload, dict):
+        return []
+    rows = payload.get("entries")
+    if not isinstance(rows, list):
+        return []
+    entries: list[dict[str, Any]] = []
+    for row in rows:
+        item = _normalize_assumption_entry(mission, row)
+        if item:
+            entries.append(item)
+    return _sorted_assumption_entries(entries)
+
+
+def _write_assumption_ledger_entries(mission_id: str, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    mission = normalize_mission_id(mission_id)
+    normalized: list[dict[str, Any]] = []
+    for item in entries:
+        row = _normalize_assumption_entry(mission, item)
+        if row:
+            normalized.append(row)
+    normalized = _sorted_assumption_entries(normalized)
+    _write_json(
+        _assumption_ledger_path(mission),
+        {
+            "mission_id": mission,
+            "derived_only": True,
+            "updated_at": iso_now(),
+            "entry_count": len(normalized),
+            "entries": normalized,
+        },
+    )
+    return normalized
+
+
+def _assumption_display_items(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for item in entries:
+        status = str(item.get("status") or "").strip()
+        if status not in {"active", "accepted"}:
+            continue
+        items.append({
+            "assumption_id": str(item.get("assumption_id") or ""),
+            "statement": str(item.get("text") or "").strip(),
+            "confidence": item.get("confidence"),
+            "source": "mission-local ledger",
+            "type": "ledger",
+            "reason": str(item.get("reason") or "").strip(),
+            "status": status,
+            "operator_status": str(((item.get("confirmation") or {}) if isinstance(item.get("confirmation"), dict) else {}).get("operator_status") or "unreviewed"),
+        })
+    return items[:4]
+
+
+def _assumptions_last_updated(entries: list[dict[str, Any]]) -> str:
+    if not entries:
+        return ""
+    return max(str(item.get("updated_at") or item.get("created_at") or "") for item in entries)
+
+
+def _latest_assumption_changes(entries: list[dict[str, Any]], limit: int = 3) -> list[dict[str, Any]]:
+    rows = sorted(entries, key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
+    changes: list[dict[str, Any]] = []
+    for item in rows[:limit]:
+        changes.append({
+            "assumption_id": str(item.get("assumption_id") or ""),
+            "text": str(item.get("text") or "").strip(),
+            "status": str(item.get("status") or "").strip(),
+            "updated_at": str(item.get("updated_at") or "").strip(),
+            "operator_status": str(((item.get("confirmation") or {}) if isinstance(item.get("confirmation"), dict) else {}).get("operator_status") or "unreviewed"),
+        })
+    return changes
+
+
+def _assumption_basis_seed(
+    mission_id: str,
+    mission_inputs: list[dict[str, Any]],
+    mission_chat: list[dict[str, Any]],
+    latest_packet_ref: str,
+    latest_runner_return: dict[str, Any] | None,
+) -> list[str]:
+    refs: list[str] = []
+    brief_path = _mission_root(mission_id) / "mission_brief.json"
+    if brief_path.exists():
+        refs.append(brief_path.relative_to(ROOT).as_posix())
+    if latest_packet_ref:
+        refs.append(latest_packet_ref)
+    for item in mission_inputs[:2]:
+        ref = str(item.get("path") or "").strip()
+        if ref and ref not in refs:
+            refs.append(ref)
+    for item in mission_chat[:2]:
+        message_id = str(item.get("message_id") or "").strip()
+        if not message_id:
+            continue
+        ref = f"{_mission_chat_path(mission_id).relative_to(ROOT).as_posix()}#{message_id}"
+        if ref not in refs:
+            refs.append(ref)
+    if isinstance(latest_runner_return, dict):
+        ref = str(latest_runner_return.get("path") or latest_runner_return.get("source_ref") or "").strip()
+        if ref and ref not in refs:
+            refs.append(ref)
+    return refs[:6]
+
+
+def _derive_assumption_candidates(
+    mission_id: str,
+    *,
+    objective: str,
+    current_state: str,
+    latest_packet: dict[str, Any] | None,
+    latest_runner_return: dict[str, Any] | None,
+    mission_inputs: list[dict[str, Any]],
+    mission_chat: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    sufficient_to_proceed, _ = _is_sufficient_to_proceed(
+        objective,
+        mission_inputs,
+        current_state,
+        latest_packet,
+    )
+    if not sufficient_to_proceed:
+        return []
+
+    now = iso_now()
+    packet_ref = _latest_index_path_ref(mission_id, "clarification_packet")
+    base_refs = _assumption_basis_seed(mission_id, mission_inputs, mission_chat, packet_ref, latest_runner_return)
+    entries: list[dict[str, Any]] = []
+
+    for item in _assumption_items_from_packet(latest_packet)[:2]:
+        text = str(item.get("statement") or "").strip()
+        if not text:
+            continue
+        entries.append({
+            "assumption_id": f"assumption_{_short_digest(f'{mission_id}|{text.lower()}')}",
+            "mission_id": mission_id,
+            "created_at": now,
+            "updated_at": now,
+            "text": text,
+            "reason": str(item.get("reason") or "Provisional assumption carried forward from a mission-local clarification artifact.").strip(),
+            "confidence": round(max(0.2, min(0.95, float(item.get("confidence") or 0.45))), 2),
+            "basis_refs": base_refs or ([packet_ref] if packet_ref else []),
+            "invalidation_triggers": [
+                "The operator provides a more specific direction.",
+                "A newer mission-local artifact contradicts this assumption.",
+            ],
+            "status": "active",
+            "confirmation": {
+                "operator_status": "unreviewed",
+                "operator_note": "",
+                "operator_updated_at": "",
+            },
+            "derived_only": True,
+        })
+
+    if entries:
+        return entries[:3]
+
+    objective_normalized = _normalize_mission_objective(objective)
+    fallback_text = ""
+    fallback_reason = ""
+    fallback_confidence = 0.0
+    fallback_triggers = [
+        "The operator specifies a narrower scope or environment.",
+        "A mission-local artifact contradicts this assumption.",
+    ]
+    if "python" in objective_normalized and "csv" in objective_normalized:
+        fallback_text = "Assuming a standard Python 3 environment with file-based CSV input and output expectations."
+        fallback_reason = "The mission brief reads like a general coding request and does not specify a custom runtime, framework, or data transport."
+        fallback_confidence = 0.58
+        fallback_triggers = [
+            "The operator specifies a different runtime, framework, or execution target.",
+            "The operator provides a non-file CSV source or output contract.",
+        ]
+    elif any(token in objective_normalized for token in ["dog", "obedience", "puppy", "sit", "stay", "training"]):
+        fallback_text = "Assuming a general beginner household obedience context."
+        fallback_reason = "The mission brief reads like general guidance rather than a specialized veterinary or behavioral emergency case."
+        fallback_confidence = 0.56
+        fallback_triggers = [
+            "The operator specifies an advanced training context or a behavioral issue.",
+            "The operator provides breed, age, or environment constraints that change the approach.",
+        ]
+    elif _is_general_instruction_task(objective):
+        fallback_text = "Assuming the mission is asking for a general-purpose example rather than a production-integrated implementation."
+        fallback_reason = "The mission brief is already sufficient to proceed, but it does not specify a deployment environment or system-specific constraints."
+        fallback_confidence = 0.48
+
+    if not fallback_text:
+        return []
+
+    return [{
+        "assumption_id": f"assumption_{_short_digest(f'{mission_id}|{fallback_text.lower()}')}",
+        "mission_id": mission_id,
+        "created_at": now,
+        "updated_at": now,
+        "text": fallback_text,
+        "reason": fallback_reason,
+        "confidence": fallback_confidence,
+        "basis_refs": base_refs,
+        "invalidation_triggers": fallback_triggers,
+        "status": "active",
+        "confirmation": {
+            "operator_status": "unreviewed",
+            "operator_note": "",
+            "operator_updated_at": "",
+        },
+        "derived_only": True,
+    }]
+
+
+def _refresh_assumption_ledger(mission_id: str) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    detail = _build_expedition_detail(mission)
+    derived = _derive_assumption_candidates(
+        mission,
+        objective=str(detail.get("objective") or "").strip(),
+        current_state=str(detail.get("current_state") or "").strip(),
+        latest_packet=detail.get("latest_clarification_packet") if isinstance(detail.get("latest_clarification_packet"), dict) else None,
+        latest_runner_return=detail.get("latest_runner_return") if isinstance(detail.get("latest_runner_return"), dict) else None,
+        mission_inputs=_dict_list(detail.get("mission_inputs")),
+        mission_chat=_dict_list(detail.get("mission_chat")),
+    )
+    existing = _read_assumption_ledger_entries(mission)
+    existing_by_id = {str(item.get("assumption_id") or ""): item for item in existing}
+    now = iso_now()
+    refreshed: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    for item in derived:
+        assumption_id = str(item.get("assumption_id") or "").strip()
+        previous = existing_by_id.get(assumption_id)
+        confirmation = dict((previous or {}).get("confirmation") or {})
+        operator_status = _normalize_operator_assumption_status(confirmation.get("operator_status"))
+        status = "accepted" if operator_status == "accepted" else "rejected" if operator_status == "rejected" else "active"
+        refreshed.append({
+            **item,
+            "created_at": str((previous or {}).get("created_at") or item.get("created_at") or now),
+            "updated_at": now,
+            "status": status,
+            "confirmation": {
+                "operator_status": operator_status,
+                "operator_note": str(confirmation.get("operator_note") or "").strip(),
+                "operator_updated_at": str(confirmation.get("operator_updated_at") or "").strip(),
+            },
+            "derived_only": True,
+        })
+        seen_ids.add(assumption_id)
+
+    for item in existing:
+        assumption_id = str(item.get("assumption_id") or "").strip()
+        if not assumption_id or assumption_id in seen_ids:
+            continue
+        status = str(item.get("status") or "").strip()
+        if status in {"active", "accepted"}:
+            updated = dict(item)
+            updated["status"] = "resolved"
+            updated["updated_at"] = now
+            refreshed.append(updated)
+        else:
+            refreshed.append(item)
+
+    written = _write_assumption_ledger_entries(mission, refreshed)
+    return {
+        "mission_id": mission,
+        "ledger_path": _assumption_ledger_path(mission).relative_to(ROOT).as_posix(),
+        "derived_count": len(derived),
+        "assumption_count": len(written),
+        "active_assumption_count": len([item for item in written if str(item.get("status") or "") in {"active", "accepted"}]),
+        "entries": written,
+    }
+
+
+def _update_assumption_confirmation(mission_id: str, assumption_id: str, *, operator_status: str, operator_note: str = "") -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    target_id = str(assumption_id or "").strip()
+    entries = _read_assumption_ledger_entries(mission)
+    updated_entries: list[dict[str, Any]] = []
+    target: dict[str, Any] | None = None
+    now = iso_now()
+    for item in entries:
+        if str(item.get("assumption_id") or "").strip() != target_id:
+            updated_entries.append(item)
+            continue
+        confirmation_status = _normalize_operator_assumption_status(operator_status)
+        updated = dict(item)
+        updated["updated_at"] = now
+        updated["status"] = "accepted" if confirmation_status == "accepted" else "rejected"
+        updated["confirmation"] = {
+            "operator_status": confirmation_status,
+            "operator_note": str(operator_note or "").strip(),
+            "operator_updated_at": now,
+        }
+        updated_entries.append(updated)
+        target = updated
+    if target is None:
+        raise FileNotFoundError("assumption not found")
+    _write_assumption_ledger_entries(mission, updated_entries)
+    return target
 
 
 def _question_items_from_packet(latest_packet: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -1119,7 +1542,7 @@ def _merge_deferred_questions(
 def _assumption_summary_lines(assumptions: list[dict[str, Any]]) -> list[str]:
     lines: list[str] = []
     for item in assumptions[:4]:
-        statement = str(item.get("statement") or "").strip()
+        statement = str(item.get("statement") or item.get("text") or "").strip()
         if not statement:
             continue
         confidence = item.get("confidence")
@@ -1234,20 +1657,10 @@ def _build_working_memory_payload(
         confirmed_facts.extend(_extract_confirmed_fact_items(operator_text, source=source or "operator input", created_at=created_at))
     confirmed_facts = _merge_unique_structured(confirmed_facts, "text")
 
-    active_assumptions: list[dict[str, Any]] = []
-    if isinstance(existing, dict):
-        active_assumptions.extend(_dict_list(existing.get("active_assumptions")))
-    active_assumptions.extend(_assumption_items_from_packet(latest_packet))
-    if not active_assumptions and objective:
-        active_assumptions.append({
-            "assumption_id": "assumption_1",
-            "statement": f"The mission can proceed using the current objective as the initial anchor: {objective}.",
-            "confidence": 0.35,
-            "source": "mission brief",
-            "type": "default",
-            "reason": "No stronger context has been provided yet, so the mission uses the objective as the safest starting assumption.",
-        })
-    active_assumptions = _merge_unique_structured(active_assumptions, "statement")
+    active_assumptions = _merge_unique_structured(
+        _assumption_display_items(_dict_list(detail.get("assumptions"))),
+        "statement",
+    )
 
     open_questions = _question_items_from_summary(mission_summary, latest_packet)
     deferred_questions = _merge_deferred_questions(
@@ -1392,6 +1805,33 @@ def _clarification_facts_from_text(text: str) -> list[str]:
     return facts
 
 
+def _first_pass_answer(objective: str, assumptions: list[str]) -> str:
+    normalized = _normalize_mission_objective(objective)
+    assumption_clause = f" Assumption: {assumptions[0]}." if assumptions else ""
+
+    if any(token in normalized for token in ["dog", "puppy", "sit", "stay", "training", "obedience"]):
+        return (
+            "First pass: use a treat to guide the dog into a sit, mark the moment the hips touch the floor, "
+            "reward immediately, and repeat 5 to 10 short reps. Then add the cue word \"sit,\" practice in a "
+            "low-distraction space, and gradually phase out the lure while still rewarding successful reps."
+            f"{assumption_clause}"
+        )
+    if "python" in normalized and "csv" in normalized:
+        return (
+            "First pass: start with a small Python 3 script that reads the CSV with csv.DictReader, performs the "
+            "minimum required transformation, and writes the result back with csv.DictWriter. Keep the input and "
+            "output file paths explicit first, then refine for environment-specific needs once they exist."
+            f"{assumption_clause}"
+        )
+    if _is_general_instruction_task(objective):
+        return (
+            "First pass: take the smallest useful version of the task, make the current assumptions explicit, "
+            "produce a practical draft or step sequence now, and refine only after a concrete constraint appears."
+            f"{assumption_clause}"
+        )
+    return ""
+
+
 def _clarification_reply_text(message: str, quick_reply: str | None, detail: dict[str, Any]) -> tuple[str, str]:
     quick = str(quick_reply or "").strip().lower()
     summary = detail.get("mission_summary") if isinstance(detail.get("mission_summary"), dict) else {}
@@ -1403,15 +1843,15 @@ def _clarification_reply_text(message: str, quick_reply: str | None, detail: dic
     current_state = str(detail.get("current_state") or "")
     operator_posture = str(summary.get("operator_posture") or detail.get("operator_posture") or "").strip()
     message_lower = message.lower().strip()
-    assumption_lines = _assumption_summary_lines(_dict_list(working_memory.get("active_assumptions")))
+    assumption_lines = _assumption_summary_lines(_dict_list(detail.get("assumptions")))
     open_questions = _question_summary_lines(_dict_list(working_memory.get("open_questions")))
     blocking_questions = list(summary.get("blocking_questions") or detail.get("blocking_questions") or [])
     can_continue_without_input = bool(summary.get("can_continue_without_input", True))
     review_preview = _record_object(detail.get("latest_draft"), "review_preview") if isinstance(detail, dict) else None
+    objective = str(detail.get("objective") or "").strip()
+    first_pass = _first_pass_answer(objective, assumption_lines)
 
     if quick in {"park mission", "resume mission"}:
-        if quick == "park mission":
-            return "Parking is controlled by the mission parking button; this chat note does not change parking state.", "watch"
         return "Parking is controlled by the mission parking button; this chat note does not change parking state.", "watch"
     if quick == "answer blockers":
         if blocking_questions:
@@ -1424,32 +1864,36 @@ def _clarification_reply_text(message: str, quick_reply: str | None, detail: dic
             preview_path = str(review_preview.get("draft_path") or "").strip()
             if preview_path:
                 return f"Review preview is ready. Open the draft preview at {preview_path} to inspect it without submitting anything.", "good"
-        return "No review preview is ready yet. I’ll keep the mission in its current safe lane until a draft exists.", "watch"
+        return "No review preview is ready yet. I'll keep the mission in its current safe lane until a draft exists.", "watch"
 
     if quick == "proceed with assumptions":
+        if first_pass:
+            return first_pass, "good"
         if assumption_lines:
             preview = "; ".join(assumption_lines[:2])
-            return f"Understood. I’m proceeding with explicit assumptions: {preview}. I’ll keep the remaining question queued.", "good"
-        return "Understood. I’m proceeding with the safest available assumptions and will keep the remaining question queued.", "good"
+            return f"Understood. I'm proceeding with explicit assumptions: {preview}. I'll keep the remaining question queued.", "good"
+        return "Understood. I'm proceeding with the safest available assumptions and will keep the remaining question queued.", "good"
     if quick in {"production", "staging"}:
-        return f"Thanks. I’ve recorded the environment as {quick} and will use that as the working assumption.", "good"
+        return f"Thanks. I've recorded the environment as {quick} and will use that as the working assumption.", "good"
     if quick in {"objective", "scope", "link", "desired outcome"}:
-        return f"Thanks. I’ve marked {quick} as the missing detail and will keep the mission moving with the current assumptions.", "good"
+        return f"Thanks. I've marked {quick} as the missing detail and will keep the mission moving with the current assumptions.", "good"
 
     if quick == "yes":
         if "production or staging" in next_question.lower():
-            return "Confirmed. I’m treating this as an environment decision point and will keep the mission moving with the current working assumption.", "good"
+            return "Confirmed. I'm treating this as an environment decision point and will keep the mission moving with the current working assumption.", "good"
         if "outage window" in next_question.lower():
             return "Thanks. That confirms the outage-window focus and narrows the mission.", "good"
-        return "Thanks. I’ve recorded the confirmation and will use it to narrow the mission.", "good"
+        return "Thanks. I've recorded the confirmation and will use it to narrow the mission.", "good"
     if quick == "no":
         if "production or staging" in next_question.lower():
-            return "Understood. I’ll avoid locking the environment assumption and will continue with the safest fallback.", "watch"
-        return "Understood. I’ll avoid assuming that detail and keep the mission on the least risky path.", "watch"
+            return "Understood. I'll avoid locking the environment assumption and will continue with the safest fallback.", "watch"
+        return "Understood. I'll avoid assuming that detail and keep the mission on the least risky path.", "watch"
     if quick == "not sure":
         if blocked_reason:
-            return f"No problem. I still need one blocking answer: {blocked_reason}", "watch"
-        return "No problem. I’ll keep the mission in clarification mode, but continue under the current assumptions.", "watch"
+            return f"No problem. I still need one concrete blocker answer: {blocked_reason}", "watch"
+        if first_pass:
+            return first_pass, "good"
+        return "No problem. I'll keep the mission moving under the current assumptions.", "good"
     if quick in {"write more information", "more info", "more information"}:
         if next_question:
             return f"Please add the missing detail for this mission: {next_question}", "watch"
@@ -1460,14 +1904,14 @@ def _clarification_reply_text(message: str, quick_reply: str | None, detail: dic
     facts = _clarification_facts_from_text(message)
     if facts:
         if "production" in facts or "staging" in facts:
-            return "Thanks — that gives me an environment signal. I’m treating the mission as environment-scoped and will keep asking only for the most important remaining question.", "good"
+            return "Thanks - that gives me an environment signal. I'm treating the mission as environment-scoped and will keep asking only for the most important remaining question.", "good"
         if "window" in facts:
-            return "Thanks — I have the timing focus now. I’ll use the outage window as the active constraint.", "good"
+            return "Thanks - I have the timing focus now. I'll use the outage window as the active constraint.", "good"
         if "link" in facts:
-            return "Thanks — I’ve got a reference to work from, which helps narrow the mission.", "good"
+            return "Thanks - I've got a reference to work from, which helps narrow the mission.", "good"
         if "desired outcome" in facts:
             return "That helps. I now have a clearer outcome target and can narrow the next question.", "good"
-        return "Thanks — I’ve recorded that as mission input and used it to narrow the clarification path.", "good"
+        return "Thanks - I've recorded that as mission input and used it to narrow the clarification path.", "good"
 
     if operator_posture == "parked":
         wake_hint = str(parking_status.get("resume_hint") or next_question or blocked_reason or "").strip()
@@ -1477,19 +1921,25 @@ def _clarification_reply_text(message: str, quick_reply: str | None, detail: dic
 
     if can_continue_without_input and operator_posture != "needs_operator_answer":
         if quick == "not sure":
+            if first_pass:
+                return first_pass, "good"
             return "No problem. There is no blocking clarification right now; the mission can proceed with the current objective.", "good"
         if quick in {"write more information", "more info", "more information"}:
             return "More context is optional here. The mission is already sufficient to proceed.", "good"
         if message.strip():
+            if first_pass:
+                return f"Thanks - I've recorded that as mission input. {first_pass}", "good"
             if assumption_lines:
                 preview = "; ".join(assumption_lines[:2])
                 return f"Thanks - I've recorded that as mission input. The mission can keep moving under these assumptions: {preview}.", "good"
             return "Thanks - I've recorded that as mission input. No additional clarification is required to proceed.", "good"
+        if first_pass:
+            return first_pass, "good"
         return "No immediate clarification is required. The mission can proceed with the current objective.", "good"
 
     if "?" in message_lower or current_state in {"CLARIFICATION_NEEDED", "RECONSIDERATION_REQUESTED"}:
         if blocked_reason:
-            return f"I’m blocked on one answer: {blocked_reason}", "watch"
+            return f"I need one concrete blocker answer to continue: {blocked_reason}", "watch"
         if reason:
             return f"I can continue with assumptions, but this would improve things: {reason}", "watch"
         if next_question:
@@ -1499,13 +1949,15 @@ def _clarification_reply_text(message: str, quick_reply: str | None, detail: dic
         return "I can continue with assumptions, but one clear answer would improve confidence.", "watch"
 
     if message.strip():
+        if first_pass:
+            return f"Thanks - I've recorded that as mission input. {first_pass}", "good"
         if assumption_lines:
             preview = "; ".join(assumption_lines[:2])
-            return f"Thanks — I’ve recorded that as mission input. I’m keeping the mission moving under these assumptions: {preview}.", "good"
-        return "Thanks — I’ve recorded that as mission input and will use it to refine the next clarification.", "good"
+            return f"Thanks - I've recorded that as mission input. I'm keeping the mission moving under these assumptions: {preview}.", "good"
+        return "Thanks - I've recorded that as mission input and will use it to refine the next clarification.", "good"
 
     if blocked_reason:
-        return f"I need one blocking answer before I can move this mission forward: {blocked_reason}", "watch"
+        return f"I need one concrete blocker answer before I can move this mission forward: {blocked_reason}", "watch"
     return "I can continue with assumptions, but one more detail would improve confidence.", "watch"
 
 
@@ -1631,13 +2083,14 @@ def _mission_summary_payload(
     latest_packet: dict[str, Any] | None,
     latest_runner_return: dict[str, Any] | None,
     mission_inputs: list[dict[str, Any]],
+    assumption_entries: list[dict[str, Any]] | None = None,
     working_memory: dict[str, Any] | None = None,
     parking_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     working_memory = working_memory if isinstance(working_memory, dict) else read_working_memory(mission_id)
     parking_status = parking_status if isinstance(parking_status, dict) else _read_parking_status(mission_id)
     confirmed_fact_items = _dict_list(working_memory.get("confirmed_facts"))
-    active_assumption_items = _dict_list(working_memory.get("active_assumptions"))
+    active_assumption_items = _assumption_display_items(_dict_list(assumption_entries))
     open_question_items = _dict_list(working_memory.get("open_questions"))
     deferred_question_items = _dict_list(working_memory.get("deferred_questions"))
     operating_status = str(working_memory.get("operating_status") or "").strip()
@@ -1657,7 +2110,7 @@ def _mission_summary_payload(
             believed.append(run_summary)
         recommended_action = str(latest_run.get("recommended_action") or "").strip()
         if recommended_action:
-            believed.append(f"Hermes recommended: {recommended_action}")
+            believed.append(f"Sentinel recommended: {recommended_action}")
     if latest_packet:
         provisional = str((latest_packet.get("provisional_answer") or {}).get("text") or "").strip()
         if provisional:
@@ -1883,6 +2336,10 @@ def _mission_summary_payload(
         "confirmed_facts": confirmed_facts,
         "active_assumptions": active_assumptions,
         "assumptions_active": active_assumptions,
+        "assumption_count": len(_dict_list(assumption_entries)),
+        "active_assumption_count": len(active_assumption_items),
+        "assumptions_last_updated": _assumptions_last_updated(_dict_list(assumption_entries)),
+        "assumption_review_needed": any(str(item.get("operator_status") or "unreviewed") == "unreviewed" for item in active_assumption_items),
         "open_questions": open_questions,
         "deferred_questions": deferred_questions,
         "blocking_questions": blocking_questions,
@@ -1925,6 +2382,7 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
     latest_packet = _latest_clarification_summary(mission)
     runner_returns = _read_runner_returns(mission)
     latest_runner_return = runner_returns[0] if runner_returns else None
+    assumption_entries = _read_assumption_ledger_entries(mission)
     working_memory = read_working_memory(mission)
     parking_status = _read_parking_status(mission)
     workbench_files = _workbench_files(mission)
@@ -1953,6 +2411,7 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
         latest_packet=latest_packet if isinstance(latest_packet, dict) else None,
         latest_runner_return=latest_runner_return if isinstance(latest_runner_return, dict) else None,
         mission_inputs=mission_inputs,
+        assumption_entries=assumption_entries,
         working_memory=working_memory,
         parking_status=parking_status,
     )
@@ -1992,6 +2451,16 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
         "latest_clarification_packet": latest_packet,
         "latest_runner_return": latest_runner_return,
         "runner_return_count": len(runner_returns),
+        "assumptions": assumption_entries,
+        "active_assumption_count": len([item for item in assumption_entries if str(item.get("status") or "") in {"active", "accepted"}]),
+        "assumption_count": len(assumption_entries),
+        "assumptions_last_updated": _assumptions_last_updated(assumption_entries),
+        "assumption_review_needed": any(
+            str(item.get("status") or "") == "active"
+            and str(((item.get("confirmation") or {}) if isinstance(item.get("confirmation"), dict) else {}).get("operator_status") or "unreviewed") == "unreviewed"
+            for item in assumption_entries
+        ),
+        "latest_assumption_changes": _latest_assumption_changes(assumption_entries),
         "working_memory": working_memory,
         "parking_status": parking_status,
         "operator_posture": str(summary_preview.get("operator_posture") or ""),
@@ -2998,6 +3467,63 @@ def read_mirror_door_test_status() -> dict[str, Any]:
     return summary
 
 
+def read_helper_2b_runtime_status() -> dict[str, Any]:
+    try:
+        profile = load_helper_runtime_profile("spinetop-helper_2b")
+    except Exception as exc:
+        return {
+            "available": False,
+            "configured": False,
+            "enabled": False,
+            "role_id": "spinetop-helper_2b",
+            "role_description": "Spinetop-helper_2b is the mission-local field helper for tactical support.",
+            "liveness": "unavailable",
+            "error": str(exc),
+        }
+
+    provider = ""
+    model = ""
+    try:
+        model_registry_payload = json.loads((ROOT / "config" / "model_registry.json").read_text(encoding="utf-8"))
+        models = model_registry_payload.get("models", {}) if isinstance(model_registry_payload, dict) else {}
+        if isinstance(models, dict) and profile.default_model_key:
+            model_entry = models.get(profile.default_model_key, {})
+            if isinstance(model_entry, dict):
+                provider = str(model_entry.get("provider") or "").strip()
+                model = str(model_entry.get("model") or "").strip()
+    except Exception:
+        provider = ""
+        model = ""
+
+    enabled = profile.execution_backend == "model_backed"
+    return {
+        "available": True,
+        "configured": True,
+        "enabled": enabled,
+        "role_id": profile.role_id,
+        "role_description": profile.role_description,
+        "execution_backend": profile.execution_backend,
+        "provider_requirement": profile.provider_requirement,
+        "default_model_key": profile.default_model_key,
+        "fallback_model_key": profile.fallback_model_key,
+        "provider": provider,
+        "model": model,
+        "mapped_helpers": profile.mapped_helpers,
+        "authority_boundary": profile.authority_boundary,
+        "context_refs": profile.context_refs,
+        "config_refs": profile.config_refs,
+        "support_write_scope": profile.support_write_scope,
+        "inactive_behavior": profile.inactive_behavior,
+        "liveness": "model_backed_ready" if enabled else "disabled_safe_inactive",
+        "notes": [
+            "Field-helper work stays bounded to helper-local support lanes.",
+            "Spinetop-helper_2b is not Sentinel, Expeditioner, or Mirror.",
+            "Spinetop-helper_2b does not approve, create truth, or bypass governance.",
+            "If runtime is inactive, the seam stays disabled-safe and returns structured receipts only.",
+        ],
+    }
+
+
 @app.get("/api/status")
 def api_status():
     sessions_total, sessions_items = get_sessions(10)
@@ -3015,6 +3541,7 @@ def api_status():
         "nanny": read_item_world_status(),
         "dispatch_counts": read_dispatch_counts(),
         "support_helper_activity": read_support_helper_activity(),
+        "helper_2b_runtime": read_helper_2b_runtime_status(),
         "mirror_door_test": read_mirror_door_test_status(),
         "storage_overview": read_storage_overview(),
     })
@@ -3142,6 +3669,123 @@ def api_expedition_sync_runner_returns(mission_id: str):
     return jsonify({
         "ok": True,
         "sync": sync,
+        "item": item,
+    })
+
+
+@app.post("/api/expeditions/<mission_id>/refresh-assumptions")
+def api_expedition_refresh_assumptions(mission_id: str):
+    try:
+        mission = normalize_mission_id(mission_id)
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+        }), 400
+    if not _mission_exists(mission):
+        return jsonify({
+            "ok": False,
+            "error": "mission not found",
+        }), 404
+    try:
+        refresh = _refresh_assumption_ledger(mission)
+        item = _build_expedition_detail(mission)
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+        }), 400
+    return jsonify({
+        "ok": True,
+        "refresh": refresh,
+        "item": item,
+    })
+
+
+@app.post("/api/expeditions/<mission_id>/assumptions/<assumption_id>/confirm")
+def api_expedition_confirm_assumption(mission_id: str, assumption_id: str):
+    try:
+        mission = normalize_mission_id(mission_id)
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+        }), 400
+    if not _mission_exists(mission):
+        return jsonify({
+            "ok": False,
+            "error": "mission not found",
+        }), 404
+    try:
+        payload = request.get_json(force=True) or {}
+    except Exception:
+        payload = {}
+    operator_note = str(payload.get("operator_note") or payload.get("note") or "").strip()
+    try:
+        assumption = _update_assumption_confirmation(
+            mission,
+            assumption_id,
+            operator_status="accepted",
+            operator_note=operator_note,
+        )
+        item = _build_expedition_detail(mission)
+    except FileNotFoundError:
+        return jsonify({
+            "ok": False,
+            "error": "assumption not found",
+        }), 404
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+        }), 400
+    return jsonify({
+        "ok": True,
+        "assumption": assumption,
+        "item": item,
+    })
+
+
+@app.post("/api/expeditions/<mission_id>/assumptions/<assumption_id>/reject")
+def api_expedition_reject_assumption(mission_id: str, assumption_id: str):
+    try:
+        mission = normalize_mission_id(mission_id)
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+        }), 400
+    if not _mission_exists(mission):
+        return jsonify({
+            "ok": False,
+            "error": "mission not found",
+        }), 404
+    try:
+        payload = request.get_json(force=True) or {}
+    except Exception:
+        payload = {}
+    operator_note = str(payload.get("operator_note") or payload.get("note") or "").strip()
+    try:
+        assumption = _update_assumption_confirmation(
+            mission,
+            assumption_id,
+            operator_status="rejected",
+            operator_note=operator_note,
+        )
+        item = _build_expedition_detail(mission)
+    except FileNotFoundError:
+        return jsonify({
+            "ok": False,
+            "error": "assumption not found",
+        }), 404
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+        }), 400
+    return jsonify({
+        "ok": True,
+        "assumption": assumption,
         "item": item,
     })
 

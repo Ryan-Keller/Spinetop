@@ -1,6 +1,8 @@
-# Hermes Model Lifecycle v1
+# Sentinel Model Lifecycle v1
 
-This document defines the small, manual lifecycle for local Hermes models in Spinetop.
+This document defines the small, manual lifecycle for local Sentinel models in Spinetop.
+
+Compatibility note: the runtime file and script names remain `hermes_*` in this stage so existing automation and stored references continue to work.
 
 It is intentionally boring:
 
@@ -11,7 +13,7 @@ It is intentionally boring:
 
 ## Terms
 
-- `production local model`: the trusted default local Hermes model used for normal manual runs.
+- `production local model`: the trusted default local Sentinel model used for normal manual runs.
 - `onboarding candidate`: a local model that must be trained/tested before it is treated as production.
 - `promotion criteria`: the explicit checks the operator uses before marking an onboarding candidate ready.
 - `selected onboarding target`: the one onboarding candidate the operator chooses for the current test pass.
@@ -20,7 +22,7 @@ It is intentionally boring:
 
 | Profile key | Model | Role | Readiness | Notes |
 |---|---|---|---|---|
-| `local_production_qwen2_5_coder_14b` | `qwen2.5-coder:14b` | production default | ready | Default Hermes local model |
+| `local_production_qwen2_5_coder_14b` | `qwen2.5-coder:14b` | production default | ready | Default Sentinel local model |
 | `local_onboarding_gemma4_e4b_4k` | `gemma4:e4b-4k` | onboarding candidate | needs validation | Manual onboarding target |
 
 ## Runtime Config Structure
@@ -39,17 +41,17 @@ The profile entries are explicit and keyed by model identity, so multiple onboar
 
 An onboarding candidate is only ready for promotion when the operator can verify all of the following manually:
 
-- it returns valid Hermes JSON for repeated runs
+- it returns valid Sentinel JSON for repeated runs
 - it stays inside the governed output schema
 - it does not invent autonomy, truth-writing, or automatic switching
-- it behaves consistently on the intended Hermes modes
+- it behaves consistently on the intended Sentinel modes
 - it does not require hidden fallback behavior to look correct
 
 The config records `promotion_ready` and `readiness`, but those values are manual status flags only.
 
 ## Selection Rules
 
-- Normal Hermes runs use the production default model.
+- Normal Sentinel runs use the production default model.
 - Onboarding runs must name the target explicitly with `--onboarding-model-key`.
 - If more onboarding candidates are added later, the operator chooses the one to test by key.
 - Nothing switches automatically based on readiness.

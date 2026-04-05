@@ -24,6 +24,40 @@ The canonical world contract lives in [`docs/doctrine.md`](./doctrine.md).
 - Inherit shared knowledge from Spinetop.
 - Do not automatically write to collective memory; they propose changes through governed state-machine transitions.
 
+### Field Helpers
+
+- `spinetop-helper_2b` is a bounded field-side helper identity inside Spinetop.
+- It supports mission-local expedition work, short-horizon context, and tactical next-step suggestions.
+- It thinks in small tactical frames: current context, key observations, possible next steps, and open questions.
+- It may highlight local contradictions, but it does not resolve them by invention or turn them into truth.
+- It writes only to helper-local support lanes and never to collective, approved dispatch, or Honcho.
+- Its internal helper thinking stays separate from the structured runner-return receipt.
+- It stays distinct from Sentinel review, Expeditioner execution ownership, and Mirror memory interpretation.
+
+### Spinetop-Expeditioner
+
+- `spinetop_expeditioner` is the mission-doing worker identity inside Spinetop.
+- It works the mission in the mission-local workbench and produces first-pass derived outputs.
+- It should use available context, move forward under bounded assumptions when allowed, and refine later if needed.
+- Its lightweight response contract is: `First-pass answer:` first, `Assumptions:` only if any, and `Next steps:` only if helpful.
+- It may write only to mission-local/workbench lanes, support receipts, and explicitly allowed drafts.
+- It is not Sentinel review, not `spinetop-helper_2b` tactical support, and not Mirror memory interpretation.
+
+### Sentinel-Spinetop
+
+- Internal reviewer, watch, and anomaly role on the existing `hermes-spinetop` seam.
+- Reads bounded operational and mission-local context and emits derived review outputs.
+- Does not approve, define truth, act as bridge/governance authority, or self-activate in the background.
+- Remains distinct from expeditioner work, `spinetop-helper_2b` support work, and mirror/storage functions.
+
+### Spinetop-Mirror
+
+- `spinetop-mirror` is the read-only memory interpretation identity inside Spinetop.
+- It reads Honcho or Honcho-backed query results and derives mission-local reflections about gaps, contradictions, repetition, and stale assumptions.
+- It may write only to `workbench/missions/<mission_id>/notes/mirror/`.
+- It must not write to Honcho, collective, approved dispatch, or canonical mission state.
+- It is not Sentinel review, not `spinetop-helper_2b` tactical support, and not Expeditioner task execution.
+
 ### Codex
 
 - Builds and repairs systems.
@@ -65,6 +99,13 @@ The canonical world contract lives in [`docs/doctrine.md`](./doctrine.md).
 4. Local scratch
 - Ephemeral notes tied to a single task.
 - Must not outlive the task unless promoted.
+
+## Adjacent Role Boundaries
+
+- `Spinetop-Sentinel` is the reviewer/watch/anomaly role.
+- `Spinetop-Expeditioner` is the task-doing expeditioner role and should not be conflated with Sentinel.
+- `Spinetop-helper_2b` is a bounded support helper seam, not a reviewer authority.
+- `Spinetop-Mirror` is the read-only memory interpretation role; it is not a reviewing, approving, or task-execution actor.
 
 ## Promotion Pipeline
 

@@ -18,6 +18,10 @@ Recommended kinds:
 - `hermes_run`
 - `clarification_packet`
 - `draft`
+- `mirror_reflection`
+- `memory_gap_report`
+- `contradiction_note`
+- `session_pattern_summary`
 
 Rules:
 
@@ -37,3 +41,7 @@ Examples:
 - Hermes run artifact -> `hermes_run`
 - clarification reasoning packet -> `clarification_packet`
 - governed draft artifact -> `draft`
+- mission-local memory interpretation reflection -> `mirror_reflection`
+- missing-memory or stale-memory note -> `memory_gap_report`
+- contradiction-focused interpretation note -> `contradiction_note`
+- session/message pattern digest -> `session_pattern_summary`

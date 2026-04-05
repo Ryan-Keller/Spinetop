@@ -15,8 +15,11 @@ Start here:
 - [Support Orchestration Contract](support_orchestration_contract_v1.md)
 - [Helper Catalog](helper_catalog_v1.md)
 - [Support Channel Schema](support_channel_schema_v1.md)
-- [Hermes v1 Contract](hermes_v1_contract.md)
-- [Hermes Model Lifecycle](hermes_model_lifecycle_v1.md)
+- [Sentinel v1 Contract](hermes_v1_contract.md)
+- [Mirror v1 Contract](mirror_contract_v1.md)
+- [Sentinel Model Lifecycle](hermes_model_lifecycle_v1.md)
+- [Sentinel Role Config](../config/sentinel_role.json)
+- [Mirror Role Config](../config/mirror_role.json)
 - [Knowledge Flow](knowledge_flow_README.md)
 - [Architecture](architecture.md)
 
@@ -26,3 +29,10 @@ Core reminders:
 - Spinelab may propose, but does not define truth.
 - Honcho is storage-only.
 - New truth requires governance.
+
+Compatibility note:
+
+- Sentinel is the internal Spinetop reviewer role formerly labeled Hermes.
+- Hermes Agent refers to the external Nous framework/runtime and should keep its Hermes name.
+- Legacy `hermes_*` doc filenames, artifact kinds, routes, and paths remain in place for staged compatibility.
+- This staged cleanup is naming-first and wording-first. Nearby UI or assumption-ledger changes in the current worktree should not be read as part of the Sentinel authority model or as proof of a rename-only code split.

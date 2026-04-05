@@ -492,6 +492,26 @@ def load_model_lifecycle(runtime_config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def load_runtime_activation(runtime_config: dict[str, Any]) -> dict[str, str | bool]:
+    runtime_state = runtime_config.get("runtime_state", {})
+    if runtime_state is None:
+        runtime_state = {}
+    if not isinstance(runtime_state, dict):
+        raise ValueError("hermes_runtime.json runtime_state must be an object")
+
+    active = runtime_state.get("active", True)
+    if not isinstance(active, bool):
+        raise ValueError("hermes_runtime.json runtime_state.active must be boolean")
+
+    inactive_mode = str(runtime_state.get("inactive_mode") or "disabled_safe_noop").strip() or "disabled_safe_noop"
+    inactive_note = str(runtime_state.get("inactive_note") or "").strip()
+    return {
+        "active": active,
+        "inactive_mode": inactive_mode,
+        "inactive_note": inactive_note,
+    }
+
+
 def resolve_runtime_model_key(
     runtime_policy: Any,
     runtime_config: dict[str, Any],
@@ -640,7 +660,7 @@ def invoke_model(model_key: str, prompt: str, runtime_config: dict[str, Any]) ->
         body = {
             "model": model_name,
             "messages": [
-                {"role": "system", "content": "Return only a JSON object that matches the Hermes-Spinetop v1 run schema. No markdown, no code fences, no commentary."},
+                {"role": "system", "content": "Return only a JSON object that matches the Sentinel-Spinetop v1 run schema. No markdown, no code fences, no commentary."},
                 {"role": "user", "content": prompt},
             ],
             "stream": False,
@@ -678,7 +698,7 @@ def invoke_model(model_key: str, prompt: str, runtime_config: dict[str, Any]) ->
         body = {
             "model": model_name,
             "messages": [
-                {"role": "system", "content": "Return only a JSON object that matches the Hermes-Spinetop v1 run schema. No markdown, no code fences, no commentary."},
+                {"role": "system", "content": "Return only a JSON object that matches the Sentinel-Spinetop v1 run schema. No markdown, no code fences, no commentary."},
                 {"role": "user", "content": prompt},
             ],
             "temperature": temperature,
@@ -880,7 +900,7 @@ def merge_snapshot(live_snapshot: dict[str, Any], input_snapshot: dict[str, Any]
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run a single Hermes-Spinetop v1 review pass.")
+    parser = argparse.ArgumentParser(description="Run a single Sentinel-Spinetop v1 review pass.")
     parser.add_argument("mode", nargs="?", choices=sorted(ALLOWED_MODES))
     parser.add_argument("--dry-run", action="store_true", help="Render the prompt and exit without calling a model.")
     parser.add_argument("--input-file", type=Path, help="Load a JSON snapshot override from a file.")
@@ -903,10 +923,23 @@ def main() -> int:
     runtime_config = load_hermes_runtime_config()
     models = load_model_registry()
     lifecycle = load_model_lifecycle(runtime_config)
+    activation = load_runtime_activation(runtime_config)
     validate_model_lifecycle(runtime_policy, models, lifecycle)
 
     if args.list_models:
         print_model_lifecycle(runtime_config, models, lifecycle)
+        return 0
+
+    if not activation["active"]:
+        print("=== RUNTIME STATUS ===")
+        print(f"active=false")
+        print(f"inactive_mode={activation['inactive_mode']}")
+        note = str(activation.get("inactive_note") or "").strip()
+        if note:
+            print(note)
+        print("")
+        print("=== DISABLED SAFE RESULT ===")
+        print("Sentinel runtime inactive; no model run attempted and no writes performed.")
         return 0
 
     model_key = resolve_runtime_model_key(runtime_policy, runtime_config, args.model_key, args.onboarding_model_key)

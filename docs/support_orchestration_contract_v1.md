@@ -68,11 +68,25 @@ The scout or strategist may not:
 
 ### Helper Agents
 
-Helper agents are disposable 2B models used for narrow support tasks.
+Helper agents are disposable bounded workers used for narrow support tasks.
 
 They may carry, hold, route, report, bundle, and validate.
 
 They may not define legitimacy or truth.
+
+Spinetop-Expeditioner is the named mission-doing runtime role for this lane.
+It is mission-local, derived-only, and bounded to workbench, mission-local, and support-scoped outputs.
+It is not Sentinel, not helper_2b, not Mirror, not approval, and not governance.
+When the mission is sufficient, it should attempt the task, produce a useful first pass, and refine later if needed.
+When the mission is not sufficient, it should ask one concrete blocker rather than broad defer language.
+When it emits an Expeditioner-style answer, it should use a lightweight structure:
+
+- `First-pass answer:` useful now, first
+- `Assumptions:` only if any were used
+- `Next steps:` only if helpful
+
+This is bounded behavior activation only, not autonomy, loops, retries, or system-driven execution.
+If its runtime is inactive, behavior must remain disabled-safe and the lane falls back to scripted bounded receipts only.
 
 ### Support Channel
 
@@ -241,3 +255,4 @@ A normal support flow is:
 ## Boundary Note
 
 Helper output may inform later governed work, but it is never proof, approval, or collective admission.
+It does not replace scripted runner-return receipts with free-form helper chat.

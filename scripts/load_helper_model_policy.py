@@ -18,12 +18,18 @@ def main() -> int:
         json.dumps(
             {
                 "role_id": profile.role_id,
+                "role_description": profile.role_description,
                 "execution_backend": profile.execution_backend,
                 "allowed_model_keys": profile.allowed_model_keys,
                 "default_model_key": profile.default_model_key,
                 "fallback_model_key": profile.fallback_model_key,
                 "provider_requirement": profile.provider_requirement,
                 "mapped_helpers": profile.mapped_helpers,
+                "authority_boundary": profile.authority_boundary,
+                "context_refs": profile.context_refs,
+                "config_refs": profile.config_refs,
+                "support_write_scope": profile.support_write_scope,
+                "inactive_behavior": profile.inactive_behavior,
                 "registry_path": profile.registry_path,
             },
             indent=2,

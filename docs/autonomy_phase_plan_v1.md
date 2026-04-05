@@ -25,9 +25,10 @@ The phases are cumulative. Each later phase assumes the earlier phase is already
 - Phase 2: manual draft assistance
 - Phase 3: explicit review-and-submit helper
 - Phase 4: gated semi-autonomous support tasks
-- Phase 5: bounded autonomous support orchestration
+- Phase 4.5: bounded behavior activation
 
-The terms "semi-autonomous" and "bounded autonomous" in this document describe operational coordination only.
+Phase 4.5 introduces distinct role behavior without autonomy, loops, retries, or system-driven execution.
+The terms "semi-autonomous" and "bounded autonomous" elsewhere in this document describe operational coordination only.
 They do not mean independent truth-making, approval, or admission.
 
 ## Shared Safety Rules For All Phases
@@ -272,30 +273,31 @@ The helper may perform bounded support tasks end-to-end inside a narrow lane, bu
 - Gate checks are logged before execution
 - A rollback path exists for every supported workflow
 
-## Phase 5: Bounded Autonomous Support Orchestration
+## Phase 4.5: Bounded Behavior Activation
 
 ### Intent
 
-This phase is a cautious extension of Phase 4, not a leap to full autonomy.
+This phase is a cautious extension of Phase 4, not a leap to autonomy.
 
-The system may independently initiate or continue narrowly bounded support work only when the task class, scope, and stop conditions have all been pre-approved by policy.
+The system may activate distinct bounded role behavior inside already-declared lanes when the role contract, scope, and stop conditions have all been pre-approved by policy.
+It does not independently initiate support work, retry failures, or continue execution on its own.
 
 ### Allowed Capabilities
 
-- Auto-start pre-approved support tasks within a fixed catalog
-- Auto-retry bounded non-authoritative failures within a capped budget
-- Auto-replace a failing disposable helper within the same lane
-- Auto-route results to the correct support or review lane
-- Auto-defer when the world state or governance state is not suitable
+- Activate distinct bounded role behavior within a fixed contract
+- Enforce lightweight output structure for approved role seams
+- Produce useful first-pass derived outputs inside the already-declared lane
+- Defer to existing scripted paths when runtime is inactive or the task is blocked
+- Preserve inspectable role separation without changing authority boundaries
 
 ### Forbidden Capabilities
 
 - Any direct truth authority
 - Any ability to override governance decisions
-- Any ability to invent new task classes
+- Any ability to invent new task classes or new runtime seams
 - Any ability to widen scope without operator approval
 - Any ability to mutate collective memory or approve admission
-- Any autonomous loop that persists past its allowed boundary or TTL
+- Any autonomous loop, retry budget, background trigger, or self-start behavior
 
 ### Write Boundaries
 
@@ -305,31 +307,31 @@ The system may independently initiate or continue narrowly bounded support work 
 
 ### Observability Requirements
 
-- Must log every autonomous trigger with its policy reason
-- Must emit gate state, task class, helper replacement count, retry count, and stop reason
-- Must expose a full audit trail of every autonomous decision
-- Must be machine-readable enough for an operator to reconstruct the whole run
+- Must expose the active role contract and output structure in config and docs
+- Must keep role behavior inspectable enough for an operator to reconstruct what the role is allowed to emit
+- Must preserve gate state and bounded lane references
+- Must remain machine-readable enough for runtime-profile inspection and audit
 
 ### Kill Switch Behavior
 
-- Global Return All wins over all auto-start logic
-- Nanny hot forces immediate pause or defer
-- Operator revocation halts the orchestration graph
+- Global Return All still wins over role activation
+- Nanny hot still forces immediate pause or defer
+- Operator revocation still halts the underlying bounded workflow
 - A failed audit trail should collapse the phase back to Phase 4 behavior
 
 ### Rollback Conditions
 
-- Repeated drift outside the approved support class
-- Any attempt to infer new authority from repeated success
+- Role behavior drifts outside the approved structured contract
+- Any attempt to infer new authority from distinct role behavior
 - Any safety invariant failure in the gate layer
-- Any inability to reconstruct the autonomous decision path
+- Any inability to reconstruct the bounded output contract and lane
 
 ### Preconditions For Entry
 
 - Phase 4 has been stable over time
-- The supported task catalog is closed and versioned
-- Each autonomous lane has a clear stop condition, retry cap, and rollback path
-- Auditability is strong enough to justify machine-triggered execution
+- The supported role seams and task catalog are closed and versioned
+- Each bounded role lane has a clear stop condition and rollback path
+- Auditability is strong enough to justify bounded behavior activation without machine-triggered execution
 - Governance remains the only source of truth for any truth-adjacent outcome
 
 ## Phase Transition Rules
@@ -339,7 +341,7 @@ Transitions must be explicit and versioned.
 - Phase 1 to Phase 2 requires stable observation, clean logging, and no unauthorized writes
 - Phase 2 to Phase 3 requires draft provenance, review visibility, and safe operator submission
 - Phase 3 to Phase 4 requires bounded support orchestration with hard write boundaries
-- Phase 4 to Phase 5 requires closed task classes, gated retries, and audited autonomous triggers
+- Phase 4 to Phase 4.5 requires closed role contracts, bounded output structure, and audited behavior activation
 
 No phase may be skipped unless a separate governance document explicitly authorizes the skip.
 
@@ -361,6 +363,6 @@ The most conservative reading is the correct reading:
 
 ## Summary
 
-This roadmap intentionally stops short of full autonomy.
+This roadmap intentionally stops short of autonomy.
 
-It gives Spinetop a path from manual observation to bounded autonomous support orchestration while keeping truth authority, governance, and admission outside helper control.
+It gives Spinetop a path from manual observation to Phase 4.5 bounded behavior activation while keeping truth authority, governance, and admission outside helper control.

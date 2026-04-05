@@ -198,6 +198,10 @@ def validate_helper_models(models: set[str]) -> list[str]:
         if execution_backend not in {"scripted", "model_backed"}:
             issues.append(f"helper role {role_id} execution_backend must be scripted or model_backed")
 
+        role_description = str(role.get("role_description") or "").strip()
+        if not role_description:
+            issues.append(f"helper role {role_id} role_description must be a non-empty string")
+
         allowed_model_keys = role.get("allowed_model_keys", [])
         if not isinstance(allowed_model_keys, list) or not all(isinstance(item, str) for item in allowed_model_keys):
             issues.append(f"helper role {role_id} allowed_model_keys must be a list of strings")
@@ -223,6 +227,35 @@ def validate_helper_models(models: set[str]) -> list[str]:
         mapped_helpers = role.get("mapped_helpers", [])
         if not isinstance(mapped_helpers, list) or not all(isinstance(item, str) and item.strip() for item in mapped_helpers):
             issues.append(f"helper role {role_id} mapped_helpers must be a list of non-empty strings")
+
+        for field_name in ("context_refs", "config_refs", "support_write_scope"):
+            value = role.get(field_name, [])
+            if value is None:
+                value = []
+            if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
+                issues.append(f"helper role {role_id} {field_name} must be a list of non-empty strings")
+
+        inactive_behavior = str(role.get("inactive_behavior") or "disabled_safe").strip() or "disabled_safe"
+        if inactive_behavior != "disabled_safe":
+            issues.append(f"helper role {role_id} inactive_behavior must be disabled_safe")
+
+        authority_boundary = role.get("authority_boundary")
+        if authority_boundary is not None:
+            if not isinstance(authority_boundary, dict):
+                issues.append(f"helper role {role_id} authority_boundary must be an object")
+            else:
+                for field_name in ("may_read", "may_write_only", "may_not"):
+                    value = authority_boundary.get(field_name, [])
+                    if value is None:
+                        value = []
+                    if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
+                        issues.append(
+                            f"helper role {role_id} authority_boundary.{field_name} must be a list of non-empty strings"
+                        )
+                for field_name in ("derived_outputs_only", "returns_must_remain_structured"):
+                    value = authority_boundary.get(field_name)
+                    if value is not None and not isinstance(value, bool):
+                        issues.append(f"helper role {role_id} authority_boundary.{field_name} must be boolean")
 
     return issues
 

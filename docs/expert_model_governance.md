@@ -1,10 +1,11 @@
 # Expert Model Governance
 
-## Why There Are Two Hermeses
+## Why Sentinel And Hermes Agent Must Stay Distinct
 
-- Hermes-Spinetop is an internal steward focused on operational stability, validation, and petitioning.
+- Sentinel-Spinetop is the internal steward focused on operational stability, validation, and petitioning.
 - Hermes-Spinelab is an external controller/scout that gathers signals and writes petitions, but does not define canonical truth.
-- The separation prevents cross-contamination of exploratory work with truth-pipeline operations.
+- Hermes Agent is the external Nous framework/runtime and is not the same role as Sentinel-Spinetop.
+- The separation prevents cross-contamination of exploratory work with truth-pipeline operations and reduces operator confusion.
 
 ## Why Local-First Matters
 

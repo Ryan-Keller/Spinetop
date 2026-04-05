@@ -169,10 +169,10 @@ Actors are defined by permissions, not by intelligence.
 - Storage-only behavior.
 - Must obey return_all and nanny pressure.
 
-### Hermes-Spinetop
+### Sentinel-Spinetop
 
 - Licensed worker in the city.
-- May observe, validate, and petition.
+- May observe, inspect, flag, and petition.
 - Must not approve to collective.
 - Must not write directly to truth layers.
 

@@ -24,7 +24,8 @@ REQUEST_DIR = ORCH_ROOT / "requests"
 INSTANCE_DIR = ORCH_ROOT / "instances"
 ARTIFACT_DIR = ORCH_ROOT / "artifacts"
 EVENT_LOG = ORCH_ROOT / "events.jsonl"
-HELPER_2B_RUNTIME_PROFILE = load_helper_runtime_profile("helper_2b")
+HELPER_RUNTIME_ROLE = "spinetop-helper_2b"
+HELPER_RUNTIME_PROFILE = load_helper_runtime_profile(HELPER_RUNTIME_ROLE)
 
 HELPER_CATALOG: dict[str, dict[str, Any]] = {
     "retrieval_helper_2b": {
@@ -49,13 +50,20 @@ HELPER_CATALOG: dict[str, dict[str, Any]] = {
             "memory/drafts/",
         ],
         "default_ttl_seconds": 900,
-        "runtime_role": "helper_2b",
+        "runtime_role": HELPER_RUNTIME_ROLE,
         "runtime_profile": {
-            "execution_backend": HELPER_2B_RUNTIME_PROFILE.execution_backend,
-            "allowed_model_keys": HELPER_2B_RUNTIME_PROFILE.allowed_model_keys,
-            "default_model_key": HELPER_2B_RUNTIME_PROFILE.default_model_key,
-            "fallback_model_key": HELPER_2B_RUNTIME_PROFILE.fallback_model_key,
-            "provider_requirement": HELPER_2B_RUNTIME_PROFILE.provider_requirement,
+            "role_description": HELPER_RUNTIME_PROFILE.role_description,
+            "execution_backend": HELPER_RUNTIME_PROFILE.execution_backend,
+            "allowed_model_keys": HELPER_RUNTIME_PROFILE.allowed_model_keys,
+            "default_model_key": HELPER_RUNTIME_PROFILE.default_model_key,
+            "fallback_model_key": HELPER_RUNTIME_PROFILE.fallback_model_key,
+            "provider_requirement": HELPER_RUNTIME_PROFILE.provider_requirement,
+            "authority_boundary": HELPER_RUNTIME_PROFILE.authority_boundary,
+            "context_refs": HELPER_RUNTIME_PROFILE.context_refs,
+            "config_refs": HELPER_RUNTIME_PROFILE.config_refs,
+            "support_write_scope": HELPER_RUNTIME_PROFILE.support_write_scope,
+            "inactive_behavior": HELPER_RUNTIME_PROFILE.inactive_behavior,
+            "behavior_contract": HELPER_RUNTIME_PROFILE.behavior_contract,
         },
         "expected_outputs": [
             "support log receipt",
@@ -93,17 +101,25 @@ HELPER_CATALOG: dict[str, dict[str, Any]] = {
             "max_items": 12,
         },
         "default_ttl_seconds": 1200,
-        "runtime_role": "helper_2b",
+        "runtime_role": HELPER_RUNTIME_ROLE,
         "runtime_profile": {
-            "execution_backend": HELPER_2B_RUNTIME_PROFILE.execution_backend,
-            "allowed_model_keys": HELPER_2B_RUNTIME_PROFILE.allowed_model_keys,
-            "default_model_key": HELPER_2B_RUNTIME_PROFILE.default_model_key,
-            "fallback_model_key": HELPER_2B_RUNTIME_PROFILE.fallback_model_key,
-            "provider_requirement": HELPER_2B_RUNTIME_PROFILE.provider_requirement,
+            "role_description": HELPER_RUNTIME_PROFILE.role_description,
+            "execution_backend": HELPER_RUNTIME_PROFILE.execution_backend,
+            "allowed_model_keys": HELPER_RUNTIME_PROFILE.allowed_model_keys,
+            "default_model_key": HELPER_RUNTIME_PROFILE.default_model_key,
+            "fallback_model_key": HELPER_RUNTIME_PROFILE.fallback_model_key,
+            "provider_requirement": HELPER_RUNTIME_PROFILE.provider_requirement,
+            "authority_boundary": HELPER_RUNTIME_PROFILE.authority_boundary,
+            "context_refs": HELPER_RUNTIME_PROFILE.context_refs,
+            "config_refs": HELPER_RUNTIME_PROFILE.config_refs,
+            "support_write_scope": HELPER_RUNTIME_PROFILE.support_write_scope,
+            "inactive_behavior": HELPER_RUNTIME_PROFILE.inactive_behavior,
+            "behavior_contract": HELPER_RUNTIME_PROFILE.behavior_contract,
         },
         "expected_outputs": [
             "support log receipt",
             "run receipt artifact",
+            "separate helper thinking artifact when helper-local reasoning is emitted",
             "blocked or failed receipt when the task cannot proceed",
         ],
     },

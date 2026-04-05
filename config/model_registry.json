@@ -14,7 +14,7 @@
       "provider": "ollama",
       "model": "qwen2.5-coder:14b",
       "class": "production_local",
-      "intended_use": ["deeper reasoning", "repair analysis", "complex summaries", "default Hermes runs"]
+      "intended_use": ["deeper reasoning", "repair analysis", "complex summaries", "default Sentinel runs"]
     },
     "api_reasoning": {
       "provider": "api",

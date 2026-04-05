@@ -21,7 +21,7 @@ from support_validation import (
 
 ROOT = repo_root()
 HELPER_TYPE = "runner_helper_2b"
-RUNTIME_ROLE = "helper_2b"
+RUNTIME_ROLE = "spinetop-helper_2b"
 RUN_DIR = ROOT / "logs" / "support" / "runs"
 RUN_DIR.mkdir(parents=True, exist_ok=True)
 HELPER_RUNTIME_PROFILE = load_helper_runtime_profile(RUNTIME_ROLE)
@@ -63,15 +63,23 @@ CONTRACT = {
     "return_lane": "logs/support/orchestration/",
     "runtime_role": RUNTIME_ROLE,
     "runtime_profile": {
+        "role_description": HELPER_RUNTIME_PROFILE.role_description,
         "execution_backend": HELPER_RUNTIME_PROFILE.execution_backend,
         "allowed_model_keys": HELPER_RUNTIME_PROFILE.allowed_model_keys,
         "default_model_key": HELPER_RUNTIME_PROFILE.default_model_key,
         "fallback_model_key": HELPER_RUNTIME_PROFILE.fallback_model_key,
         "provider_requirement": HELPER_RUNTIME_PROFILE.provider_requirement,
+        "authority_boundary": HELPER_RUNTIME_PROFILE.authority_boundary,
+        "context_refs": HELPER_RUNTIME_PROFILE.context_refs,
+        "config_refs": HELPER_RUNTIME_PROFILE.config_refs,
+        "support_write_scope": HELPER_RUNTIME_PROFILE.support_write_scope,
+        "inactive_behavior": HELPER_RUNTIME_PROFILE.inactive_behavior,
+        "behavior_contract": HELPER_RUNTIME_PROFILE.behavior_contract,
     },
     "expected_outputs": [
         "run transcript",
         "task result",
+        "separate helper thinking artifact when helper-local reasoning is emitted",
         "failure note when the run cannot complete",
     ],
 }
@@ -265,12 +273,83 @@ def _build_receipt(
     }
 
 
+def _thinking_target(output_path: Path) -> Path:
+    suffix = "".join(output_path.suffixes)
+    if suffix:
+        return output_path.with_name(output_path.name[: -len(suffix)] + ".thinking" + suffix)
+    return output_path.with_name(output_path.name + ".thinking.json")
+
+
+def _build_helper_thinking(
+    instance: dict[str, Any],
+    *,
+    receipt_status: str,
+    receipt_reason: str,
+    step_transcript: list[dict[str, Any]],
+) -> dict[str, Any]:
+    contradictions: list[str] = []
+    open_questions: list[str] = []
+
+    status = str(instance.get("status") or "").strip()
+    if status and status != "active":
+        contradictions.append(f"instance status is {status}, so the bounded run could not proceed normally")
+    if receipt_status == "blocked":
+        open_questions.append(receipt_reason)
+    if receipt_status == "complete" and not step_transcript:
+        contradictions.append("receipt marked complete but no steps were recorded")
+
+    observations = [
+        f"task scope: {str(instance.get('task_scope') or '').strip()}",
+        f"task plan count: {len(list(instance.get('task_plan') or []))}",
+        f"return lane: {str(instance.get('return_lane') or '').strip()}",
+        f"runner receipt status: {receipt_status}",
+    ]
+    observations = [item for item in observations if item.split(':', 1)[-1].strip()]
+    observations.extend([f"contradiction: {item}" for item in contradictions])
+
+    if receipt_status == "complete":
+        possible_next_steps = [
+            "review the external receipt before scheduling more bounded work",
+            "check whether any local contradiction note needs a separate follow-up helper",
+        ]
+    else:
+        possible_next_steps = [
+            "inspect the blocking condition in the external receipt",
+            "confirm whether the helper should be replaced or the mandate should be retried",
+        ]
+
+    if not open_questions and contradictions:
+        open_questions.append("Does the contradiction need escalation to another bounded helper or reviewer?")
+
+    return {
+        "helper_id": instance["helper_id"],
+        "helper_type": instance["helper_type"],
+        "role_id": RUNTIME_ROLE,
+        "artifact_kind": "helper_internal_thinking",
+        "thinking_style": list(HELPER_RUNTIME_PROFILE.behavior_contract.get("thinking_style") or []),
+        "output_structure": list(HELPER_RUNTIME_PROFILE.behavior_contract.get("output_structure") or []),
+        "current_context": [
+            f"mandate: {str(instance.get('mandate_id') or '').strip()}",
+            f"requested by: {str(instance.get('requested_by') or '').strip()}",
+            f"active task: {str(instance.get('task_scope') or '').strip()}",
+        ],
+        "key_observations": observations,
+        "possible_next_steps": possible_next_steps,
+        "open_questions": open_questions,
+        "highlighted_contradictions": contradictions,
+        "separation_note": str(HELPER_RUNTIME_PROFILE.behavior_contract.get("separation_rule") or "").strip(),
+        "derived_only": True,
+    }
+
+
 def run_instance(instance_path: Path) -> int:
     instance = validate_runner_instance(_load_json(instance_path), path=instance_path)
     output_path = _output_target(instance)
     if not _can_write(output_path, list(instance.get("write_scope") or [])):
         raise RunnerHelperError(f"output path {output_path} is outside write_scope{_path_hint(instance_path)}")
     artifact_ref = _path_to_ref(output_path)
+    thinking_path = _thinking_target(output_path)
+    thinking_ref = _path_to_ref(thinking_path)
 
     expires_at = _parse_iso(instance["expires_at"], path=instance_path, field="expires_at")
     now = utc_now()
@@ -283,6 +362,15 @@ def run_instance(instance_path: Path) -> int:
             step_transcript=[],
             outputs_refs=[artifact_ref],
         )
+        _write_json(
+            thinking_path,
+            _build_helper_thinking(
+                instance,
+                receipt_status="blocked",
+                receipt_reason=f"helper status is {instance['status']}",
+                step_transcript=[],
+            ),
+        )
         _write_json(output_path, receipt)
         print(artifact_ref)
         return 1
@@ -294,6 +382,15 @@ def run_instance(instance_path: Path) -> int:
             reason="ttl expired before task could run",
             step_transcript=[],
             outputs_refs=[artifact_ref],
+        )
+        _write_json(
+            thinking_path,
+            _build_helper_thinking(
+                instance,
+                receipt_status="blocked",
+                receipt_reason="ttl expired before task could run",
+                step_transcript=[],
+            ),
         )
         _write_json(output_path, receipt)
         try:
@@ -317,6 +414,15 @@ def run_instance(instance_path: Path) -> int:
             step_transcript=[],
             outputs_refs=[artifact_ref],
         )
+        _write_json(
+            thinking_path,
+            _build_helper_thinking(
+                instance,
+                receipt_status="blocked",
+                receipt_reason="task_plan is required",
+                step_transcript=[],
+            ),
+        )
         _write_json(output_path, receipt)
         try:
             support_orchestration.mark_status(
@@ -337,6 +443,15 @@ def run_instance(instance_path: Path) -> int:
         reason=f"completed {len(step_transcript)} step(s)",
         step_transcript=step_transcript,
         outputs_refs=[artifact_ref],
+    )
+    _write_json(
+        thinking_path,
+        _build_helper_thinking(
+            instance,
+            receipt_status="complete",
+            receipt_reason=f"completed {len(step_transcript)} step(s)",
+            step_transcript=step_transcript,
+        ),
     )
     _write_json(output_path, receipt)
     try:

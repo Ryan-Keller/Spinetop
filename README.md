@@ -15,10 +15,12 @@ Start here:
 - [Memory Migration Check](scripts/check_memory_schema_migration.py)
 - [Knowledge Flow](docs/knowledge_flow_README.md)
 - [Architecture](docs/architecture.md)
+- [Mirror Contract](docs/mirror_contract_v1.md)
 
 Core reminders:
 
 - Spinetop is the canonical governed memory system.
 - Spinelab may propose, but does not define truth.
 - Honcho is storage-only.
+- Mirror is Honcho read-only and mission-local only.
 - New truth requires governance.

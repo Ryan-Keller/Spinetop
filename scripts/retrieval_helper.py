@@ -24,7 +24,7 @@ from support_validation import (
 
 ROOT = repo_root()
 HELPER_TYPE = "retrieval_helper_2b"
-RUNTIME_ROLE = "helper_2b"
+RUNTIME_ROLE = "spinetop-helper_2b"
 ALLOWED_WRITE_SCOPE = ["logs/support/orchestration/", "logs/support/retrieval/", "memory/drafts/"]
 ALLOWED_RESULT_STATUSES = {"complete", "partial", "none_found", "blocked", "failed"}
 ALLOWED_INSTANCE_STATUSES = {
@@ -46,6 +46,8 @@ APPROVED_READ_ROOTS = [
     ROOT / "scripts",
     ROOT / "config",
     ROOT / "experts",
+    ROOT / "expeditions" / "active",
+    ROOT / "workbench" / "missions",
     ROOT / "memory" / "inbox",
     ROOT / "memory" / "promotion",
     ROOT / "memory" / "dispatch" / "pending",
@@ -85,11 +87,17 @@ CONTRACT = {
     "support_write_root": "logs/support/",
     "runtime_role": RUNTIME_ROLE,
     "runtime_profile": {
+        "role_description": HELPER_RUNTIME_PROFILE.role_description,
         "execution_backend": HELPER_RUNTIME_PROFILE.execution_backend,
         "allowed_model_keys": HELPER_RUNTIME_PROFILE.allowed_model_keys,
         "default_model_key": HELPER_RUNTIME_PROFILE.default_model_key,
         "fallback_model_key": HELPER_RUNTIME_PROFILE.fallback_model_key,
         "provider_requirement": HELPER_RUNTIME_PROFILE.provider_requirement,
+        "authority_boundary": HELPER_RUNTIME_PROFILE.authority_boundary,
+        "context_refs": HELPER_RUNTIME_PROFILE.context_refs,
+        "config_refs": HELPER_RUNTIME_PROFILE.config_refs,
+        "support_write_scope": HELPER_RUNTIME_PROFILE.support_write_scope,
+        "inactive_behavior": HELPER_RUNTIME_PROFILE.inactive_behavior,
     },
 }
 

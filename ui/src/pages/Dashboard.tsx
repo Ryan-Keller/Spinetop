@@ -115,6 +115,28 @@ type MirrorDoorTestStatus = {
   error?: string;
 };
 
+type Helper2bRuntimeStatus = {
+  available: boolean;
+  configured: boolean;
+  enabled: boolean;
+  role_id: string;
+  execution_backend?: string;
+  provider_requirement?: string;
+  default_model_key?: string;
+  fallback_model_key?: string;
+  provider?: string;
+  model?: string;
+  mapped_helpers?: string[];
+  role_description?: string;
+  liveness?: string;
+  notes?: string[];
+  authority_boundary?: {
+    derived_outputs_only?: boolean;
+    returns_must_remain_structured?: boolean;
+  };
+  error?: string;
+};
+
 type StripTone = "good" | "watch" | "off";
 
 type StorageAreaSummary = {
@@ -344,6 +366,35 @@ type WorkbenchFolder = {
   newest_modified_at: string;
 };
 
+type AssumptionConfirmation = {
+  operator_status: string;
+  operator_note: string;
+  operator_updated_at: string;
+};
+
+type AssumptionEntry = {
+  assumption_id: string;
+  mission_id: string;
+  created_at: string;
+  updated_at: string;
+  text: string;
+  reason: string;
+  confidence: number;
+  basis_refs: string[];
+  invalidation_triggers: string[];
+  status: string;
+  confirmation: AssumptionConfirmation;
+  derived_only: boolean;
+};
+
+type AssumptionChange = {
+  assumption_id: string;
+  text: string;
+  status: string;
+  updated_at: string;
+  operator_status: string;
+};
+
 type WorkbenchSummary = {
   root: string;
   folders: WorkbenchFolder[];
@@ -375,6 +426,12 @@ type ExpeditionDetail = {
   latest_clarification_packet?: Record<string, unknown> | null;
   latest_runner_return?: RunnerReturn | Record<string, unknown> | null;
   runner_return_count?: number;
+  assumptions?: AssumptionEntry[];
+  active_assumption_count?: number;
+  assumption_count?: number;
+  assumptions_last_updated?: string;
+  assumption_review_needed?: boolean;
+  latest_assumption_changes?: AssumptionChange[];
   parking_status?: {
     mission_id: string;
     status: "active" | "parked";
@@ -456,6 +513,7 @@ type StatusResponse = {
   nanny: NannyState;
   dispatch_counts: DispatchCounts;
   support_helper_activity?: SupportHelperActivity;
+  helper_2b_runtime?: Helper2bRuntimeStatus;
   mirror_door_test: MirrorDoorTestStatus;
   storage_overview?: StorageOverview;
 };
@@ -607,6 +665,31 @@ const fallbackData: StatusResponse = {
         source_file: "logs/support/retrieval/instances/retrieval_helper_2b_20260404T061154418152Z_8d4f5af9.json",
       },
     ],
+  },
+  helper_2b_runtime: {
+    available: true,
+    configured: true,
+    enabled: false,
+    role_id: "spinetop_expeditioner",
+    execution_backend: "scripted",
+    provider_requirement: "local_only",
+    default_model_key: "",
+    fallback_model_key: "",
+    provider: "",
+    model: "",
+    mapped_helpers: ["retrieval_helper_2b", "runner_helper_2b"],
+    role_description: "Spinetop-Expeditioner is the mission-local task worker for first-pass derived outputs.",
+    liveness: "disabled_safe_inactive",
+    notes: [
+      "Mission work stays bounded to mission-local and workbench lanes.",
+      "Spinetop-Expeditioner is not Sentinel, helper_2b, or Mirror.",
+      "Spinetop-Expeditioner does not approve, create truth, or bypass governance.",
+      "If runtime is inactive, the seam stays disabled-safe and returns structured receipts only.",
+    ],
+    authority_boundary: {
+      derived_outputs_only: true,
+      returns_must_remain_structured: true,
+    },
   },
   mirror_door_test: {
     available: false,
@@ -1156,6 +1239,24 @@ function getRecordObject(record: unknown, key: string): Record<string, unknown> 
   return value as Record<string, unknown>;
 }
 
+function formatConfidence(value: number | null | undefined, fallback = "unknown"): string {
+  if (value == null || !Number.isFinite(value)) return fallback;
+  return value.toFixed(2);
+}
+
+function assumptionStatusBadgeStyle(status: string): React.CSSProperties {
+  if (status === "accepted") return { ...styles.badge, ...styles.badgeGood };
+  if (status === "rejected" || status === "invalidated") return { ...styles.badge, ...styles.badgeBad };
+  if (status === "resolved") return { ...styles.badge };
+  return { ...styles.badge, ...styles.badgeWarn };
+}
+
+function assumptionOperatorBadgeStyle(operatorStatus: string): React.CSSProperties {
+  if (operatorStatus === "accepted") return { ...styles.badge, ...styles.badgeGood };
+  if (operatorStatus === "rejected") return { ...styles.badge, ...styles.badgeBad };
+  return { ...styles.badge, ...styles.badgeWarn };
+}
+
 export default function Dashboard() {
   const [viewMode, setViewMode] = useState<"missions" | "diagnostics">("missions");
   const [data, setData] = useState<StatusResponse>(fallbackData);
@@ -1170,6 +1271,7 @@ export default function Dashboard() {
   const [showDuplicateMissions, setShowDuplicateMissions] = useState(false);
   const [workbenchFolder, setWorkbenchFolder] = useState("intake");
   const [selectedDraftPath, setSelectedDraftPath] = useState<string | null>(null);
+  const [showAllAssumptions, setShowAllAssumptions] = useState(false);
   const [uiNotice, setUiNotice] = useState<UiNotice | null>(null);
   const [missionLoading, setMissionLoading] = useState(false);
   const [missionSaving, setMissionSaving] = useState(false);
@@ -1272,6 +1374,10 @@ export default function Dashboard() {
   }, [expeditions, selectedMissionId]);
 
   useEffect(() => {
+    setShowAllAssumptions(false);
+  }, [selectedMissionId]);
+
+  useEffect(() => {
     let cancelled = false;
     if (!selectedMissionId) {
       setSelectedMission(null);
@@ -1366,6 +1472,12 @@ export default function Dashboard() {
     items: [],
     source_dirs: {},
   };
+  const helper2bRuntime: Helper2bRuntimeStatus = data.helper_2b_runtime ?? fallbackData.helper_2b_runtime ?? {
+    available: false,
+    configured: false,
+    enabled: false,
+    role_id: "spinetop_expeditioner",
+  };
   const mirrorDoorTest: MirrorDoorTestStatus = data.mirror_door_test ?? fallbackData.mirror_door_test ?? {
     available: false,
     script_path: "",
@@ -1385,6 +1497,11 @@ export default function Dashboard() {
     : (supportActivity.status_counts.blocked ?? 0) > 0
       ? "watch"
       : "good";
+  const helper2bTone: StripTone = !helper2bRuntime.available
+    ? "off"
+    : helper2bRuntime.enabled
+      ? "good"
+      : "watch";
   const dispatchTone: StripTone = (dispatchCounts.pending ?? 0) === 0 ? "good" : "watch";
   const nannyTone: StripTone =
     nanny.ok && nanny.temperature === "cool" && (nanny.burst_score ?? 0) === 0 && (nanny.error_score ?? 0) === 0 ? "good" : "watch";
@@ -1415,6 +1532,18 @@ export default function Dashboard() {
   const missionSummary = selectedMission?.mission_summary ?? null;
   const missionParkingStatus = selectedMission?.parking_status ?? null;
   const runnerReturnCount = selectedMission?.runner_return_count ?? 0;
+  const missionAssumptionEntries = selectedMission?.assumptions ?? [];
+  const missionAssumptionCount = selectedMission?.assumption_count ?? missionAssumptionEntries.length;
+  const missionActiveAssumptionCount =
+    selectedMission?.active_assumption_count ??
+    missionAssumptionEntries.filter((item) => ["active", "accepted"].includes(item.status || "")).length;
+  const missionAssumptionReviewNeeded =
+    selectedMission?.assumption_review_needed ??
+    missionAssumptionEntries.some((item) => item.status === "active" && (item.confirmation?.operator_status || "unreviewed") === "unreviewed");
+  const missionAssumptionChanges = selectedMission?.latest_assumption_changes ?? [];
+  const missionAssumptionsLastUpdated = selectedMission?.assumptions_last_updated ?? "";
+  const visibleMissionAssumptions = showAllAssumptions ? missionAssumptionEntries : missionAssumptionEntries.slice(0, 3);
+  const hiddenMissionAssumptions = Math.max(0, missionAssumptionEntries.length - visibleMissionAssumptions.length);
   const latestDraftReviewPreview = getRecordObject(latestDraft, "review_preview");
   const latestDraftPreviewPath = getRecordString(latestDraftReviewPreview, "draft_path") || getRecordString(latestDraft, "draft_path");
   const latestDraftSummary =
@@ -1637,6 +1766,78 @@ export default function Dashboard() {
       detail: `Latest files and state were reloaded for ${selectedMissionId}.`,
     });
     setMissionActionLabel("");
+  };
+
+  const refreshAssumptions = async () => {
+    if (!selectedMissionId) {
+      setErrorText("Select an expedition first");
+      return;
+    }
+    try {
+      setMissionSaving(true);
+      setMissionActionLabel("Refreshing assumptions");
+      const res = await fetch(`${API_BASE}/expeditions/${selectedMissionId}/refresh-assumptions`, {
+        method: "POST",
+      });
+      const payload = (await res.json()) as {
+        ok?: boolean;
+        item?: ExpeditionDetail;
+        refresh?: { active_assumption_count?: number };
+        error?: string;
+      };
+      if (!res.ok || !payload.ok || !payload.item) {
+        throw new Error(payload.error || `HTTP ${res.status}`);
+      }
+      setSelectedMission(payload.item);
+      setUiNotice({
+        tone: "good",
+        title: "Assumptions refreshed",
+        detail: `${payload.refresh?.active_assumption_count ?? payload.item.active_assumption_count ?? 0} active mission-local assumptions are now visible.`,
+      });
+      await load();
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "Assumption refresh failed");
+    } finally {
+      setMissionSaving(false);
+      setMissionActionLabel("");
+    }
+  };
+
+  const reviewAssumption = async (assumptionId: string, action: "confirm" | "reject") => {
+    if (!selectedMissionId) {
+      setErrorText("Select an expedition first");
+      return;
+    }
+    try {
+      setMissionSaving(true);
+      setMissionActionLabel(action === "confirm" ? "Accepting assumption" : "Rejecting assumption");
+      const res = await fetch(`${API_BASE}/expeditions/${selectedMissionId}/assumptions/${assumptionId}/${action}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const payload = (await res.json()) as {
+        ok?: boolean;
+        item?: ExpeditionDetail;
+        assumption?: AssumptionEntry;
+        error?: string;
+      };
+      if (!res.ok || !payload.ok || !payload.item) {
+        throw new Error(payload.error || `HTTP ${res.status}`);
+      }
+      setSelectedMission(payload.item);
+      setUiNotice({
+        tone: action === "confirm" ? "good" : "watch",
+        title: action === "confirm" ? "Assumption accepted" : "Assumption rejected",
+        detail: payload.assumption?.text || `Mission-local assumption ${assumptionId} was reviewed.`,
+      });
+      await load();
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "Assumption review failed");
+    } finally {
+      setMissionSaving(false);
+      setMissionActionLabel("");
+    }
   };
 
   const syncRunnerReturns = async () => {
@@ -2389,27 +2590,15 @@ export default function Dashboard() {
                       </div>
                       <div style={styles.previewBox}>
                         <div style={styles.subtleText}>Assumptions in use</div>
-                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column" as const, gap: 8 }}>
-                          {missionSummaryAssumptions.length ? (
-                            missionSummaryAssumptions.map((assumption, index) => (
-                              <div
-                                key={`${assumption}-${index}`}
-                                style={{
-                                  borderRadius: 12,
-                                  border: "1px solid rgba(192,132,252,0.18)",
-                                  background: "rgba(2,6,23,0.45)",
-                                  padding: "8px 10px",
-                                  fontSize: 12,
-                                  color: "#cbd5f5",
-                                  lineHeight: 1.45,
-                                }}
-                              >
-                                • {assumption}
-                              </div>
-                            ))
-                          ) : (
-                            <div style={styles.subtleText}>No active assumptions are needed right now.</div>
-                          )}
+                        <div style={{ marginTop: 8, fontSize: 12, color: "#cbd5f5", lineHeight: 1.55 }}>
+                          {missionActiveAssumptionCount
+                            ? `${missionActiveAssumptionCount} active derived assumption${missionActiveAssumptionCount === 1 ? "" : "s"} in the mission-local ledger.`
+                            : missionSummaryAssumptions.length
+                              ? `${missionSummaryAssumptions.length} assumption summary line${missionSummaryAssumptions.length === 1 ? "" : "s"} carried forward.`
+                              : "No active assumptions are needed right now."}
+                        </div>
+                        <div style={{ marginTop: 8, ...styles.subtleText }}>
+                          Derived and mission-local only. Not canonical truth, approval, or resolution. Review details stay in the Assumptions ledger below.
                         </div>
                       </div>
                       <div style={styles.previewBox}>
@@ -2603,21 +2792,186 @@ export default function Dashboard() {
                   <div style={styles.recordCard}>
                     <div style={styles.recordMetaRow}>
                       <div>
+                        <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Assumptions</div>
+                        <div style={styles.subtleText}>
+                          Derived, mission-local working premises. Not canonical truth. Not approval. Not resolution.
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                        <span style={{ ...styles.badge, ...styles.badgeWarn }}>{missionActiveAssumptionCount} active</span>
+                        <span style={styles.badge}>{missionAssumptionCount} total</span>
+                        <span style={{ ...styles.badge, ...(missionAssumptionReviewNeeded ? styles.badgeWarn : styles.badgeGood) }}>
+                          {missionAssumptionReviewNeeded ? "review needed" : "review current"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
+                      <motion.button
+                        type="button"
+                        onClick={() => refreshAssumptions()}
+                        style={styles.secondaryButton}
+                        disabled={missionLoading || missionSaving || loading}
+                        whileHover={{ scale: 1.02 }}
+                        whileTap={{ scale: 0.98 }}
+                      >
+                        {missionActionLabel === "Refreshing assumptions" ? "Refreshing..." : "Refresh assumptions"}
+                      </motion.button>
+                      {missionAssumptionsLastUpdated ? <span style={styles.badge}>updated {missionAssumptionsLastUpdated}</span> : null}
+                    </div>
+
+                    <div
+                      style={{
+                        marginTop: 12,
+                        borderRadius: 14,
+                        border: "1px solid rgba(251,191,36,0.24)",
+                        background: "rgba(120,53,15,0.16)",
+                        padding: 12,
+                      }}
+                    >
+                      <div style={{ fontSize: 12, color: "#fde68a", lineHeight: 1.55 }}>
+                        Derived. Mission-local. Not canonical truth. Not approval. Not resolution.
+                      </div>
+                    </div>
+
+                    {missionAssumptionChanges.length ? (
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Latest ledger changes</div>
+                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                          {missionAssumptionChanges.map((change) => (
+                            <div key={`assumption-change-${change.assumption_id}`} style={{ fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
+                              {change.text}
+                              <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 8 }}>
+                                <span style={assumptionStatusBadgeStyle(change.status)}>{change.status}</span>
+                                <span style={assumptionOperatorBadgeStyle(change.operator_status)}>
+                                  {change.operator_status === "unreviewed" ? "review pending" : `operator ${change.operator_status}`}
+                                </span>
+                                {change.updated_at ? <span style={styles.badge}>{change.updated_at}</span> : null}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <div style={{ marginTop: 12, display: "flex", flexDirection: "column" as const, gap: 10 }}>
+                      {visibleMissionAssumptions.length ? (
+                        visibleMissionAssumptions.map((assumption) => {
+                          const operatorStatus = assumption.confirmation?.operator_status || "unreviewed";
+                          const inactive = ["rejected", "resolved", "invalidated"].includes(assumption.status || "");
+                          const reviewable = !["resolved", "invalidated"].includes(assumption.status || "");
+                          return (
+                            <div
+                              key={assumption.assumption_id}
+                              style={{
+                                borderRadius: 16,
+                                border: inactive ? "1px solid rgba(148,163,184,0.18)" : "1px solid rgba(251,191,36,0.24)",
+                                background: inactive ? "rgba(15,23,42,0.5)" : "rgba(120,53,15,0.14)",
+                                padding: 14,
+                                opacity: inactive ? 0.7 : 1,
+                              }}
+                            >
+                              <div style={styles.recordMetaRow}>
+                                <div style={{ fontSize: 14, fontWeight: 600, color: "#f8fafc", lineHeight: 1.45 }}>
+                                  {assumption.text}
+                                </div>
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                                  <span style={assumptionStatusBadgeStyle(assumption.status)}>{assumption.status}</span>
+                                  <span style={assumptionOperatorBadgeStyle(operatorStatus)}>
+                                    {operatorStatus === "unreviewed" ? "review pending" : `operator ${operatorStatus}`}
+                                  </span>
+                                  <span style={styles.badge}>confidence {formatConfidence(assumption.confidence, "0.00")}</span>
+                                </div>
+                              </div>
+
+                              <div style={{ marginTop: 10, fontSize: 12, color: "#fde68a", lineHeight: 1.5 }}>
+                                Reason: {assumption.reason || "No explicit reason was recorded."}
+                              </div>
+
+                              {assumption.invalidation_triggers.length ? (
+                                <div style={{ marginTop: 8 }}>
+                                  <div style={styles.subtleText}>Invalidation triggers</div>
+                                  <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 8 }}>
+                                    {assumption.invalidation_triggers.map((trigger, index) => (
+                                      <span key={`${assumption.assumption_id}-trigger-${index}`} style={styles.badge}>
+                                        {trigger}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : null}
+
+                              <div style={{ marginTop: 8, ...styles.subtleText }}>
+                                Derived premise only. Mission-local only. Not canonical truth, approval, or resolution.
+                              </div>
+
+                              {reviewable ? (
+                                <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
+                                  <motion.button
+                                    type="button"
+                                    onClick={() => reviewAssumption(assumption.assumption_id, "confirm")}
+                                    disabled={missionSaving || missionLoading || loading}
+                                    style={styles.secondaryButton}
+                                    whileHover={{ scale: 1.02 }}
+                                    whileTap={{ scale: 0.98 }}
+                                  >
+                                    {missionActionLabel === "Accepting assumption" ? "Accepting..." : "Accept assumption"}
+                                  </motion.button>
+                                  <motion.button
+                                    type="button"
+                                    onClick={() => reviewAssumption(assumption.assumption_id, "reject")}
+                                    disabled={missionSaving || missionLoading || loading}
+                                    style={styles.secondaryButton}
+                                    whileHover={{ scale: 1.02 }}
+                                    whileTap={{ scale: 0.98 }}
+                                  >
+                                    {missionActionLabel === "Rejecting assumption" ? "Rejecting..." : "Reject assumption"}
+                                  </motion.button>
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <div style={styles.previewBox}>
+                          <div style={{ fontSize: 12, color: "#cbd5f5", lineHeight: 1.55 }}>
+                            No mission-local assumption ledger entries are visible yet. Use refresh when the backend has derived assumptions ready.
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {hiddenMissionAssumptions > 0 ? (
+                      <div style={{ marginTop: 12 }}>
+                        <button
+                          type="button"
+                          onClick={() => setShowAllAssumptions((value) => !value)}
+                          style={styles.secondaryButton}
+                        >
+                          {showAllAssumptions ? "Show fewer assumptions" : `Show ${hiddenMissionAssumptions} more assumptions`}
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div style={styles.recordCard}>
+                    <div style={styles.recordMetaRow}>
+                      <div>
                         <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Mission Activity</div>
                         <div style={styles.subtleText}>
-                          Latest Hermes run, draft, clarification packet, and manifest summary.
+                          Latest Sentinel run, draft, clarification packet, and manifest summary.
                         </div>
                       </div>
                       <span style={{ ...styles.badge, ...styles.badgeGood }}>focused view</span>
                     </div>
                     <div style={{ marginTop: 12, display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
                       <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Latest Hermes run</div>
+                        <div style={styles.subtleText}>Latest Sentinel run</div>
                         <div style={{ marginTop: 4, fontSize: 13, fontWeight: 600, color: "#f5d0fe" }}>
                           {getRecordString(latestHermesRun, "run_id") || selectedMission.latest_run_id || "none"}
                         </div>
                         <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                          {getRecordString(latestHermesRun, "summary") || "No Hermes run recorded yet."}
+                          {getRecordString(latestHermesRun, "summary") || "No Sentinel run recorded yet."}
                         </div>
                       </div>
                       <div style={styles.previewBox}>
@@ -3003,6 +3357,14 @@ export default function Dashboard() {
                   helperLaneSummary,
                   helperTone
                 )}
+                {helper2bRuntime.available ? statusStripCard(
+                  "Expeditioner",
+                  helper2bRuntime.enabled ? "enabled" : "configured",
+                  helper2bRuntime.enabled
+                    ? `${helper2bRuntime.provider || "local"} ${helper2bRuntime.model || helper2bRuntime.default_model_key || "model"}`
+                    : "scripted seam; structured receipts stay operator-visible",
+                  helper2bTone
+                ) : null}
                 {statusStripCard(
                   "Mirror-door",
                   mirrorDoorHealth,
@@ -3018,7 +3380,7 @@ export default function Dashboard() {
           {metricCard("Events", (data.events_recent || []).length, "live flow", Activity)}
           {metricCard("Sessions", data.honcho_sessions_total ?? "ï¿½", "active memory links", Database)}
           {metricCard("Expeditions", expeditions.length, "mission containers", ClipboardList)}
-          {metricCard("Hermes Runs", hermesRuns.filter((item) => item.ok).length, "saved run JSON artifacts", FileText)}
+          {metricCard("Sentinel Runs", hermesRuns.filter((item) => item.ok).length, "saved run JSON artifacts", FileText)}
           {metricCard("Drafts", petitionDrafts.filter((item) => item.ok).length, "memory/drafts records", ClipboardList)}
           {metricCard(
             "Packet Stage",
@@ -3583,9 +3945,9 @@ export default function Dashboard() {
           <div style={styles.panel}>
             <div style={styles.sectionTitleRow}>
               <div>
-                <h2 style={styles.sectionTitle}>Recent Hermes Runs</h2>
+                <h2 style={styles.sectionTitle}>Recent Sentinel Runs</h2>
                 <div style={styles.sectionSubtitle}>
-                  Read-only run JSON artifacts from <span style={styles.mono}>logs/hermes/runs/</span>. This surface never executes Hermes and only mirrors saved run records.
+                  Read-only run JSON artifacts from <span style={styles.mono}>logs/hermes/runs/</span>. This surface presents the internal reviewer role as Sentinel while continuing to read legacy hermes-named records.
                 </div>
               </div>
               <span style={{ ...styles.badge, ...styles.badgeWarn }}>preview-only source</span>
@@ -3664,7 +4026,7 @@ export default function Dashboard() {
                 })
               ) : (
                 <div style={styles.recordCard}>
-                  No Hermes run JSON artifacts were found in <span style={styles.mono}>logs/hermes/runs/</span> yet.
+                  No Sentinel run JSON artifacts were found in <span style={styles.mono}>logs/hermes/runs/</span> yet.
                 </div>
               )}
             </div>
@@ -3828,6 +4190,38 @@ export default function Dashboard() {
             </div>
 
             <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", marginBottom: 16 }}>
+              {helper2bRuntime.available ? (
+                <div style={{ ...styles.recordCard, padding: 12, gridColumn: "1 / -1" }}>
+                  <div style={styles.recordMetaRow}>
+                    <div>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: "#f5d0fe" }}>Spinetop-Expeditioner runtime</div>
+                      <div style={{ marginTop: 4, fontSize: 12, color: "#94a3b8" }}>
+                        {helper2bRuntime.role_description || "Mission-local task worker."}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                      <span style={{ ...styles.badge, ...styles.badgeGood }}>
+                        {helper2bRuntime.configured ? "configured" : "not configured"}
+                      </span>
+                      <span style={{ ...styles.badge, ...(helper2bRuntime.enabled ? styles.badgeGood : styles.badgeWarn) }}>
+                        {helper2bRuntime.enabled ? "enabled" : "disabled"}
+                      </span>
+                      <span style={styles.badge}>{helper2bRuntime.execution_backend || "unknown backend"}</span>
+                    </div>
+                  </div>
+                  <div style={{ marginTop: 10, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
+                    {helper2bRuntime.enabled
+                      ? `Bound to ${helper2bRuntime.provider || helper2bRuntime.provider_requirement || "local"} ${helper2bRuntime.model || helper2bRuntime.default_model_key || "model"}.`
+                      : "Currently configured as a disabled-safe scripted seam rather than a live model-invoked mission worker. Retrieval and runner outputs remain bounded support paths."}
+                  </div>
+                  <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
+                    Derived mission-local worker only. It does not approve, create truth, or bypass governance. External visible returns remain structured receipts.
+                  </div>
+                  <div style={{ marginTop: 6, fontSize: 12, color: "#94a3b8", lineHeight: 1.5 }}>
+                    Mapped helpers: {(helper2bRuntime.mapped_helpers || []).join(", ") || "none"}.
+                  </div>
+                </div>
+              ) : null}
               {Object.entries(supportActivity.lane_counts || {}).map(([lane, count]) => (
                 <div key={lane} style={{ ...styles.recordCard, padding: 12 }}>
                   <div style={styles.subtleText}>{lane}</div>
