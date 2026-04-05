@@ -1,0 +1,24 @@
+{
+  "wsl_distro": "Ubuntu-24.04",
+  "ports": {
+    "backend": 5051,
+    "frontend": 5173
+  },
+  "paths": {
+    "state_root": "state",
+    "log_root": "state/logs",
+    "backend_pid_file": "state/backend.pid",
+    "frontend_pid_file": "state/frontend.pid",
+    "state_file": "state/launcher.json",
+    "backend_log_file": "state/logs/backend.log",
+    "frontend_log_file": "state/logs/frontend.log"
+  },
+  "urls": {
+    "backend": "http://127.0.0.1:5051/api/status",
+    "frontend": "http://127.0.0.1:5173/"
+  },
+  "launch_commands": {
+    "backend": "cd '{RepoWsl}' && mkdir -p services/launcher/state/logs && setsid -f .venv_dashboard/bin/python scripts/dashboard_api.py > '{BackendLogWsl}' 2>&1 < /dev/null && echo backend_started",
+    "frontend": "cd '{UiWsl}' && VITE_SPINETOP_API_BASE=/api setsid -f npm run dev -- --host 0.0.0.0 --strictPort --port {FrontendPort} > '{FrontendLogWsl}' 2>&1 < /dev/null && echo frontend_started"
+  }
+}

@@ -161,9 +161,14 @@ export default function EmissaryReturnGatePage() {
   const [emissaries, setEmissaries] = useState<Emissary[]>(fallbackEmissaries);
   const [selectedId, setSelectedId] = useState<string>(fallbackEmissaries[0].id);
   const [killSwitchArmed, setKillSwitchArmed] = useState(false);
+  const [actionLog, setActionLog] = useState<string[]>([]);
   const selected = emissaries.find((e) => e.id === selectedId) || emissaries[0];
 
   const nodes = useMemo(() => phraseNodes(selected.outsidePhrases), [selected]);
+
+  const pushAction = (message: string) => {
+    setActionLog((prev) => [message, ...prev].slice(0, 4));
+  };
 
   const lockAvatar = (choice: (typeof avatarChoices)[number]) => {
     setEmissaries((prev) =>
@@ -178,10 +183,15 @@ export default function EmissaryReturnGatePage() {
           : e
       )
     );
+    pushAction(`Locked portrait for ${selected.name}: ${choice.label}`);
   };
 
   const handleKillSwitch = () => {
-    setKillSwitchArmed((prev) => !prev);
+    setKillSwitchArmed((prev) => {
+      const next = !prev;
+      pushAction(next ? "Return All to Base armed" : "Return All to Base cleared");
+      return next;
+    });
   };
 
   return (
@@ -219,6 +229,20 @@ export default function EmissaryReturnGatePage() {
               <p style={{ marginTop: 8, color: "#94a3b8", maxWidth: 720 }}>
                 Emissaries are gatherers only. They must lock a portrait before re-entry.
               </p>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 14 }}>
+                <span style={{ ...styles.pill, border: "1px solid rgba(52,211,153,0.35)", background: "rgba(6,78,59,0.22)", color: "#bbf7d0" }}>
+                  selected: {selected.name}
+                </span>
+                <span style={{ ...styles.pill, border: "1px solid rgba(56,189,248,0.35)", background: "rgba(8,47,73,0.22)", color: "#a5f3fc" }}>
+                  portrait: {selected.avatarLocked ? selected.archetype : "unlocked"}
+                </span>
+                <span style={{ ...styles.pill, border: "1px solid rgba(251,191,36,0.35)", background: "rgba(120,53,15,0.22)", color: "#fde68a" }}>
+                  return cache: {selected.returnImages.length} item{selected.returnImages.length === 1 ? "" : "s"}
+                </span>
+                <span style={{ ...styles.pill, border: "1px solid rgba(244,63,94,0.35)", background: killSwitchArmed ? "rgba(190,18,60,0.26)" : "rgba(15,23,42,0.55)", color: killSwitchArmed ? "#fecdd3" : "#cbd5f5" }}>
+                  return all: {killSwitchArmed ? "armed" : "clear"}
+                </span>
+              </div>
             </div>
             <button
               type="button"
@@ -233,9 +257,44 @@ export default function EmissaryReturnGatePage() {
                 fontWeight: 600,
                 cursor: "pointer",
               }}
-            >
-              Return All to Base
+              >
+              {killSwitchArmed ? "Return All Armed" : "Return All to Base"}
             </button>
+          </div>
+        </div>
+
+        <div style={styles.panel}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 600, color: "#f0abfc" }}>Action Receipt</div>
+              <div style={{ marginTop: 4, fontSize: 12, color: "#94a3b8" }}>
+                These buttons are local-state controls, so clicking them should visibly change the page.
+              </div>
+            </div>
+            <span style={{ ...styles.pill, border: "1px solid rgba(217,70,239,0.3)", background: "rgba(2,6,23,0.5)", color: "#e9d5ff" }}>
+              preview only
+            </span>
+          </div>
+          <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 8 }}>
+            {actionLog.length ? (
+              actionLog.map((entry) => (
+                <div
+                  key={entry}
+                  style={{
+                    borderRadius: 14,
+                    border: "1px solid rgba(217,70,239,0.2)",
+                    background: "rgba(2,6,23,0.55)",
+                    padding: "10px 12px",
+                    fontSize: 12,
+                    color: "#cbd5f5",
+                  }}
+                >
+                  {entry}
+                </div>
+              ))
+            ) : (
+              <div style={{ fontSize: 12, color: "#94a3b8" }}>Click a ledger card, portrait choice, or the return button to see action receipts here.</div>
+            )}
           </div>
         </div>
 
@@ -250,7 +309,10 @@ export default function EmissaryReturnGatePage() {
                 {emissaries.map((e) => (
                   <button
                     key={e.id}
-                    onClick={() => setSelectedId(e.id)}
+                    onClick={() => {
+                      setSelectedId(e.id);
+                      pushAction(`Selected emissary ledger card: ${e.name}`);
+                    }}
                     style={{
                       borderRadius: 16,
                       border: selected.id === e.id ? "1px solid rgba(252,211,77,0.4)" : "1px solid rgba(217,70,239,0.2)",

@@ -256,6 +256,22 @@ type ExpeditionSummary = {
   path: string;
 };
 
+type MissionAttentionItem = {
+  key: string;
+  mission_id?: string;
+  title: string;
+  detail: string;
+  badge: string;
+  tone: StripTone;
+};
+
+type CalibrationAxis = {
+  key: string;
+  label: string;
+  value: number;
+  hint: string;
+};
+
 type MissionInputRecord = {
   input_id: string;
   mission_id: string;
@@ -313,9 +329,22 @@ type ExpeditionDetail = {
   latest_draft?: DraftRecord | Record<string, unknown> | null;
   latest_clarification_packet?: Record<string, unknown> | null;
   mission_inputs: MissionInputRecord[];
+  mission_chat: MissionChatMessage[];
   workbench: WorkbenchSummary;
   artifact_count: number;
   input_count: number;
+  chat_count: number;
+};
+
+type MissionChatMessage = {
+  message_id: string;
+  mission_id: string;
+  sender: "user" | "assistant";
+  role: string;
+  message: string;
+  tone: "good" | "watch" | "info" | "bad";
+  created_at: string;
+  kind: string;
 };
 
 type StatusResponse = {
@@ -346,6 +375,16 @@ type ExpeditionDetailResponse = {
   item: ExpeditionDetail | null;
   error?: string;
 };
+
+type NoticeTone = "good" | "watch" | "bad" | "info";
+
+type UiNotice = {
+  tone: NoticeTone;
+  title: string;
+  detail: string;
+};
+
+const API_BASE = (import.meta.env.VITE_SPINETOP_API_BASE as string | undefined)?.trim() || "/api";
 
 const fallbackData: StatusResponse = {
   ok: true,
@@ -947,6 +986,7 @@ function getRecordObject(record: unknown, key: string): Record<string, unknown> 
 }
 
 export default function Dashboard() {
+  const [viewMode, setViewMode] = useState<"missions" | "diagnostics">("missions");
   const [data, setData] = useState<StatusResponse>(fallbackData);
   const [hermesRuns, setHermesRuns] = useState<HermesRun[]>([]);
   const [petitionDrafts, setPetitionDrafts] = useState<DraftRecord[]>([]);
@@ -955,7 +995,21 @@ export default function Dashboard() {
   const [selectedMission, setSelectedMission] = useState<ExpeditionDetail | null>(null);
   const [newMissionObjective, setNewMissionObjective] = useState("");
   const [missionInputText, setMissionInputText] = useState("");
+  const [missionChatText, setMissionChatText] = useState("");
   const [workbenchFolder, setWorkbenchFolder] = useState("intake");
+  const [selectedDraftPath, setSelectedDraftPath] = useState<string | null>(null);
+  const [uiNotice, setUiNotice] = useState<UiNotice | null>(null);
+  const [missionLoading, setMissionLoading] = useState(false);
+  const [missionSaving, setMissionSaving] = useState(false);
+  const [missionActionLabel, setMissionActionLabel] = useState("");
+  const [calibrationAxes, setCalibrationAxes] = useState<CalibrationAxis[]>([
+    { key: "exploration", label: "Exploration pressure", value: 72, hint: "how eagerly the mission explores" },
+    { key: "boundedness", label: "Boundedness", value: 84, hint: "how tightly the mission follows the ask" },
+    { key: "respect", label: "User respect", value: 93, hint: "how carefully the mission handles operator input" },
+    { key: "clarity", label: "Clarity", value: 79, hint: "how cleanly the mission reports back" },
+    { key: "governance", label: "Governance fidelity", value: 88, hint: "how strictly the mission honors the safe lanes" },
+    { key: "uncertainty", label: "Uncertainty tolerance", value: 55, hint: "how boldly the mission handles fuzzy tasks" },
+  ]);
   const [loading, setLoading] = useState(false);
   const [lastRefresh, setLastRefresh] = useState("demo data");
   const [errorText, setErrorText] = useState("");
@@ -971,16 +1025,16 @@ export default function Dashboard() {
     setLoading(true);
     try {
       const [statusResult, runsResult, draftsResult, expeditionsResult] = await Promise.all([
-        loadJson<StatusResponse>("http://127.0.0.1:5051/api/status")
+        loadJson<StatusResponse>(`${API_BASE}/status`)
           .then((value) => ({ ok: true as const, value }))
           .catch((error) => ({ ok: false as const, error })),
-        loadJson<{ ok: boolean; items: HermesRun[] }>("http://127.0.0.1:5051/api/hermes/runs?limit=6")
+        loadJson<{ ok: boolean; items: HermesRun[] }>(`${API_BASE}/hermes/runs?limit=6`)
           .then((value) => ({ ok: true as const, value }))
           .catch((error) => ({ ok: false as const, error })),
-        loadJson<{ ok: boolean; items: DraftRecord[] }>("http://127.0.0.1:5051/api/petition-drafts?limit=6")
+        loadJson<{ ok: boolean; items: DraftRecord[] }>(`${API_BASE}/petition-drafts?limit=6`)
           .then((value) => ({ ok: true as const, value }))
           .catch((error) => ({ ok: false as const, error })),
-        loadJson<ExpeditionsResponse>("http://127.0.0.1:5051/api/expeditions")
+        loadJson<ExpeditionsResponse>(`${API_BASE}/expeditions`)
           .then((value) => ({ ok: true as const, value }))
           .catch((error) => ({ ok: false as const, error })),
       ]);
@@ -1052,7 +1106,8 @@ export default function Dashboard() {
       };
     }
 
-    loadJson<ExpeditionDetailResponse>(`http://127.0.0.1:5051/api/expeditions/${selectedMissionId}`)
+    setMissionLoading(true);
+    loadJson<ExpeditionDetailResponse>(`${API_BASE}/expeditions/${selectedMissionId}`)
       .then((response) => {
         if (cancelled) return;
         setSelectedMission(response.ok && response.item ? response.item : null);
@@ -1063,12 +1118,17 @@ export default function Dashboard() {
       })
       .catch(() => {
         if (!cancelled) setSelectedMission(null);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setMissionLoading(false);
+        }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [selectedMissionId, workbenchFolder, lastRefresh]);
+  }, [selectedMissionId, lastRefresh]);
 
   const packets = useMemo(() => groupPackets(data.events_recent || []), [data.events_recent]);
 
@@ -1155,6 +1215,86 @@ export default function Dashboard() {
   const latestHermesRun = selectedMission?.latest_hermes_run ?? null;
   const latestDraft = selectedMission?.latest_draft ?? null;
   const latestClarificationPacket = selectedMission?.latest_clarification_packet ?? null;
+  const latestDraftReviewPreview = getRecordObject(latestDraft, "review_preview");
+  const latestDraftPreviewPath = getRecordString(latestDraftReviewPreview, "draft_path") || getRecordString(latestDraft, "draft_path");
+  const latestDraftSummary =
+    getRecordObject(latestDraft, "draft") ? getRecordString(getRecordObject(latestDraft, "draft"), "summary") : "";
+  const latestPacketSummary = getRecordString(getRecordObject(latestClarificationPacket, "provisional_answer"), "text");
+  const repeatedItemCount = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const event of data.events_recent || []) {
+      const key = event.record_name || event.event_type || "";
+      if (!key) continue;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    return Array.from(counts.values()).filter((count) => count > 1).reduce((sum, count) => sum + count - 1, 0);
+  }, [data.events_recent]);
+  const attentionItems = useMemo<MissionAttentionItem[]>(() => {
+    const items: MissionAttentionItem[] = [];
+
+    for (const expedition of expeditions) {
+      if (expedition.status_badge === "waiting_for_user" || expedition.current_state === "CLARIFICATION_NEEDED") {
+        items.push({
+          key: `wait-${expedition.mission_id}`,
+          mission_id: expedition.mission_id,
+          title: expedition.objective || expedition.mission_id,
+          detail: expedition.summary || expedition.current_state,
+          badge: expedition.current_state,
+          tone: "watch",
+        });
+      } else if (expedition.status_badge === "ready_for_review" || expedition.current_state === "PACKAGE_READY") {
+        items.push({
+          key: `review-${expedition.mission_id}`,
+          mission_id: expedition.mission_id,
+          title: expedition.objective || expedition.mission_id,
+          detail: expedition.summary || "ready for review",
+          badge: "Ready for review",
+          tone: "good",
+        });
+      } else if (expedition.current_state === "RECONSIDERATION_REQUESTED") {
+        items.push({
+          key: `reconsider-${expedition.mission_id}`,
+          mission_id: expedition.mission_id,
+          title: expedition.objective || expedition.mission_id,
+          detail: expedition.summary || "reconsideration requested",
+          badge: "Reconsider",
+          tone: "watch",
+        });
+      }
+    }
+
+    for (const draft of petitionDrafts) {
+      const preview = draft.review_preview;
+      if (draft.ok && preview && !preview.submission_allowed) {
+        items.push({
+          key: `draft-${draft.source_path || draft.draft?.petition_id || "draft"}`,
+          title: draft.draft?.petition_id || draft.source_path || "draft",
+          detail: preview.submission_gate?.reason || "review preview blocked",
+          badge: "Draft blocked",
+          tone: "watch",
+        });
+      }
+    }
+
+    if (repeatedItemCount > 0) {
+      items.push({
+        key: "noisy-signals",
+        title: "Repeated telemetry",
+        detail: `${repeatedItemCount} repeated record${repeatedItemCount === 1 ? "" : "s"} in recent events`,
+        badge: "Noisy",
+        tone: "watch",
+      });
+    }
+
+    return items.slice(0, 8);
+  }, [expeditions, petitionDrafts, repeatedItemCount]);
+  const blockedWaitingCount = attentionItems.filter((item) => item.key !== "noisy-signals").length;
+  const latestMeaningfulSummary =
+    latestDraftSummary ||
+    getRecordString(latestHermesRun, "summary") ||
+    getRecordString(selectedMission?.manifest, "summary") ||
+    selectedMission?.objective ||
+    "No summary recorded yet.";
 
   const expeditionStatusTone: Record<ExpeditionStatusBadge, StripTone> = {
     waiting_for_user: "watch",
@@ -1163,14 +1303,71 @@ export default function Dashboard() {
     idle: "off",
   };
 
+  const openMissionsView = () => {
+    setViewMode("missions");
+    setUiNotice({
+      tone: "info",
+      title: "Mission view opened",
+      detail: "The active expeditions and focused mission pane are now front and center.",
+    });
+  };
+
+  const openDiagnosticsView = () => {
+    setViewMode("diagnostics");
+    setUiNotice({
+      tone: "info",
+      title: "Diagnostics opened",
+      detail: "Telemetry, storage, drafts, and helper lanes are available below.",
+    });
+  };
+
+  const focusMission = (missionId: string, detail?: string) => {
+    setSelectedMissionId(missionId);
+    setViewMode("missions");
+    setUiNotice({
+      tone: "good",
+      title: "Mission selected",
+      detail: detail || `Focused mission ${missionId}.`,
+    });
+  };
+
+  const refreshMissionDetail = async () => {
+    if (!selectedMissionId) {
+      setErrorText("Select an expedition first");
+      return;
+    }
+    setMissionActionLabel("Refreshing mission detail");
+    await load();
+    setUiNotice({
+      tone: "good",
+      title: "Mission detail refreshed",
+      detail: `Latest files and state were reloaded for ${selectedMissionId}.`,
+    });
+    setMissionActionLabel("");
+  };
+
+  const openReviewPreview = (previewPath?: string | null) => {
+    if (previewPath) {
+      setSelectedDraftPath(previewPath);
+    }
+    setViewMode("diagnostics");
+    setUiNotice({
+      tone: "info",
+      title: "Review preview opened",
+      detail: previewPath ? `Draft preview focus set to ${previewPath}.` : "Draft previews are visible in diagnostics.",
+    });
+  };
+
   const createMission = async () => {
     const objective = newMissionObjective.trim();
     if (!objective) {
-      setErrorText("Using fallback data - objective is required to create an expedition");
+      setErrorText("Objective is required to create an expedition");
       return;
     }
     try {
-      const res = await fetch("http://127.0.0.1:5051/api/expeditions", {
+      setMissionSaving(true);
+      setMissionActionLabel("Creating expedition");
+      const res = await fetch(`${API_BASE}/expeditions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ objective }),
@@ -1184,29 +1381,46 @@ export default function Dashboard() {
       setSelectedMission(payload.item);
       setWorkbenchFolder(payload.item.workbench.folders[0]?.name || "intake");
       setMissionInputText("");
+      setMissionChatText("");
+      setUiNotice({
+        tone: "good",
+        title: "Expedition created",
+        detail: `${payload.item.mission_id} is active and ready for operator input.`,
+      });
+      setViewMode("missions");
       await load();
     } catch (error) {
-      setErrorText(`Using fallback data - ${error instanceof Error ? error.message : "mission creation failed"}`);
+      setErrorText(error instanceof Error ? error.message : "Mission creation failed");
+    } finally {
+      setMissionSaving(false);
+      setMissionActionLabel("");
     }
   };
 
   const sendMissionInput = async () => {
     if (!selectedMissionId) {
-      setErrorText("Using fallback data - select an expedition first");
+      setErrorText("Select an expedition first");
       return;
     }
     const content = missionInputText.trim();
     if (!content) {
-      setErrorText("Using fallback data - mission input cannot be empty");
+      setErrorText("Mission input cannot be empty");
       return;
     }
     try {
-      const res = await fetch(`http://127.0.0.1:5051/api/expeditions/${selectedMissionId}/input`, {
+      setMissionSaving(true);
+      setMissionActionLabel("Sending mission input");
+      const res = await fetch(`${API_BASE}/expeditions/${selectedMissionId}/input`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content }),
       });
-      const payload = (await res.json()) as { ok?: boolean; item?: MissionInputRecord; mission?: ExpeditionDetail; error?: string };
+      const payload = (await res.json()) as {
+        ok?: boolean;
+        item?: MissionInputRecord;
+        mission?: ExpeditionDetail;
+        error?: string;
+      };
       if (!res.ok || !payload.ok) {
         throw new Error(payload.error || `HTTP ${res.status}`);
       }
@@ -1214,9 +1428,63 @@ export default function Dashboard() {
       if (payload.mission) {
         setSelectedMission(payload.mission);
       }
+      setUiNotice({
+        tone: "good",
+        title: "Mission intake saved",
+        detail: "The input landed in the workbench intake folder as unreviewed mission input.",
+      });
       await load();
     } catch (error) {
-      setErrorText(`Using fallback data - ${error instanceof Error ? error.message : "mission input failed"}`);
+      setErrorText(error instanceof Error ? error.message : "Mission input failed");
+    } finally {
+      setMissionSaving(false);
+      setMissionActionLabel("");
+    }
+  };
+
+  const sendMissionChat = async (content: string, quickReply?: string) => {
+    if (!selectedMissionId) {
+      setErrorText("Select an expedition first");
+      return;
+    }
+    const message = content.trim();
+    if (!message) {
+      setErrorText("Chat message cannot be empty");
+      return;
+    }
+    try {
+      setMissionSaving(true);
+      setMissionActionLabel("Sending mission chat");
+      const res = await fetch(`${API_BASE}/expeditions/${selectedMissionId}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: message, quick_reply: quickReply || undefined }),
+      });
+      const payload = (await res.json()) as {
+        ok?: boolean;
+        item?: ExpeditionDetail;
+        messages?: MissionChatMessage[];
+        exchange?: Record<string, unknown>;
+        error?: string;
+      };
+      if (!res.ok || !payload.ok) {
+        throw new Error(payload.error || `HTTP ${res.status}`);
+      }
+      setMissionChatText("");
+      if (payload.item) {
+        setSelectedMission(payload.item);
+      }
+      setUiNotice({
+        tone: "good",
+        title: "Mission chat updated",
+        detail: quickReply ? `Quick reply sent: ${quickReply}` : "Your message was recorded in the mission chat.",
+      });
+      await load();
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "Mission chat failed");
+    } finally {
+      setMissionSaving(false);
+      setMissionActionLabel("");
     }
   };
 
@@ -1234,9 +1502,9 @@ export default function Dashboard() {
 
           <div style={styles.headerRow}>
             <div>
-              <h1 style={styles.headline}>Memory Netherworld Command</h1>
+              <h1 style={styles.headline}>Mission Console</h1>
               <p style={styles.subtext}>
-                Read-only control plane for governance, operator activity, drafts, helper lanes, and mirror-door health.
+                Operator-first mission workspace for active expeditions, safe intake, draft review, and secondary diagnostics.
               </p>
             </div>
 
@@ -1249,58 +1517,124 @@ export default function Dashboard() {
             </div>
           </div>
 
+          <div style={styles.tabRow}>
+            <button
+              type="button"
+              onClick={openMissionsView}
+              style={{
+                ...styles.tabButton,
+                ...(viewMode === "missions" ? styles.tabButtonActive : null),
+              }}
+            >
+              Missions
+            </button>
+            <button
+              type="button"
+              onClick={openDiagnosticsView}
+              style={{
+                ...styles.tabButton,
+                ...(viewMode === "diagnostics" ? styles.tabButtonActive : null),
+              }}
+            >
+              Diagnostics
+            </button>
+          </div>
+
           {errorText ? <div style={styles.alert}>{errorText}</div> : null}
+          {uiNotice ? (
+            <motion.div
+              key={`${uiNotice.title}-${uiNotice.detail}`}
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              style={{
+                ...styles.alert,
+                borderColor:
+                  uiNotice.tone === "good"
+                    ? "rgba(52,211,153,0.38)"
+                    : uiNotice.tone === "bad"
+                      ? "rgba(251,113,133,0.38)"
+                      : uiNotice.tone === "watch"
+                        ? "rgba(251,191,36,0.38)"
+                        : "rgba(96,165,250,0.38)",
+                background:
+                  uiNotice.tone === "good"
+                    ? "rgba(6,78,59,0.22)"
+                    : uiNotice.tone === "bad"
+                      ? "rgba(127,29,29,0.22)"
+                      : uiNotice.tone === "watch"
+                        ? "rgba(120,53,15,0.22)"
+                        : "rgba(30,41,59,0.22)",
+                color:
+                  uiNotice.tone === "good"
+                    ? "#bbf7d0"
+                    : uiNotice.tone === "bad"
+                      ? "#fecdd3"
+                      : uiNotice.tone === "watch"
+                        ? "#fde68a"
+                        : "#bfdbfe",
+              }}
+            >
+              <div style={{ fontSize: 13, fontWeight: 700 }}>{uiNotice.title}</div>
+              <div style={{ marginTop: 4 }}>{uiNotice.detail}</div>
+            </motion.div>
+          ) : null}
         </div>
 
         <div style={styles.panel}>
           <div style={styles.sectionTitleRow}>
             <div>
-              <h2 style={styles.sectionTitle}>Control plane overview</h2>
+              <h2 style={styles.sectionTitle}>Mission control strip</h2>
               <div style={styles.sectionSubtitle}>
-                Read-only status for the live system, with the safety gates kept visible instead of hidden.
+                The main view stays centered on expeditions. Diagnostics move to the secondary tab.
               </div>
             </div>
-            <span style={{ ...styles.badge, ...styles.badgeGood }}>read-only</span>
+            <span style={{ ...styles.badge, ...styles.badgeGood }}>
+              {missionSaving ? missionActionLabel || "working" : missionLoading ? "loading mission" : "read-only"}
+            </span>
           </div>
           <div style={styles.statusStrip}>
             {statusStripCard(
-              "Return All",
-              returnAll.enabled ? "ENABLED" : "off",
-              returnAll.enabled
-                ? `issued by ${returnAll.issued_by || "operator"}${returnAll.issued_at ? ` at ${returnAll.issued_at}` : ""}`
-                : "No active return-all gate is recorded.",
-              returnAllTone
+              "Backend health",
+              data.ok ? "healthy" : "attention",
+              data.ok ? "Status API and mission loaders are responding." : "One or more read-model loaders fell back."
             )}
             {statusStripCard(
-              "Nanny",
-              `${nanny.temperature || "unknown"} / cooldown ${nanny.global_cooldown_seconds ?? 0}s`,
-              `burst ${nanny.burst_score ?? 0}, error ${nanny.error_score ?? 0}`,
-              nannyTone
+              "Frontend/live",
+              loading ? "refreshing" : "live",
+              loading ? "Refreshing dashboard data and mission detail." : `Last refresh ${lastRefresh}.`,
+              loading ? "watch" : "good"
             )}
             {statusStripCard(
-              "Dispatch",
-              `${dispatchCounts.pending ?? 0} pending`,
-              `${dispatchCounts.approved ?? 0} approved, ${dispatchCounts.deferred ?? 0} deferred, ${dispatchCounts.rejected ?? 0} rejected, total ${dispatchCounts.total ?? 0}`,
-              dispatchTone
+              "Active expeditions",
+              String(expeditions.length),
+              expeditions.length ? "Operator-managed missions are available to open." : "Create an expedition to start a mission.",
+              expeditions.length ? "good" : "off"
             )}
             {statusStripCard(
-              "Helpers",
-              `${supportActivity.total ?? 0} helpers`,
-              helperLaneSummary,
-              helperTone
+              "Drafts pending review",
+              String(petitionDrafts.filter((item) => item.ok).length),
+              "Preview-only petitions remain in memory/drafts.",
+              petitionDrafts.length ? "watch" : "off"
             )}
             {statusStripCard(
-              "Mirror-door",
-              mirrorDoorHealth,
-              mirrorDoorTest.available
-                ? `${mirrorDoorTest.total ?? 0} cases, ${mirrorDoorBlocked} blocked, ${mirrorDoorAccepted} accepted${mirrorDoorUnexpected ? `, ${mirrorDoorUnexpected} unexpected` : ""}`
-                : "Mirror-door summary not available.",
-              mirrorDoorHealth === "healthy" ? "good" : mirrorDoorHealth === "attention" ? "watch" : "off"
+              "Blocked / waiting",
+              String(blockedWaitingCount),
+              "Clarification-needed, reconsideration, and blocked drafts need operator attention.",
+              blockedWaitingCount ? "watch" : "good"
+            )}
+            {statusStripCard(
+              "Noisy / repeated",
+              String(repeatedItemCount),
+              repeatedItemCount
+                ? "Repeated telemetry is visible in diagnostics."
+                : "No repeated signals were detected in recent events.",
+              repeatedItemCount ? "watch" : "good"
             )}
           </div>
         </div>
 
-        <div style={styles.panel}>
+        <div id="expeditions" style={styles.panel}>
           <div style={styles.sectionTitleRow}>
             <div>
               <h2 style={styles.sectionTitle}>Expeditions</h2>
@@ -1336,13 +1670,98 @@ export default function Dashboard() {
                     style={styles.fieldInput}
                   />
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const }}>
-                    <button type="button" onClick={createMission} style={styles.refreshButton}>
-                      Create Expedition
+                    <button type="button" onClick={createMission} disabled={missionSaving} style={styles.refreshButton}>
+                      {missionSaving && missionActionLabel === "Creating expedition" ? "Creating..." : "Create Expedition"}
                     </button>
                     <button type="button" onClick={() => setNewMissionObjective("")} style={styles.secondaryButton}>
                       Clear
                     </button>
                   </div>
+                </div>
+              </div>
+
+              <div style={styles.recordCard}>
+                <div style={styles.recordMetaRow}>
+                  <div>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Needs Attention</div>
+                    <div style={styles.subtleText}>
+                      Waiting-for-user, clarification-needed, reconsideration, blocked drafts, and noisy repeats.
+                    </div>
+                  </div>
+                  <span style={{ ...styles.badge, ...(blockedWaitingCount ? styles.badgeWarn : styles.badgeGood) }}>
+                    {blockedWaitingCount} items
+                  </span>
+                </div>
+                <div style={{ marginTop: 12, ...styles.scrollArea, maxHeight: 240 }}>
+                  {attentionItems.length ? (
+                    attentionItems.map((item) => (
+                      <button
+                        key={item.key}
+                        type="button"
+                        onClick={() => item.mission_id ? focusMission(item.mission_id, item.detail) : openDiagnosticsView()}
+                        style={{
+                          ...styles.recordCard,
+                          cursor: item.mission_id ? "pointer" : "default",
+                          textAlign: "left" as const,
+                          borderColor: item.tone === "good" ? "rgba(52,211,153,0.3)" : "rgba(251,191,36,0.3)",
+                          background: "rgba(2,6,23,0.55)",
+                        }}
+                      >
+                        <div style={styles.recordMetaRow}>
+                          <div>
+                            <div style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0" }}>{item.title}</div>
+                            <div style={styles.subtleText}>{item.detail}</div>
+                          </div>
+                          <span style={{ ...styles.badge, ...(item.tone === "good" ? styles.badgeGood : styles.badgeWarn) }}>
+                            {item.badge}
+                          </span>
+                        </div>
+                        {item.mission_id ? (
+                          <div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8" }}>mission {item.mission_id}</div>
+                        ) : null}
+                      </button>
+                    ))
+                  ) : (
+                    <div style={styles.recordCard}>No active attention items right now.</div>
+                  )}
+                </div>
+              </div>
+
+              <div style={styles.recordCard}>
+                <div style={styles.recordMetaRow}>
+                  <div>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Agent Calibration</div>
+                    <div style={styles.subtleText}>
+                      The soul editors stay as a visible tuning panel for exploration, boundedness, clarity, and governance fidelity.
+                    </div>
+                  </div>
+                  <span style={{ ...styles.badge, ...styles.badgeOutline }}>calibration</span>
+                </div>
+                <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
+                  {calibrationAxes.map((axis) => (
+                    <div key={axis.label} style={styles.previewBox}>
+                      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }}>
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: "#e2e8f0" }}>{axis.label}</div>
+                          <div style={styles.subtleText}>{axis.hint}</div>
+                        </div>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: "#f5d0fe" }}>{axis.value}</div>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        value={axis.value}
+                        onChange={(event) => {
+                          const nextValue = Number(event.target.value);
+                          setCalibrationAxes((prev) =>
+                            prev.map((item) => (item.key === axis.key ? { ...item, value: nextValue } : item))
+                          );
+                        }}
+                        style={{ marginTop: 10, width: "100%" }}
+                      />
+                    </div>
+                  ))}
                 </div>
               </div>
 
@@ -1372,7 +1791,7 @@ export default function Dashboard() {
                         <button
                           key={expedition.mission_id}
                           type="button"
-                          onClick={() => setSelectedMissionId(expedition.mission_id)}
+                          onClick={() => focusMission(expedition.mission_id, expedition.summary || expedition.objective || expedition.mission_id)}
                           style={{
                             ...styles.recordCard,
                             cursor: "pointer",
@@ -1425,11 +1844,43 @@ export default function Dashboard() {
                       <span style={styles.badge}>{selectedMission.current_state}</span>
                       <span style={styles.badge}>latest run {selectedMission.latest_run_id || "none"}</span>
                       <span style={styles.badge}>updated {selectedMission.last_updated || "unknown"}</span>
-                    </div>
-                    <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
                       <span style={{ ...styles.badge, ...styles.badgeGood }}>Workbench Only</span>
                       <span style={{ ...styles.badge, ...styles.badgeWarn }}>Unreviewed</span>
                       <span style={{ ...styles.badge, ...styles.badgeOutline }}>Preview Only</span>
+                    </div>
+                    <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
+                      <button
+                        type="button"
+                        onClick={() => refreshMissionDetail()}
+                        style={styles.refreshButton}
+                        disabled={missionLoading || missionSaving || loading}
+                      >
+                        {missionActionLabel === "Refreshing mission detail" ? "Refreshing..." : "Refresh mission detail"}
+                      </button>
+                      <button type="button" onClick={openDiagnosticsView} style={styles.secondaryButton}>
+                        Open diagnostics
+                      </button>
+                      {latestDraftPreviewPath ? (
+                        <button
+                          type="button"
+                          onClick={() => openReviewPreview(latestDraftPreviewPath)}
+                          style={styles.secondaryButton}
+                        >
+                          Open review preview
+                        </button>
+                      ) : null}
+                    </div>
+                    <div style={styles.previewBox}>
+                      <div style={styles.subtleText}>Latest meaningful update</div>
+                      <div style={{ marginTop: 4, fontSize: 14, fontWeight: 600, color: "#f5d0fe" }}>{latestMeaningfulSummary}</div>
+                      <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
+                        {latestDraftPreviewPath
+                          ? `Latest review preview: ${latestDraftPreviewPath}`
+                          : latestPacketSummary
+                            ? `Clarification packet: ${latestPacketSummary}`
+                            : "No review preview has been opened yet."}
+                      </div>
+                      {missionLoading ? <div style={{ marginTop: 8, ...styles.subtleText }}>Loading mission detail...</div> : null}
                     </div>
                   </div>
 
@@ -1456,11 +1907,22 @@ export default function Dashboard() {
                       <div style={styles.previewBox}>
                         <div style={styles.subtleText}>Latest draft</div>
                         <div style={{ marginTop: 4, fontSize: 13, fontWeight: 600, color: "#f5d0fe" }}>
-                          {getRecordString(latestDraft, "petition_id") || "none"}
+                          {getRecordString(getRecordObject(latestDraft, "draft"), "petition_id") ||
+                            getRecordString(latestDraft, "petition_id") ||
+                            "none"}
                         </div>
                         <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                          {getRecordString(latestDraft, "summary") || "No draft exists yet for this mission."}
+                          {latestDraftSummary || getRecordString(latestDraft, "summary") || "No draft exists yet for this mission."}
                         </div>
+                        {latestDraftPreviewPath ? (
+                          <button
+                            type="button"
+                            onClick={() => openReviewPreview(latestDraftPreviewPath)}
+                            style={{ ...styles.secondaryButton, marginTop: 10 }}
+                          >
+                            Open review preview
+                          </button>
+                        ) : null}
                       </div>
                       <div style={styles.previewBox}>
                         <div style={styles.subtleText}>Clarification packet</div>
@@ -1468,7 +1930,8 @@ export default function Dashboard() {
                           {getRecordString(latestClarificationPacket, "packet_id") || "none"}
                         </div>
                         <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                          {getRecordString(getRecordObject(latestClarificationPacket, "provisional_answer"), "text") ||
+                          {latestPacketSummary ||
+                            getRecordString(getRecordObject(latestClarificationPacket, "provisional_answer"), "text") ||
                             "No clarification packet exists yet."}
                         </div>
                       </div>
@@ -1480,6 +1943,96 @@ export default function Dashboard() {
                         <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
                           {getRecordString(selectedMission.manifest, "summary") || "No manifest summary yet."}
                         </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={styles.recordCard}>
+                    <div style={styles.recordMetaRow}>
+                      <div>
+                        <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Mission Chat</div>
+                        <div style={styles.subtleText}>
+                          Back-and-forth operator chat. Quick replies stay explicit and write only to mission notes.
+                        </div>
+                      </div>
+                      <span style={{ ...styles.badge, ...styles.badgeGood }}>{selectedMission.chat_count} messages</span>
+                    </div>
+
+                    <div style={{ marginTop: 12, ...styles.scrollArea, maxHeight: 260 }}>
+                      {selectedMission.mission_chat.length ? (
+                        selectedMission.mission_chat.map((message) => {
+                          const isAssistant = message.sender === "assistant";
+                          return (
+                            <motion.div
+                              key={message.message_id}
+                              initial={{ opacity: 0, y: 6 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              style={{
+                                alignSelf: isAssistant ? "flex-start" : "flex-end",
+                                maxWidth: "92%",
+                                borderRadius: 16,
+                                border: isAssistant
+                                  ? "1px solid rgba(52,211,153,0.22)"
+                                  : "1px solid rgba(192,132,252,0.22)",
+                                background: isAssistant ? "rgba(6,78,59,0.22)" : "rgba(15,23,42,0.8)",
+                                padding: 12,
+                              }}
+                            >
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                                <span style={{ ...styles.badge, ...(isAssistant ? styles.badgeGood : styles.badgeOutline) }}>
+                                  {isAssistant ? "Mission agent" : "Operator"}
+                                </span>
+                                <span style={styles.subtleText}>{message.created_at || "just now"}</span>
+                              </div>
+                              <div style={{ fontSize: 13, color: "#e2e8f0", lineHeight: 1.55 }}>{message.message}</div>
+                            </motion.div>
+                          );
+                        })
+                      ) : (
+                        <div style={styles.recordCard}>No mission chat yet. Send a message or pick a quick reply.</div>
+                      )}
+                    </div>
+
+                    <div style={styles.previewBox}>
+                      <textarea
+                        value={missionChatText}
+                        onChange={(event) => setMissionChatText(event.target.value)}
+                        placeholder="Ask a question, add more context, or give the mission a direct instruction."
+                        style={{ ...styles.fieldTextarea, minHeight: 96 }}
+                      />
+                      <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
+                        {[
+                          "Yes",
+                          "No",
+                          "Write more information",
+                        ].map((quickReply) => (
+                          <button
+                            key={quickReply}
+                            type="button"
+                            onClick={() => sendMissionChat(quickReply, quickReply)}
+                            disabled={missionSaving}
+                            style={styles.secondaryButton}
+                          >
+                            {quickReply}
+                          </button>
+                        ))}
+                      </div>
+                      <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
+                        <button
+                          type="button"
+                          onClick={() => sendMissionChat(missionChatText)}
+                          disabled={missionSaving}
+                          style={styles.refreshButton}
+                        >
+                          {missionSaving && missionActionLabel === "Sending mission chat" ? "Sending..." : "Send chat"}
+                        </button>
+                        <button type="button" onClick={() => setMissionChatText("")} style={styles.secondaryButton}>
+                          Clear
+                        </button>
+                      </div>
+                      <div style={{ marginTop: 10, ...styles.subtleText }}>
+                        Chat stays in <span style={styles.mono}>workbench/missions/{selectedMission.mission_id}/notes/chat.jsonl</span> and never writes to
+                        governed memory or dispatch.
                       </div>
                     </div>
                   </div>
@@ -1531,7 +2084,9 @@ export default function Dashboard() {
                     <div style={styles.recordMetaRow}>
                       <div>
                         <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Mission Inputs</div>
-                        <div style={styles.subtleText}>Send to Mission (Unreviewed Input) writes into the workbench intake folder only.</div>
+                        <div style={styles.subtleText}>
+                          Send to Mission (Unreviewed Input) writes into the workbench intake folder only.
+                        </div>
                       </div>
                       <span style={{ ...styles.badge, ...styles.badgeWarn }}>Unreviewed</span>
                     </div>
@@ -1539,16 +2094,20 @@ export default function Dashboard() {
                       <textarea
                         value={missionInputText}
                         onChange={(event) => setMissionInputText(event.target.value)}
-                        placeholder="Send to Mission (Unreviewed Input)"
+                        placeholder="Add safe mission input for intake, review, or follow-up."
                         style={styles.fieldTextarea}
                       />
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const }}>
-                        <button type="button" onClick={sendMissionInput} style={styles.refreshButton}>
-                          Send to Mission (Unreviewed Input)
+                        <button type="button" onClick={sendMissionInput} disabled={missionSaving} style={styles.refreshButton}>
+                          {missionSaving && missionActionLabel === "Sending mission input" ? "Sending..." : "Send to Mission"}
                         </button>
                         <button type="button" onClick={() => setMissionInputText("")} style={styles.secondaryButton}>
                           Clear
                         </button>
+                      </div>
+                      <div style={styles.subtleText}>
+                        This lands in <span style={styles.mono}>workbench/missions/{selectedMission.mission_id}/intake/</span> as{" "}
+                        <span style={styles.mono}>user_provided</span> and remains unreviewed until an operator acts.
                       </div>
                     </div>
                     <div style={{ marginTop: 12, ...styles.scrollArea }}>
@@ -1640,7 +2199,57 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div style={styles.metrics}>
+        {viewMode === "diagnostics" ? (
+          <>
+            <div style={styles.panel}>
+              <div style={styles.sectionTitleRow}>
+                <div>
+                  <h2 style={styles.sectionTitle}>Diagnostics</h2>
+                  <div style={styles.sectionSubtitle}>
+                    Secondary telemetry, storage, helper lanes, and mirror-door health stay available here when operators need them.
+                  </div>
+                </div>
+                <span style={{ ...styles.badge, ...styles.badgeGood }}>diagnostics</span>
+              </div>
+              <div style={styles.statusStrip}>
+                {statusStripCard(
+                  "Return All",
+                  returnAll.enabled ? "ENABLED" : "off",
+                  returnAll.enabled
+                    ? `issued by ${returnAll.issued_by || "operator"}${returnAll.issued_at ? ` at ${returnAll.issued_at}` : ""}`
+                    : "No active return-all gate is recorded.",
+                  returnAllTone
+                )}
+                {statusStripCard(
+                  "Nanny",
+                  `${nanny.temperature || "unknown"} / cooldown ${nanny.global_cooldown_seconds ?? 0}s`,
+                  `burst ${nanny.burst_score ?? 0}, error ${nanny.error_score ?? 0}`,
+                  nannyTone
+                )}
+                {statusStripCard(
+                  "Dispatch",
+                  `${dispatchCounts.pending ?? 0} pending`,
+                  `${dispatchCounts.approved ?? 0} approved, ${dispatchCounts.deferred ?? 0} deferred, ${dispatchCounts.rejected ?? 0} rejected, total ${dispatchCounts.total ?? 0}`,
+                  dispatchTone
+                )}
+                {statusStripCard(
+                  "Helpers",
+                  `${supportActivity.total ?? 0} helpers`,
+                  helperLaneSummary,
+                  helperTone
+                )}
+                {statusStripCard(
+                  "Mirror-door",
+                  mirrorDoorHealth,
+                  mirrorDoorTest.available
+                    ? `${mirrorDoorTest.total ?? 0} cases, ${mirrorDoorBlocked} blocked, ${mirrorDoorAccepted} accepted${mirrorDoorUnexpected ? `, ${mirrorDoorUnexpected} unexpected` : ""}`
+                    : "Mirror-door summary not available.",
+                  mirrorDoorHealth === "healthy" ? "good" : mirrorDoorHealth === "attention" ? "watch" : "off"
+                )}
+              </div>
+            </div>
+
+            <div style={styles.metrics}>
           {metricCard("Events", (data.events_recent || []).length, "live flow", Activity)}
           {metricCard("Sessions", data.honcho_sessions_total ?? "ï¿½", "active memory links", Database)}
           {metricCard("Expeditions", expeditions.length, "mission containers", ClipboardList)}
@@ -2307,6 +2916,16 @@ export default function Dashboard() {
               <span style={{ ...styles.badge, ...styles.badgeGood }}>preview only</span>
             </div>
 
+            {selectedDraftPath ? (
+              <div style={styles.previewBox}>
+                <div style={styles.subtleText}>Focused review preview</div>
+                <div style={{ marginTop: 4, fontSize: 14, fontWeight: 600, color: "#f5d0fe" }}>{selectedDraftPath}</div>
+                <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
+                  This is the currently selected review preview path. Use it to keep the draft focus visible while browsing diagnostics.
+                </div>
+              </div>
+            ) : null}
+
             <div style={styles.stack}>
               {petitionDrafts.length ? (
                 petitionDrafts.map((item, index) => {
@@ -2326,9 +2945,18 @@ export default function Dashboard() {
                   const preview = item.review_preview;
                   const allowed = preview.submission_allowed;
                   const gateTone = allowed ? styles.badgeGood : styles.badgeBad;
+                  const draftPath = preview.draft_path || item.source_path || draft.petition_id;
+                  const isSelectedDraft = selectedDraftPath === draftPath || selectedDraftPath === item.source_path;
 
                   return (
-                    <div key={`${draft.petition_id}-${index}`} style={styles.recordCard}>
+                    <div
+                      key={`${draft.petition_id}-${index}`}
+                      style={{
+                        ...styles.recordCard,
+                        borderColor: isSelectedDraft ? "rgba(252,211,77,0.45)" : "rgba(192,132,252,0.2)",
+                        background: isSelectedDraft ? "rgba(124,58,237,0.18)" : "rgba(2,6,23,0.55)",
+                      }}
+                    >
                       <div style={styles.recordMetaRow}>
                         <div>
                           <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>
@@ -2390,6 +3018,22 @@ export default function Dashboard() {
                         </div>
                         <div style={{ marginTop: 4, ...styles.subtleText }}>
                           dispatch petition ID: <span style={styles.mono}>{preview.dispatch_petition_id}</span>
+                        </div>
+                        <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" as const }}>
+                          <button
+                            type="button"
+                            onClick={() => openReviewPreview(draftPath)}
+                            style={styles.secondaryButton}
+                          >
+                            Focus review preview
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setViewMode("missions")}
+                            style={styles.secondaryButton}
+                          >
+                            Back to missions
+                          </button>
                         </div>
                       </div>
                     </div>
@@ -2527,6 +3171,8 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
+          </>
+        ) : null}
       </div>
     </div>
   );

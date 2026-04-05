@@ -1,0 +1,74 @@
+{
+  "manifest_id": "manifest_mission_20260405T010016Z_7df149_hermes-20260405T040937Z-0d94_3b7087",
+  "mission_id": "mission_20260405T010016Z_7df149",
+  "run_id": "hermes-20260405T040937Z-0d94",
+  "status": "ready_for_review",
+  "summary": "Mission mission_20260405T010016Z_7df149 for 'go' produced 3 artifacts, status ready_for_review, and 1 signal(s).",
+  "artifact_counts": {
+    "total": 3,
+    "by_kind": {
+      "mission_brief": 1,
+      "hermes_run": 1,
+      "state": 1
+    },
+    "by_stage": {
+      "intake": 1,
+      "processing": 1,
+      "review": 1
+    },
+    "by_problem_role": {
+      "source": 1,
+      "analysis": 1,
+      "review_note": 1
+    }
+  },
+  "artifact_refs": [
+    {
+      "artifact_id": "artifact_c41645",
+      "artifact_kind": "mission_brief",
+      "artifact_stage": "intake",
+      "problem_role": "source",
+      "quality_signal": "validated",
+      "reusability_class": "mission_local",
+      "path": "expeditions/active/mission_20260405T010016Z_7df149/mission_brief.json"
+    },
+    {
+      "artifact_id": "artifact_667038",
+      "artifact_kind": "hermes_run",
+      "artifact_stage": "processing",
+      "problem_role": "analysis",
+      "quality_signal": "validated",
+      "reusability_class": "review_only",
+      "path": "logs/hermes/runs/hermes-20260405T040937Z-0d94_observe.json"
+    },
+    {
+      "artifact_id": "artifact_846209",
+      "artifact_kind": "state",
+      "artifact_stage": "review",
+      "problem_role": "review_note",
+      "quality_signal": "validated",
+      "reusability_class": "mission_local",
+      "path": "expeditions/active/mission_20260405T010016Z_7df149/state.json"
+    }
+  ],
+  "priority_views": [
+    {
+      "view_id": "view_review",
+      "title": "What Needs Review",
+      "focus": "what_needs_review",
+      "artifact_ids": [],
+      "signal": "review_ready"
+    }
+  ],
+  "mission_signals": [
+    {
+      "signal": "review_ready",
+      "impact": "medium",
+      "reason": "The mission is ready for operator review."
+    }
+  ],
+  "open_questions": [],
+  "recommended_next_step": "review",
+  "created_at": "2026-04-05T01:00:16.660515+00:00",
+  "updated_at": "2026-04-05T04:09:44.302426+00:00"
+}

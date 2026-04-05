@@ -76,7 +76,7 @@ function App() {
                 ...(page === "dashboard" ? styles.buttonActive : null),
               }}
             >
-              Dashboard
+              Expeditions
             </button>
             <button
               type="button"

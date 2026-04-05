@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "services/launcher/manifest.schema.json",
+  "title": "Spinetop Launcher Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["wsl_distro", "ports", "paths", "urls", "launch_commands"],
+  "properties": {
+    "wsl_distro": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ports": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backend", "frontend"],
+      "properties": {
+        "backend": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "frontend": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      }
+    },
+    "paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state_root",
+        "log_root",
+        "backend_pid_file",
+        "frontend_pid_file",
+        "state_file",
+        "backend_log_file",
+        "frontend_log_file"
+      ],
+      "properties": {
+        "state_root": { "type": "string", "minLength": 1 },
+        "log_root": { "type": "string", "minLength": 1 },
+        "backend_pid_file": { "type": "string", "minLength": 1 },
+        "frontend_pid_file": { "type": "string", "minLength": 1 },
+        "state_file": { "type": "string", "minLength": 1 },
+        "backend_log_file": { "type": "string", "minLength": 1 },
+        "frontend_log_file": { "type": "string", "minLength": 1 }
+      }
+    },
+    "urls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backend", "frontend"],
+      "properties": {
+        "backend": {
+          "type": "string",
+          "minLength": 1
+        },
+        "frontend": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "launch_commands": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backend", "frontend"],
+      "properties": {
+        "backend": {
+          "type": "string",
+          "minLength": 1
+        },
+        "frontend": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

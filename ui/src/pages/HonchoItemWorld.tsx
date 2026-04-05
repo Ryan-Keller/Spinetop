@@ -111,6 +111,8 @@ const GEM_COLORS: Record<string, string> = {
   skipped: "#475569",
 };
 
+const API_BASE = (import.meta.env.VITE_SPINETOP_API_BASE as string | undefined)?.trim() || "/api";
+
 const styles = {
   page: {
     minHeight: "100vh",
@@ -253,7 +255,7 @@ export default function HonchoItemWorld() {
 
   const load = async () => {
     try {
-      const res = await fetch("http://127.0.0.1:5051/api/status");
+      const res = await fetch(`${API_BASE}/status`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = (await res.json()) as StatusResponse;
       setData(json);

@@ -40,6 +40,8 @@ const gemMap: Record<string, GemType> = {
   desktop: "sapphire",
 };
 
+const API_BASE = (import.meta.env.VITE_SPINETOP_API_BASE as string | undefined)?.trim() || "/api";
+
 const styles = {
   page: {
     minHeight: "100vh",
@@ -111,7 +113,7 @@ export default function AgentMemoryTriadPage() {
   const [data, setData] = useState<StatusResponse>({ honcho_sessions: [] });
 
   useEffect(() => {
-    fetch("http://127.0.0.1:5051/api/status")
+    fetch(`${API_BASE}/status`)
       .then((r) => r.json())
       .then((json) => setData({ honcho_sessions: json.honcho_sessions || [] }))
       .catch(() =>

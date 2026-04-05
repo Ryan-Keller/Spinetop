@@ -30,6 +30,7 @@ HERMES_RUNS_DIR = ROOT / "logs" / "hermes" / "runs"
 CLARIFICATION_PACKETS_DIR = ROOT / "logs" / "citadel" / "clarification_packets"
 EXPEDITIONS_ACTIVE_DIR = ROOT / "expeditions" / "active"
 WORKBENCH_MISSIONS_DIR = ROOT / "workbench" / "missions"
+MISSION_CHAT_FILENAME = "chat.jsonl"
 MEMORY_DIR = ROOT / "memory"
 DISPATCH_DIR = MEMORY_DIR / "dispatch"
 GOVERNANCE_DIR = ROOT / "logs" / "governance"
@@ -54,6 +55,21 @@ KNOWN_PEERS = [
 ]
 
 app = Flask(__name__)
+
+
+@app.after_request
+def add_cors_headers(response):
+    origin = request.headers.get("Origin", "")
+    allowed_origins = {
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+    }
+    if origin in allowed_origins:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return response
 
 
 def iso_now() -> str:
@@ -243,6 +259,10 @@ def _ensure_workbench_structure(mission_id: str) -> Path:
     return root
 
 
+def _mission_chat_path(mission_id: str) -> Path:
+    return _ensure_workbench_structure(mission_id) / "notes" / MISSION_CHAT_FILENAME
+
+
 def _mission_manifest_payload(mission_id: str) -> dict[str, Any] | None:
     path = mission_manifest_path(mission_id)
     if not path.exists():
@@ -338,6 +358,115 @@ def _mission_inputs(mission_id: str) -> list[dict[str, Any]]:
     return inputs[:200]
 
 
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(item, dict):
+            rows.append(item)
+    return rows
+
+
+def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def _mission_chat_messages(mission_id: str) -> list[dict[str, Any]]:
+    path = _mission_chat_path(mission_id)
+    rows = _read_jsonl(path)
+    messages: list[dict[str, Any]] = []
+    for row in rows[-200:]:
+        messages.append({
+            "message_id": str(row.get("message_id") or ""),
+            "mission_id": str(row.get("mission_id") or mission_id),
+            "sender": str(row.get("sender") or "user"),
+            "role": str(row.get("role") or "user"),
+            "message": str(row.get("message") or ""),
+            "tone": str(row.get("tone") or "info"),
+            "created_at": str(row.get("created_at") or ""),
+            "kind": str(row.get("kind") or "message"),
+        })
+    return messages
+
+
+def _chat_reply(message: str, quick_reply: str | None, state: str, mission_summary: str) -> dict[str, str]:
+    quick = str(quick_reply or "").strip().lower()
+    if quick in {"yes", "affirmative"}:
+        return {
+            "role": "assistant",
+            "tone": "good",
+            "message": "Acknowledged. I'll keep the mission moving and wait for the next instruction.",
+        }
+    if quick in {"no", "negative"}:
+        return {
+            "role": "assistant",
+            "tone": "watch",
+            "message": "Understood. I'll hold this mission steady and avoid making assumptions.",
+        }
+    if quick in {"write more information", "more info", "more information"}:
+        return {
+            "role": "assistant",
+            "tone": "watch",
+            "message": "Please add the missing context. Helpful details are objective, scope, constraints, links, and desired outcome.",
+        }
+    if "?" in message or state in {"CLARIFICATION_NEEDED", "RECONSIDERATION_REQUESTED"}:
+        return {
+            "role": "assistant",
+            "tone": "watch",
+            "message": mission_summary or "I need a bit more detail before I can move this mission forward.",
+        }
+    return {
+        "role": "assistant",
+        "tone": "good",
+        "message": "Received. I've recorded this in the mission chat and intake lanes for review.",
+    }
+
+
+def _append_chat_exchange(mission_id: str, message: str, *, quick_reply: str | None = None) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    detail = _build_expedition_detail(mission)
+    path = _mission_chat_path(mission)
+    user_item = {
+        "message_id": f"chat_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{_short_digest(f'{mission}|user|{message}')}",
+        "mission_id": mission,
+        "sender": "user",
+        "role": "user",
+        "message": message,
+        "tone": "info",
+        "created_at": iso_now(),
+        "kind": "message",
+    }
+    assistant = _chat_reply(message, quick_reply, str(detail.get("current_state") or ""), str(detail.get("summary") or ""))
+    assistant_digest_seed = f"{mission}|assistant|{assistant['message']}"
+    assistant_item = {
+        "message_id": f"chat_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{_short_digest(assistant_digest_seed)}",
+        "mission_id": mission,
+        "sender": assistant["role"],
+        "role": assistant["role"],
+        "message": assistant["message"],
+        "tone": assistant["tone"],
+        "created_at": iso_now(),
+        "kind": "reply",
+    }
+    _append_jsonl(path, user_item)
+    _append_jsonl(path, assistant_item)
+    return {
+        "messages": [user_item, assistant_item],
+        "path": path.relative_to(ROOT).as_posix(),
+        "summary": detail.get("summary") or "",
+    }
+
+
 def _mission_status_badge(current_state: str, manifest_status: str, latest_run_id: str, input_count: int) -> str:
     if current_state in {"MISSION_CLOSED", "ARCHIVE_REVIEW"}:
         return "idle"
@@ -393,6 +522,7 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
     current_state = str(state.get("current_state") or "MISSION_DEFINED").strip() or "MISSION_DEFINED"
     objective = str(brief.get("objective") or brief.get("task_text") or "").strip()
     mission_inputs = _mission_inputs(mission)
+    mission_chat = _mission_chat_messages(mission)
     workbench_files = _workbench_files(mission)
     workbench_folders = []
     for folder_name in ["intake", "scratch", "code", "test_runs", "notes", "outputs"]:
@@ -435,6 +565,7 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
         "latest_draft": _latest_draft_summary(mission),
         "latest_clarification_packet": _latest_clarification_summary(mission),
         "mission_inputs": mission_inputs,
+        "mission_chat": mission_chat,
         "workbench": {
             "root": _workbench_root(mission).relative_to(ROOT).as_posix(),
             "folders": workbench_folders,
@@ -442,6 +573,28 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
         },
         "artifact_count": len(artifact_items),
         "input_count": len(mission_inputs),
+        "chat_count": len(mission_chat),
+    }
+
+
+def _write_mission_input(mission: str, content: str) -> dict[str, Any]:
+    created_at = iso_now()
+    input_id = f"input_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{_short_digest(f'{mission}|{content}|{created_at}')}"
+    intake_dir = _ensure_workbench_structure(mission) / "intake"
+    intake_dir.mkdir(parents=True, exist_ok=True)
+    input_path = intake_dir / f"{input_id}.json"
+    record = {
+        "input_id": input_id,
+        "mission_id": mission,
+        "source_type": "user_provided",
+        "status": "unreviewed",
+        "content": content,
+        "created_at": created_at,
+    }
+    _write_json(input_path, record)
+    return {
+        **record,
+        "path": input_path.relative_to(ROOT).as_posix(),
     }
 
 
@@ -1509,28 +1662,80 @@ def api_expedition_input(mission_id: str):
             "error": "content is required",
         }), 400
 
-    created_at = iso_now()
-    input_id = f"input_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{_short_digest(f'{mission}|{content}|{created_at}')}"
-    intake_dir = _ensure_workbench_structure(mission) / "intake"
-    intake_dir.mkdir(parents=True, exist_ok=True)
-    input_path = intake_dir / f"{input_id}.json"
-    record = {
-        "input_id": input_id,
-        "mission_id": mission,
-        "source_type": "user_provided",
-        "status": "unreviewed",
-        "content": content,
-        "created_at": created_at,
-    }
-    _write_json(input_path, record)
-
     return jsonify({
         "ok": True,
-        "item": {
-            **record,
-            "path": input_path.relative_to(ROOT).as_posix(),
-        },
+        "item": _write_mission_input(mission, content),
         "mission": _build_expedition_detail(mission),
+    })
+
+
+@app.post("/api/expeditions/<mission_id>/respond")
+def api_expedition_respond(mission_id: str):
+    return api_expedition_chat(mission_id)
+
+
+@app.get("/api/expeditions/<mission_id>/chat")
+def api_expedition_chat_get(mission_id: str):
+    try:
+        mission = normalize_mission_id(mission_id)
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+        }), 400
+    if not _mission_exists(mission):
+        return jsonify({
+            "ok": False,
+            "error": "mission not found",
+        }), 404
+    return jsonify({
+        "ok": True,
+        "item": _build_expedition_detail(mission),
+        "messages": _mission_chat_messages(mission),
+        "source_root": _safe_relative_path(_mission_chat_path(mission).parent),
+    })
+
+
+@app.post("/api/expeditions/<mission_id>/chat")
+def api_expedition_chat(mission_id: str):
+    try:
+        mission = normalize_mission_id(mission_id)
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+        }), 400
+    if not _mission_exists(mission):
+        return jsonify({
+            "ok": False,
+            "error": "mission not found",
+        }), 404
+    try:
+        payload = request.get_json(force=True) or {}
+    except Exception:
+        payload = {}
+
+    content = str(payload.get("content") or payload.get("text") or "").strip()
+    if not content:
+        return jsonify({
+            "ok": False,
+            "error": "content is required",
+        }), 400
+
+    quick_reply = str(payload.get("quick_reply") or payload.get("preset") or "").strip() or None
+    exchange = _append_chat_exchange(mission, content, quick_reply=quick_reply)
+    return jsonify({
+        "ok": True,
+        "item": _build_expedition_detail(mission),
+        "messages": _mission_chat_messages(mission),
+        "exchange": exchange,
+        "response": {
+            "kind": "chat",
+            "summary": "Mission chat updated.",
+            "answer": str((exchange.get("messages") or [{}])[-1].get("message") if isinstance(exchange, dict) else ""),
+            "questions": [],
+            "artifact": "mission_chat",
+        },
     })
 
 

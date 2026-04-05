@@ -1,0 +1,33 @@
+{
+    "updated_at":  "2026-04-04T20:48:14.6533047-07:00",
+    "repo_root":  "D:\\spine_desk\\Spinetop",
+    "ui_root":  "D:\\spine_desk\\Spinetop\\ui",
+    "wsl_distro":  "Ubuntu-24.04",
+    "backend_url":  "http://127.0.0.1:5051/api/status",
+    "frontend_url":  "http://127.0.0.1:5173/",
+    "note":  "launcher stopped",
+    "backend":  {
+                    "name":  "backend",
+                    "pid_file":  "D:\\spine_desk\\Spinetop\\services\\launcher\\state\\backend.pid",
+                    "pid":  null,
+                    "platform":  "unknown",
+                    "port":  5051,
+                    "port_open":  false,
+                    "state":  "stopped",
+                    "detail":  "not running"
+                },
+    "frontend":  {
+                     "name":  "frontend",
+                     "pid_file":  "D:\\spine_desk\\Spinetop\\services\\launcher\\state\\frontend.pid",
+                     "pid":  null,
+                     "platform":  "unknown",
+                     "port":  5173,
+                     "port_open":  false,
+                     "state":  "stopped",
+                     "detail":  "not running"
+                 },
+    "logs":  {
+                 "backend":  "D:\\spine_desk\\Spinetop\\services\\launcher\\state\\logs\\backend.log",
+                 "frontend":  "D:\\spine_desk\\Spinetop\\services\\launcher\\state\\logs\\frontend.log"
+             }
+}
