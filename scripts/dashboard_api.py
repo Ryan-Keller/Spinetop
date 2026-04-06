@@ -3,13 +3,16 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 import urllib.request
 from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from flask import Flask, jsonify, request
 
+from autonomy_guardrails import build_autonomy_status_view, evaluate_autonomy_guardrails
 from validate_clarification_packet import validate_clarification_packet
 from state_machine import (
     mission_brief_path,
@@ -24,7 +27,7 @@ from state_machine import (
     write_working_memory,
     write_state,
 )
-from governance_utils import can_bridge_to_honcho, read_nanny_state
+from governance_utils import can_bridge_to_honcho, read_nanny_state, read_return_all_state
 from helper_model_runtime import load_helper_runtime_profile
 from review_and_submit_petition import build_review_payload, validate_draft_petition
 from run_hermes_v1 import validate_response_object
@@ -37,7 +40,10 @@ EXPEDITIONS_ACTIVE_DIR = ROOT / "expeditions" / "active"
 WORKBENCH_MISSIONS_DIR = ROOT / "workbench" / "missions"
 MISSION_CHAT_FILENAME = "chat.jsonl"
 MISSION_PARKING_FILENAME = "parking_status.json"
+TRIGGERS_DIRNAME = "triggers"
+TRIGGER_HANDOFF_FILENAME = "pending_handoff.json"
 RUNNER_RETURNS_DIRNAME = "runner_returns"
+RETRY_LEDGER_FILENAME = "retries.json"
 ASSUMPTIONS_DIRNAME = "assumptions"
 ASSUMPTION_LEDGER_FILENAME = "ledger.json"
 MEMORY_DIR = ROOT / "memory"
@@ -57,6 +63,8 @@ WORKSPACE_ID = "shared-coordination"
 IN_MEMORY_EVENTS: list[dict[str, Any]] = []
 IN_MEMORY_EVENTS_MAX = 200
 MIRROR_DOOR_CACHE: dict[str, Any] = {"signature": "", "value": None}
+_MISSION_LOCKS: dict[str, threading.Lock] = {}
+_MISSION_LOCKS_GUARD = threading.Lock()
 
 KNOWN_PEERS = [
     {"id": "desktop", "metadata": {"created_by": "system"}},
@@ -64,6 +72,55 @@ KNOWN_PEERS = [
 ]
 
 app = Flask(__name__)
+
+
+ALLOWED_TRIGGER_KINDS: dict[str, dict[str, Any]] = {
+    "sufficiency_unblocked_on_input": {
+        "target_role": "spinetop_expeditioner",
+        "allowed_action": "start_first_pass_expedition",
+        "write_targets": ["workbench/missions/", "logs/support/"],
+        "policy_basis": "explicit_input_sufficiency_flip",
+        "allow_while_parked": False,
+        "requires_first_pass_open": True,
+        "counts_against_retry_budget": False,
+    },
+    "operator_refresh_requested": {
+        "target_role": "spinetop_expeditioner",
+        "allowed_action": "retry_expedition_refresh",
+        "write_targets": ["workbench/missions/", "logs/support/"],
+        "policy_basis": "operator_requested_refresh",
+        "allow_while_parked": False,
+        "requires_first_pass_open": False,
+        "counts_against_retry_budget": True,
+    },
+    "mission_resumed": {
+        "target_role": "spinetop_expeditioner",
+        "allowed_action": "resume_expedition",
+        "write_targets": ["workbench/missions/"],
+        "policy_basis": "operator_explicit_resume",
+        "allow_while_parked": True,
+        "requires_first_pass_open": False,
+        "counts_against_retry_budget": False,
+    },
+    "do_now_first_pass_requested": {
+        "target_role": "spinetop_expeditioner",
+        "allowed_action": "start_first_pass_expedition",
+        "write_targets": ["workbench/missions/", "logs/support/"],
+        "policy_basis": "operator_marked_do_now_first_pass",
+        "allow_while_parked": False,
+        "requires_first_pass_open": True,
+        "counts_against_retry_budget": False,
+        "requires_do_now": True,
+    },
+}
+ALLOWED_TRIGGER_ACTIONS = {
+    "start_first_pass_expedition",
+    "retry_expedition_refresh",
+    "resume_expedition",
+}
+TRIGGER_RETRY_BUDGET = 1
+RETRY_BUDGET_TOTAL = 2
+RETRY_LOG_LIMIT = 40
 
 
 @app.after_request
@@ -264,6 +321,18 @@ def _mission_root(mission_id: str) -> Path:
     return EXPEDITIONS_ACTIVE_DIR / normalize_mission_id(mission_id)
 
 
+@contextmanager
+def _mission_trigger_lock(mission_id: str):
+    mission = normalize_mission_id(mission_id)
+    with _MISSION_LOCKS_GUARD:
+        lock = _MISSION_LOCKS.setdefault(mission, threading.Lock())
+    lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 def _workbench_root(mission_id: str) -> Path:
     return WORKBENCH_MISSIONS_DIR / normalize_mission_id(mission_id)
 
@@ -283,8 +352,20 @@ def _mission_parking_path(mission_id: str) -> Path:
     return _ensure_workbench_structure(mission_id) / "notes" / MISSION_PARKING_FILENAME
 
 
+def _triggers_dir(mission_id: str) -> Path:
+    return _ensure_workbench_structure(mission_id) / "notes" / TRIGGERS_DIRNAME
+
+
+def _trigger_handoff_path(mission_id: str) -> Path:
+    return _triggers_dir(mission_id) / TRIGGER_HANDOFF_FILENAME
+
+
 def _runner_returns_dir(mission_id: str) -> Path:
     return _ensure_workbench_structure(mission_id) / "notes" / RUNNER_RETURNS_DIRNAME
+
+
+def _retry_ledger_path(mission_id: str) -> Path:
+    return _ensure_workbench_structure(mission_id) / "notes" / RETRY_LEDGER_FILENAME
 
 
 def _assumptions_dir(mission_id: str) -> Path:
@@ -781,6 +862,592 @@ def _write_parking_status(
         record["parked_by"] = ""
     _write_json(_mission_parking_path(mission), record)
     return record
+
+
+def _default_trigger_handoff(mission_id: str) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    return {
+        "mission_id": mission,
+        "trigger_id": "",
+        "target_role": "",
+        "allowed_action": "",
+        "status": "idle",
+        "reason": "",
+        "policy_basis": "",
+        "updated_at": "",
+        "derived_only": True,
+    }
+
+
+def _default_retry_ledger(mission_id: str) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    return {
+        "mission_id": mission,
+        "retry_budget_total": RETRY_BUDGET_TOTAL,
+        "retry_budget_used": 0,
+        "last_retry_at": "",
+        "last_retry_evidence": "",
+        "last_failure_reason": "",
+        "retry_reasons": [],
+        "stop_reason": "",
+        "decision_log": [],
+        "updated_at": "",
+        "derived_only": True,
+    }
+
+
+def _normalize_retry_log_items(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for entry in value[-RETRY_LOG_LIMIT:]:
+        if not isinstance(entry, dict):
+            continue
+        items.append({
+            "decided_at": str(entry.get("decided_at") or "").strip(),
+            "trigger_id": str(entry.get("trigger_id") or "").strip(),
+            "trigger_kind": str(entry.get("trigger_kind") or "").strip(),
+            "decision": str(entry.get("decision") or "").strip(),
+            "retry_reason": str(entry.get("retry_reason") or "").strip(),
+            "why_retried": str(entry.get("why_retried") or "").strip(),
+            "why_blocked": str(entry.get("why_blocked") or "").strip(),
+            "budget_total": int(entry.get("budget_total") or 0),
+            "budget_used_before": int(entry.get("budget_used_before") or 0),
+            "budget_used_after": int(entry.get("budget_used_after") or 0),
+            "stop_condition": str(entry.get("stop_condition") or "").strip(),
+            "failure_reason": str(entry.get("failure_reason") or "").strip(),
+            "evidence_fingerprint": str(entry.get("evidence_fingerprint") or "").strip(),
+        })
+    return items
+
+
+def _read_retry_ledger(mission_id: str) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    path = _retry_ledger_path(mission)
+    if not path.exists():
+        return _default_retry_ledger(mission)
+    payload = _load_json(path)
+    if not isinstance(payload, dict):
+        return _default_retry_ledger(mission)
+    record = _default_retry_ledger(mission)
+    record["mission_id"] = str(payload.get("mission_id") or mission).strip() or mission
+    try:
+        budget_total = int(payload.get("retry_budget_total") or RETRY_BUDGET_TOTAL)
+    except Exception:
+        budget_total = RETRY_BUDGET_TOTAL
+    if budget_total < 0:
+        budget_total = RETRY_BUDGET_TOTAL
+    try:
+        budget_used = int(payload.get("retry_budget_used") or 0)
+    except Exception:
+        budget_used = 0
+    if budget_used < 0:
+        budget_used = 0
+    record["retry_budget_total"] = budget_total
+    record["retry_budget_used"] = min(budget_used, budget_total)
+    record["last_retry_at"] = str(payload.get("last_retry_at") or "").strip()
+    record["last_retry_evidence"] = str(payload.get("last_retry_evidence") or "").strip()
+    record["last_failure_reason"] = str(payload.get("last_failure_reason") or "").strip()
+    record["retry_reasons"] = [str(item).strip() for item in payload.get("retry_reasons", []) if str(item).strip()][:20]
+    record["stop_reason"] = str(payload.get("stop_reason") or "").strip()
+    record["decision_log"] = _normalize_retry_log_items(payload.get("decision_log"))
+    record["updated_at"] = str(payload.get("updated_at") or "").strip()
+    record["derived_only"] = bool(payload.get("derived_only", True))
+    return record
+
+
+def _write_retry_ledger(mission_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    record = _default_retry_ledger(mission)
+    record.update(payload)
+    record["mission_id"] = mission
+    try:
+        record["retry_budget_total"] = max(0, int(record.get("retry_budget_total") or RETRY_BUDGET_TOTAL))
+    except Exception:
+        record["retry_budget_total"] = RETRY_BUDGET_TOTAL
+    try:
+        record["retry_budget_used"] = max(0, int(record.get("retry_budget_used") or 0))
+    except Exception:
+        record["retry_budget_used"] = 0
+    record["retry_budget_used"] = min(record["retry_budget_used"], record["retry_budget_total"])
+    record["retry_reasons"] = [str(item).strip() for item in record.get("retry_reasons", []) if str(item).strip()][:20]
+    record["decision_log"] = _normalize_retry_log_items(record.get("decision_log"))
+    record["updated_at"] = str(record.get("updated_at") or iso_now())
+    record["derived_only"] = True
+    _write_json(_retry_ledger_path(mission), record)
+    return record
+
+
+def _read_trigger_handoff(mission_id: str) -> dict[str, Any]:
+    path = _trigger_handoff_path(mission_id)
+    if not path.exists():
+        return _default_trigger_handoff(mission_id)
+    payload = _load_json(path)
+    if not isinstance(payload, dict):
+        return _default_trigger_handoff(mission_id)
+    record = _default_trigger_handoff(mission_id)
+    for key in record:
+        if key == "derived_only":
+            record[key] = bool(payload.get(key, True))
+        else:
+            record[key] = payload.get(key, record[key])
+    return record
+
+
+def _write_trigger_handoff(mission_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    record = _default_trigger_handoff(mission_id)
+    record.update(payload)
+    record["mission_id"] = normalize_mission_id(mission_id)
+    record["updated_at"] = str(record.get("updated_at") or iso_now())
+    record["derived_only"] = True
+    _write_json(_trigger_handoff_path(mission_id), record)
+    return record
+
+
+def _has_first_pass_attempt(detail: dict[str, Any]) -> bool:
+    current_state = str(detail.get("current_state") or "").strip()
+    if current_state in {
+        "RELEASE_REQUESTED",
+        "RELEASE_PREPARED",
+        "EXPEDITION_ACTIVE",
+        "WAREHOUSE_INTAKE",
+        "WAREHOUSE_PROCESSING",
+        "CITADEL_REVIEW_LOOP",
+        "PACKAGE_READY",
+        "BRIDGE_CONSIDERATION",
+        "MISSION_CLOSED",
+        "ARCHIVE_REVIEW",
+    }:
+        return True
+    return bool(detail.get("latest_hermes_run") or detail.get("manifest"))
+
+
+def _read_trigger_records(mission_id: str) -> list[dict[str, Any]]:
+    directory = _triggers_dir(mission_id)
+    if not directory.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    for path in sorted((p for p in directory.glob("*.json") if p.is_file() and p.name != TRIGGER_HANDOFF_FILENAME), key=lambda p: p.stat().st_mtime, reverse=True):
+        payload = _load_json(path)
+        if not isinstance(payload, dict):
+            continue
+        record = dict(payload)
+        record["path"] = path.relative_to(ROOT).as_posix()
+        records.append(record)
+    return records
+
+
+def _count_consumed_trigger_action(mission_id: str, allowed_action: str) -> int:
+    return sum(
+        1
+        for record in _read_trigger_records(mission_id)
+        if str(record.get("status") or "") in {"pending", "consumed"} and str(record.get("allowed_action") or "") == allowed_action
+    )
+
+
+def _has_pending_or_active_trigger_action(mission_id: str, allowed_action: str) -> bool:
+    if not allowed_action:
+        return False
+    for record in _read_trigger_records(mission_id):
+        if str(record.get("status") or "").strip() not in {"pending", "active"}:
+            continue
+        if str(record.get("allowed_action") or "").strip() == allowed_action:
+            return True
+    return False
+
+
+def _has_pending_or_active_first_pass_intent(mission_id: str) -> bool:
+    allowed_action = "start_first_pass_expedition"
+    if _has_pending_or_active_trigger_action(mission_id, allowed_action):
+        return True
+    handoff = _read_trigger_handoff(mission_id)
+    return (
+        str(handoff.get("allowed_action") or "").strip() == allowed_action
+        and str(handoff.get("status") or "").strip() in {"pending", "active"}
+    )
+
+
+def _retry_failure_signature(latest_runner_return: dict[str, Any] | None) -> str:
+    if not isinstance(latest_runner_return, dict):
+        return ""
+    parts = [
+        str(latest_runner_return.get("summary") or "").strip(),
+        str(latest_runner_return.get("recommended_next_step") or "").strip(),
+    ]
+    open_questions = latest_runner_return.get("open_questions")
+    if isinstance(open_questions, list):
+        parts.extend(str(item).strip() for item in open_questions[:4] if str(item).strip())
+    return " | ".join(part for part in parts if part)
+
+
+def _retry_evidence_fingerprint(detail: dict[str, Any], latest_runner_return: dict[str, Any] | None = None) -> str:
+    latest_input = None
+    mission_inputs = detail.get("mission_inputs")
+    if isinstance(mission_inputs, list) and mission_inputs:
+        latest_input = mission_inputs[0] if isinstance(mission_inputs[0], dict) else None
+    pieces = [
+        str((latest_input or {}).get("input_id") or "").strip(),
+        str((latest_input or {}).get("created_at") or "").strip(),
+        str((latest_runner_return or {}).get("instance_id") or "").strip(),
+        str((latest_runner_return or {}).get("created_at") or "").strip(),
+        str((latest_runner_return or {}).get("path") or (latest_runner_return or {}).get("source_ref") or "").strip(),
+    ]
+    return "|".join(piece for piece in pieces if piece)
+
+
+def _suggests_retry(latest_runner_return: dict[str, Any] | None) -> bool:
+    if not isinstance(latest_runner_return, dict):
+        return False
+    text = " ".join([
+        str(latest_runner_return.get("summary") or "").strip(),
+        str(latest_runner_return.get("recommended_next_step") or "").strip(),
+        " ".join(str(item).strip() for item in latest_runner_return.get("open_questions", []) if str(item).strip()) if isinstance(latest_runner_return.get("open_questions"), list) else "",
+    ]).lower()
+    return any(token in text for token in ["retry", "follow-up", "follow up", "replacement", "another bounded", "refine"])
+
+
+def _is_missing_artifact_block(detail: dict[str, Any], latest_runner_return: dict[str, Any] | None = None) -> bool:
+    working_memory = detail.get("working_memory") if isinstance(detail.get("working_memory"), dict) else {}
+    text = " ".join([
+        str(working_memory.get("blocked_reason") or "").strip(),
+        str((latest_runner_return or {}).get("summary") or "").strip(),
+        str((latest_runner_return or {}).get("recommended_next_step") or "").strip(),
+        " ".join(str(item).strip() for item in latest_runner_return.get("open_questions", []) if str(item).strip()) if isinstance((latest_runner_return or {}).get("open_questions"), list) else "",
+    ]).lower()
+    return any(token in text for token in ["missing artifact", "missing file", "missing receipt", "missing evidence bundle", "artifact missing"])
+
+
+def _classify_retry_reason(detail: dict[str, Any], ledger: dict[str, Any], reason: str) -> tuple[str, str, str]:
+    latest_runner_return = detail.get("latest_runner_return") if isinstance(detail.get("latest_runner_return"), dict) else None
+    mission_inputs = detail.get("mission_inputs")
+    latest_input = mission_inputs[0] if isinstance(mission_inputs, list) and mission_inputs and isinstance(mission_inputs[0], dict) else None
+    last_retry_at = str(ledger.get("last_retry_at") or "").strip()
+    latest_input_at = str((latest_input or {}).get("created_at") or "").strip()
+    if latest_input_at and (not last_retry_at or latest_input_at > last_retry_at):
+        return (
+            "missing_input_now_provided",
+            "new mission input arrived after the previous retry decision",
+            _retry_evidence_fingerprint(detail, latest_runner_return),
+        )
+    if _suggests_retry(latest_runner_return):
+        return (
+            "runner_suggested_retry",
+            "latest runner return suggested one bounded follow-up attempt",
+            _retry_evidence_fingerprint(detail, latest_runner_return),
+        )
+    normalized_reason = " ".join(reason.strip().lower().split())
+    if "refresh" in normalized_reason:
+        return (
+            "role_specific_bounded_refresh",
+            "operator requested a bounded refresh for the mission-local role",
+            _retry_evidence_fingerprint(detail, latest_runner_return),
+        )
+    return (
+        "operator_requested_retry",
+        "operator explicitly requested one bounded retry",
+        _retry_evidence_fingerprint(detail, latest_runner_return),
+    )
+
+
+def _build_retry_decision(
+    mission_id: str,
+    *,
+    trigger_kind: str,
+    reason: str,
+    detail: dict[str, Any],
+    ledger: dict[str, Any],
+) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    latest_runner_return = detail.get("latest_runner_return") if isinstance(detail.get("latest_runner_return"), dict) else None
+    retry_reason, why_retried, evidence_fingerprint = _classify_retry_reason(detail, ledger, reason)
+    failure_reason = _retry_failure_signature(latest_runner_return)
+    budget_total = int(ledger.get("retry_budget_total") or RETRY_BUDGET_TOTAL)
+    budget_used = int(ledger.get("retry_budget_used") or 0)
+    stop_condition = ""
+    why_blocked = ""
+    allowed = True
+
+    if trigger_kind != "operator_refresh_requested":
+        allowed = False
+        stop_condition = "retry_not_applicable"
+        why_blocked = "retry policy only applies to mission-local refresh retries"
+    elif budget_used >= budget_total:
+        allowed = False
+        stop_condition = "retry_budget_exhausted"
+        why_blocked = "retry budget exhausted"
+    elif _is_missing_artifact_block(detail, latest_runner_return):
+        allowed = False
+        stop_condition = "mission_blocked_on_missing_artifact"
+        why_blocked = "mission is blocked on a missing artifact"
+    elif (
+        failure_reason
+        and str(ledger.get("last_failure_reason") or "").strip() == failure_reason
+        and str(ledger.get("last_retry_evidence") or "").strip() == evidence_fingerprint
+    ):
+        allowed = False
+        stop_condition = "repeated_same_failure_without_new_evidence"
+        why_blocked = "same failure reason repeated without new evidence"
+
+    decision = {
+        "mission_id": mission,
+        "allowed": allowed,
+        "retry_reason": retry_reason,
+        "why_retried": why_retried,
+        "why_blocked": why_blocked,
+        "failure_reason": failure_reason,
+        "evidence_fingerprint": evidence_fingerprint,
+        "budget_total": budget_total,
+        "budget_used_before": budget_used,
+        "budget_used_after": budget_used + 1 if allowed else budget_used,
+        "stop_condition": stop_condition,
+    }
+    return decision
+
+
+def _apply_retry_decision(
+    mission_id: str,
+    *,
+    trigger_id: str,
+    trigger_kind: str,
+    decision: dict[str, Any],
+) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    ledger = _read_retry_ledger(mission)
+    budget_total = int(ledger.get("retry_budget_total") or RETRY_BUDGET_TOTAL)
+    budget_used_before = int(decision.get("budget_used_before") or 0)
+    budget_used_after = int(decision.get("budget_used_after") or budget_used_before)
+    allowed = bool(decision.get("allowed"))
+    log_entry = {
+        "decided_at": iso_now(),
+        "trigger_id": trigger_id,
+        "trigger_kind": trigger_kind,
+        "decision": "allowed" if allowed else "blocked",
+        "retry_reason": str(decision.get("retry_reason") or "").strip(),
+        "why_retried": str(decision.get("why_retried") or "").strip(),
+        "why_blocked": str(decision.get("why_blocked") or "").strip(),
+        "budget_total": budget_total,
+        "budget_used_before": budget_used_before,
+        "budget_used_after": budget_used_after,
+        "stop_condition": str(decision.get("stop_condition") or "").strip(),
+        "failure_reason": str(decision.get("failure_reason") or "").strip(),
+        "evidence_fingerprint": str(decision.get("evidence_fingerprint") or "").strip(),
+    }
+
+    updated = dict(ledger)
+    decision_log = list(ledger.get("decision_log") or [])
+    decision_log.append(log_entry)
+    updated["decision_log"] = decision_log[-RETRY_LOG_LIMIT:]
+    updated["updated_at"] = log_entry["decided_at"]
+    if allowed:
+        updated["retry_budget_used"] = min(budget_used_after, budget_total)
+        updated["last_retry_at"] = log_entry["decided_at"]
+        updated["last_retry_evidence"] = log_entry["evidence_fingerprint"]
+        updated["last_failure_reason"] = log_entry["failure_reason"]
+        retry_reasons = list(ledger.get("retry_reasons") or [])
+        retry_reasons.append(log_entry["retry_reason"])
+        updated["retry_reasons"] = retry_reasons[-20:]
+        updated["stop_reason"] = "retry_budget_exhausted" if updated["retry_budget_used"] >= budget_total else ""
+    elif log_entry["stop_condition"]:
+        updated["stop_reason"] = log_entry["stop_condition"]
+    return _write_retry_ledger(mission, updated)
+
+
+def _evaluate_trigger_record(
+    mission_id: str,
+    *,
+    trigger_kind: str,
+    reason: str,
+    source: str,
+) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    spec = ALLOWED_TRIGGER_KINDS.get(trigger_kind) or {}
+    detail = _build_expedition_detail(mission)
+    ledger = _read_retry_ledger(mission)
+    parking_status = detail.get("parking_status") if isinstance(detail.get("parking_status"), dict) else {}
+    parked = str(parking_status.get("status") or "active") == "parked"
+    return_all = read_return_all_state()
+    nanny = read_nanny_state()
+    summary = detail.get("mission_summary") if isinstance(detail.get("mission_summary"), dict) else {}
+    working_memory = detail.get("working_memory") if isinstance(detail.get("working_memory"), dict) else {}
+    conditions: list[str] = []
+    allowed = True
+    blocked_reason = ""
+    retry_decision: dict[str, Any] | None = None
+    guardrail = evaluate_autonomy_guardrails(
+        mission_id=mission,
+        trigger_kind=trigger_kind,
+        target_role=str(spec.get("target_role") or ""),
+        allowed_action=str(spec.get("allowed_action") or ""),
+        policy_basis=str(spec.get("policy_basis") or ""),
+        trigger_reason=reason,
+        trigger_source=source,
+        retry_budget_total=int(ledger.get("retry_budget_total") or RETRY_BUDGET_TOTAL),
+        retry_budget_used=int(ledger.get("retry_budget_used") or 0),
+        return_all_enabled=bool(return_all.get("enabled")),
+        nanny_cooling=str(nanny.get("temperature") or "cool") in {"warm", "hot"} or bool(nanny.get("cooldown_active")),
+        parked=parked,
+        allow_while_parked=bool(spec.get("allow_while_parked")),
+        counts_against_retry_budget=bool(spec.get("counts_against_retry_budget")),
+        summary=summary,
+        working_memory=working_memory,
+        write_targets=[str(item).strip() for item in spec.get("write_targets", []) if str(item).strip()],
+    )
+    if guardrail.get("status") == "blocked":
+        allowed = False
+        blocked_reason = str(guardrail.get("reason") or "").strip()
+        guardrail_checks = guardrail.get("checks") if isinstance(guardrail.get("checks"), list) else []
+        for check in guardrail_checks:
+            if not isinstance(check, dict) or bool(check.get("ok")):
+                continue
+            code = str(check.get("code") or "").strip()
+            if code:
+                conditions.append(code)
+
+    if not reason.strip():
+        allowed = False
+        blocked_reason = blocked_reason or "blocked by invalid trigger policy"
+        conditions.append("trigger_policy_invalid")
+    if spec.get("requires_do_now") and str(summary.get("triage_bucket") or "") != "do_now":
+        allowed = False
+        blocked_reason = blocked_reason or "blocked by mission not marked do_now"
+        conditions.append("not_do_now")
+    if spec.get("requires_first_pass_open") and _has_first_pass_attempt(detail):
+        allowed = False
+        blocked_reason = blocked_reason or "blocked by existing first-pass expedition attempt"
+        conditions.append("first_pass_already_attempted")
+    if trigger_kind == "do_now_first_pass_requested" and _has_pending_or_active_first_pass_intent(mission):
+        allowed = False
+        blocked_reason = "first-pass already pending"
+        conditions.append("first_pass_already_pending")
+    if spec.get("counts_against_retry_budget"):
+        retry_decision = _build_retry_decision(
+            mission,
+            trigger_kind=trigger_kind,
+            reason=reason,
+            detail=detail,
+            ledger=ledger,
+        )
+        if not allowed:
+            retry_decision["allowed"] = False
+            retry_decision["budget_used_after"] = int(retry_decision.get("budget_used_before") or 0)
+            retry_decision["why_blocked"] = blocked_reason or str(retry_decision.get("why_blocked") or "retry blocked")
+            retry_decision["stop_condition"] = conditions[0] if conditions else str(retry_decision.get("stop_condition") or "")
+        elif not bool(retry_decision.get("allowed")):
+            allowed = False
+            blocked_reason = blocked_reason or str(retry_decision.get("why_blocked") or "retry blocked")
+            stop_condition = str(retry_decision.get("stop_condition") or "").strip()
+            conditions.append(stop_condition or "retry_blocked")
+
+    policy_condition = "trigger_allowed" if allowed else (conditions[0] if conditions else "trigger_blocked")
+    evaluation = {
+        "evaluated_at": iso_now(),
+        "allowed": allowed,
+        "decision": "allowed" if allowed else "blocked",
+        "policy_condition": policy_condition,
+        "policy_conditions": conditions or [policy_condition],
+        "allowed_reason": "trigger allowed under minimal policy" if allowed else "",
+        "blocked_reason": blocked_reason if not allowed else "",
+        "reason": "trigger allowed under minimal policy" if allowed else blocked_reason,
+        "guardrails": guardrail,
+        "retry_policy": {
+            "budget_total": int(ledger.get("retry_budget_total") or RETRY_BUDGET_TOTAL),
+            "budget_used": int(ledger.get("retry_budget_used") or 0),
+            "budget_remaining": max(0, int(ledger.get("retry_budget_total") or RETRY_BUDGET_TOTAL) - int(ledger.get("retry_budget_used") or 0)),
+            "stop_reason": str(ledger.get("stop_reason") or "").strip(),
+            "decision": retry_decision or {},
+        },
+    }
+    handoff = {
+        "mission_id": mission,
+        "target_role": str(spec.get("target_role") or ""),
+        "allowed_action": str(spec.get("allowed_action") or ""),
+        "status": "pending" if allowed else "blocked",
+        "reason": reason.strip(),
+        "policy_basis": str(spec.get("policy_basis") or ""),
+        "updated_at": evaluation["evaluated_at"],
+        "derived_only": True,
+    }
+    return {
+        "evaluation": evaluation,
+        "handoff": handoff,
+        "spec": spec,
+    }
+
+
+def _create_trigger_record(
+    mission_id: str,
+    *,
+    trigger_kind: str,
+    reason: str,
+    source: str,
+) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    with _mission_trigger_lock(mission):
+        evaluated = _evaluate_trigger_record(mission, trigger_kind=trigger_kind, reason=reason, source=source)
+        spec = evaluated["spec"]
+        evaluation = evaluated["evaluation"]
+        created_at = iso_now()
+        trigger_id = f"trigger_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{_short_digest(f'{mission}|{trigger_kind}|{source}|{created_at}')}"
+        record = {
+            "trigger_id": trigger_id,
+            "mission_id": mission,
+            "created_at": created_at,
+            "trigger_kind": trigger_kind,
+            "reason": reason.strip(),
+            "source": source.strip(),
+            "target_role": str(spec.get("target_role") or ""),
+            "allowed_action": str(spec.get("allowed_action") or ""),
+            "policy_basis": str(spec.get("policy_basis") or ""),
+            "status": "pending" if evaluation["allowed"] else "blocked",
+            "derived_only": True,
+            "evaluation": evaluation,
+        }
+        path = _triggers_dir(mission) / f"{trigger_id}.json"
+        retry_ledger = None
+        if bool(spec.get("counts_against_retry_budget")):
+            retry_decision = evaluation.get("retry_policy")
+            retry_decision_payload = retry_decision.get("decision") if isinstance(retry_decision, dict) else None
+            if isinstance(retry_decision_payload, dict):
+                retry_ledger = _apply_retry_decision(
+                    mission,
+                    trigger_id=trigger_id,
+                    trigger_kind=trigger_kind,
+                    decision=retry_decision_payload,
+                )
+                record["evaluation"] = {
+                    **evaluation,
+                    "retry_policy": {
+                        **(retry_decision if isinstance(retry_decision, dict) else {}),
+                        "budget_used": int(retry_ledger.get("retry_budget_used") or 0),
+                        "budget_remaining": max(
+                            0,
+                            int(retry_ledger.get("retry_budget_total") or RETRY_BUDGET_TOTAL) - int(retry_ledger.get("retry_budget_used") or 0),
+                        ),
+                        "stop_reason": str(retry_ledger.get("stop_reason") or "").strip(),
+                    },
+                }
+        _write_json(path, record)
+        if evaluation["allowed"]:
+            _write_trigger_handoff(
+                mission,
+                {
+                    "trigger_id": trigger_id,
+                    "target_role": record["target_role"],
+                    "allowed_action": record["allowed_action"],
+                    "status": "pending",
+                    "reason": record["reason"],
+                    "policy_basis": record["policy_basis"],
+                },
+            )
+        return {
+            **record,
+            "path": path.relative_to(ROOT).as_posix(),
+            "retry_ledger": retry_ledger,
+            "handoff": {
+                **evaluated["handoff"],
+                "trigger_id": trigger_id,
+            },
+        }
 
 
 def _mission_chat_messages(mission_id: str) -> list[dict[str, Any]]:
@@ -2382,9 +3049,16 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
     latest_packet = _latest_clarification_summary(mission)
     runner_returns = _read_runner_returns(mission)
     latest_runner_return = runner_returns[0] if runner_returns else None
+    trigger_records = _read_trigger_records(mission)
+    latest_trigger = trigger_records[0] if trigger_records else None
+    pending_triggers = [item for item in trigger_records if str(item.get("status") or "") == "pending"]
+    trigger_handoff = _read_trigger_handoff(mission)
+    retry_ledger = _read_retry_ledger(mission)
     assumption_entries = _read_assumption_ledger_entries(mission)
     working_memory = read_working_memory(mission)
     parking_status = _read_parking_status(mission)
+    return_all = read_return_all_state()
+    nanny = read_nanny_state()
     workbench_files = _workbench_files(mission)
     workbench_folders = []
     for folder_name in ["intake", "scratch", "code", "test_runs", "notes", "outputs"]:
@@ -2414,6 +3088,16 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
         assumption_entries=assumption_entries,
         working_memory=working_memory,
         parking_status=parking_status,
+    )
+    autonomy_status = build_autonomy_status_view(
+        mission_id=mission,
+        latest_trigger=latest_trigger,
+        trigger_handoff=trigger_handoff,
+        retry_ledger=retry_ledger,
+        parking_status=parking_status,
+        mission_summary=summary_preview,
+        return_all_enabled=bool(return_all.get("enabled")),
+        nanny_cooling=str(nanny.get("temperature") or "cool") in {"warm", "hot"} or bool(nanny.get("cooldown_active")),
     )
     status_badge = _mission_status_badge(
         current_state,
@@ -2451,6 +3135,13 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
         "latest_clarification_packet": latest_packet,
         "latest_runner_return": latest_runner_return,
         "runner_return_count": len(runner_returns),
+        "triggers": trigger_records[:20],
+        "latest_trigger": latest_trigger,
+        "trigger_count": len(trigger_records),
+        "pending_trigger_count": len(pending_triggers),
+        "trigger_handoff": trigger_handoff,
+        "retry_ledger": retry_ledger,
+        "autonomy_status": autonomy_status,
         "assumptions": assumption_entries,
         "active_assumption_count": len([item for item in assumption_entries if str(item.get("status") or "") in {"active", "accepted"}]),
         "assumption_count": len(assumption_entries),
@@ -3845,12 +4536,38 @@ def api_expedition_input(mission_id: str):
             "error": "content is required",
         }), 400
 
+    brief = read_mission_brief(mission) or {}
+    state = read_state(mission)
+    objective = str(brief.get("objective") or brief.get("task_text") or "").strip()
+    latest_packet = _latest_clarification_summary(mission)
+    before_inputs = _mission_inputs(mission)
+    before_sufficient, _ = _is_sufficient_to_proceed(
+        objective,
+        before_inputs,
+        str(state.get("current_state") or "MISSION_DEFINED"),
+        latest_packet,
+    )
     item = _write_mission_input(mission, content)
     _refresh_working_memory(mission, operator_text=content, operator_reply_at=str(item.get("created_at") or ""), source="mission intake")
+    after_sufficient, _ = _is_sufficient_to_proceed(
+        objective,
+        _mission_inputs(mission),
+        str(state.get("current_state") or "MISSION_DEFINED"),
+        latest_packet,
+    )
+    trigger = None
+    if not before_sufficient and after_sufficient:
+        trigger = _create_trigger_record(
+            mission,
+            trigger_kind="sufficiency_unblocked_on_input",
+            reason="mission input flipped the sufficiency gate from blocked to sufficient",
+            source=f"mission_input:{item['input_id']}",
+        )
 
     return jsonify({
         "ok": True,
         "item": item,
+        "trigger": trigger,
         "mission": _build_expedition_detail(mission),
     })
 
@@ -3872,8 +4589,53 @@ def api_expedition_parking(mission_id: str):
         return jsonify({"ok": False, "error": "status must be active or parked"}), 400
     reason = str(payload.get("reason") or "").strip()
     resume_hint = str(payload.get("resume_hint") or "").strip()
+    existing = _read_parking_status(mission)
     record = _write_parking_status(mission, status=status, reason=reason, parked_by="operator", resume_hint=resume_hint)
-    return jsonify({"ok": True, "parking_status": record, "item": _build_expedition_detail(mission)})
+    trigger = None
+    if str(existing.get("status") or "active") == "parked" and status == "active":
+        trigger = _create_trigger_record(
+            mission,
+            trigger_kind="mission_resumed",
+            reason=reason or "operator explicitly resumed the parked mission",
+            source="operator_resume",
+        )
+    return jsonify({"ok": True, "parking_status": record, "trigger": trigger, "item": _build_expedition_detail(mission)})
+
+
+@app.post("/api/expeditions/<mission_id>/triggers")
+def api_expedition_triggers_create(mission_id: str):
+    try:
+        mission = normalize_mission_id(mission_id)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    if not _mission_exists(mission):
+        return jsonify({"ok": False, "error": "mission not found"}), 404
+    try:
+        payload = request.get_json(force=True) or {}
+    except Exception:
+        payload = {}
+
+    trigger_kind = str(payload.get("trigger_kind") or "").strip()
+    reason = str(payload.get("reason") or "").strip()
+    if trigger_kind not in {"operator_refresh_requested", "do_now_first_pass_requested"}:
+        return jsonify({
+            "ok": False,
+            "error": "trigger_kind must be operator_refresh_requested or do_now_first_pass_requested",
+        }), 400
+    if not reason:
+        return jsonify({"ok": False, "error": "reason is required"}), 400
+
+    trigger = _create_trigger_record(
+        mission,
+        trigger_kind=trigger_kind,
+        reason=reason,
+        source="operator_action",
+    )
+    return jsonify({
+        "ok": True,
+        "trigger": trigger,
+        "item": _build_expedition_detail(mission),
+    })
 
 
 @app.post("/api/expeditions/<mission_id>/respond")

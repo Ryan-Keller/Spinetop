@@ -441,6 +441,18 @@ type ExpeditionDetail = {
     resume_hint?: string;
     updated_at?: string;
   };
+  autonomy_status?: {
+    mission_id: string;
+    status: string;
+    autonomy_status: string;
+    last_trigger_outcome: string;
+    retry_budget_summary: string;
+    last_blocked_reason: string;
+    kill_switch_active?: boolean;
+    parked?: boolean;
+    pending_action?: string;
+    pending_status?: string;
+  };
   operator_posture?: string;
   operator_posture_reason?: string;
   assumptions_active?: string[];
@@ -1531,6 +1543,7 @@ export default function Dashboard() {
   const latestRunnerReturn = selectedMission?.latest_runner_return ?? null;
   const missionSummary = selectedMission?.mission_summary ?? null;
   const missionParkingStatus = selectedMission?.parking_status ?? null;
+  const missionAutonomyStatus = selectedMission?.autonomy_status ?? null;
   const runnerReturnCount = selectedMission?.runner_return_count ?? 0;
   const missionAssumptionEntries = selectedMission?.assumptions ?? [];
   const missionAssumptionCount = selectedMission?.assumption_count ?? missionAssumptionEntries.length;
@@ -1562,6 +1575,12 @@ export default function Dashboard() {
   const missionSummaryExpeditionActivity = missionSummary?.expedition_activity || (missionSummaryCanContinue ? "running" : "paused");
   const missionSummaryParkedAt = missionSummary?.parked_at || "";
   const missionSummaryWakeHintSeed = missionSummary?.wake_hint || "";
+  const autonomyTone: StripTone =
+    missionAutonomyStatus?.autonomy_status === "blocked"
+      ? "watch"
+      : missionAutonomyStatus?.autonomy_status === "guarded"
+        ? "watch"
+        : "good";
   const missionSummaryBeliefs =
     missionSummary?.what_we_believe?.length
       ? missionSummary.what_we_believe
@@ -2517,6 +2536,46 @@ export default function Dashboard() {
                         <div style={styles.subtleText}>Recommended next step</div>
                         <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f5d0fe", lineHeight: 1.5 }}>
                           {missionSummaryNextStep}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ marginTop: 12, display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
+                      <div style={{ ...styles.previewBox, ...statusStripToneStyles[autonomyTone] }}>
+                        <div style={styles.subtleText}>Autonomy status</div>
+                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f5d0fe" }}>
+                          {missionAutonomyStatus?.autonomy_status || "ready"}
+                        </div>
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
+                          {missionAutonomyStatus?.kill_switch_active
+                            ? "Return-all or nanny cooling is actively stopping movement."
+                            : missionAutonomyStatus?.parked
+                              ? "Mission parking is actively stopping movement."
+                              : "Only explicit, logged trigger movement is allowed."}
+                        </div>
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Last trigger outcome</div>
+                        <div style={{ marginTop: 4, fontSize: 13, fontWeight: 700, color: "#f5d0fe", lineHeight: 1.5 }}>
+                          {missionAutonomyStatus?.last_trigger_outcome || "idle: none"}
+                        </div>
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5" }}>
+                          Pending action: {missionAutonomyStatus?.pending_action || "none"} · {missionAutonomyStatus?.pending_status || "idle"}
+                        </div>
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Retry budget</div>
+                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f5d0fe" }}>
+                          {missionAutonomyStatus?.retry_budget_summary || "0/0 used, 0 remaining"}
+                        </div>
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5" }}>
+                          Bounded retry only. No hidden loops or background resubmits.
+                        </div>
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Last blocked reason</div>
+                        <div style={{ marginTop: 4, fontSize: 13, fontWeight: 700, color: "#fde68a", lineHeight: 1.5 }}>
+                          {missionAutonomyStatus?.last_blocked_reason || "No current autonomy block is recorded."}
                         </div>
                       </div>
                     </div>
