@@ -395,6 +395,55 @@ type AssumptionChange = {
   operator_status: string;
 };
 
+type ControlTowerActivity = {
+  role?: string;
+  kind?: string;
+  summary?: string;
+  created_at?: string;
+  source_ref?: string;
+};
+
+type ControlTowerHandoff = {
+  target_role?: string;
+  allowed_action?: string;
+  status?: string;
+  reason?: string;
+  updated_at?: string;
+};
+
+type ControlTowerTrigger = {
+  trigger_kind?: string;
+  status?: string;
+  created_at?: string;
+  reason?: string;
+};
+
+type ControlTowerIntervention = {
+  intervention_id?: string;
+  action?: string;
+  status?: string;
+  reason?: string;
+  note?: string;
+  blocked_reason?: string;
+  created_at?: string;
+  changed_paths?: string[];
+};
+
+type ControlTowerSummary = {
+  autonomy_state?: string;
+  last_trigger?: ControlTowerTrigger | null;
+  last_trigger_outcome?: string;
+  retry_budget?: number;
+  retry_used?: number;
+  last_retry_reason?: string;
+  last_blocked_reason?: string;
+  active_role_handoff?: ControlTowerHandoff | null;
+  latest_role_activity?: ControlTowerActivity | null;
+  operator_attention_reason?: string;
+  recent_operator_interventions?: ControlTowerIntervention[];
+  safe_operator_actions?: string[];
+};
+
 type WorkbenchSummary = {
   root: string;
   folders: WorkbenchFolder[];
@@ -453,6 +502,7 @@ type ExpeditionDetail = {
     pending_action?: string;
     pending_status?: string;
   };
+  control_tower_summary?: ControlTowerSummary;
   operator_posture?: string;
   operator_posture_reason?: string;
   assumptions_active?: string[];
@@ -1256,6 +1306,14 @@ function formatConfidence(value: number | null | undefined, fallback = "unknown"
   return value.toFixed(2);
 }
 
+function titleCaseLabel(value: string): string {
+  return value
+    .split(/[\s_]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 function assumptionStatusBadgeStyle(status: string): React.CSSProperties {
   if (status === "accepted") return { ...styles.badge, ...styles.badgeGood };
   if (status === "rejected" || status === "invalidated") return { ...styles.badge, ...styles.badgeBad };
@@ -1288,6 +1346,7 @@ export default function Dashboard() {
   const [missionLoading, setMissionLoading] = useState(false);
   const [missionSaving, setMissionSaving] = useState(false);
   const [missionActionLabel, setMissionActionLabel] = useState("");
+  const missionChatComposerRef = useRef<HTMLTextAreaElement | null>(null);
   const [calibrationAxes, setCalibrationAxes] = useState<CalibrationAxis[]>([
     { key: "exploration", label: "Exploration pressure", value: 72, hint: "how eagerly the mission explores" },
     { key: "boundedness", label: "Boundedness", value: 84, hint: "how tightly the mission follows the ask" },
@@ -1544,6 +1603,7 @@ export default function Dashboard() {
   const missionSummary = selectedMission?.mission_summary ?? null;
   const missionParkingStatus = selectedMission?.parking_status ?? null;
   const missionAutonomyStatus = selectedMission?.autonomy_status ?? null;
+  const controlTowerSummary = selectedMission?.control_tower_summary ?? null;
   const runnerReturnCount = selectedMission?.runner_return_count ?? 0;
   const missionAssumptionEntries = selectedMission?.assumptions ?? [];
   const missionAssumptionCount = selectedMission?.assumption_count ?? missionAssumptionEntries.length;
@@ -1575,12 +1635,6 @@ export default function Dashboard() {
   const missionSummaryExpeditionActivity = missionSummary?.expedition_activity || (missionSummaryCanContinue ? "running" : "paused");
   const missionSummaryParkedAt = missionSummary?.parked_at || "";
   const missionSummaryWakeHintSeed = missionSummary?.wake_hint || "";
-  const autonomyTone: StripTone =
-    missionAutonomyStatus?.autonomy_status === "blocked"
-      ? "watch"
-      : missionAutonomyStatus?.autonomy_status === "guarded"
-        ? "watch"
-        : "good";
   const missionSummaryBeliefs =
     missionSummary?.what_we_believe?.length
       ? missionSummary.what_we_believe
@@ -1651,6 +1705,27 @@ export default function Dashboard() {
     missionSummaryQuestion ||
     (missionSummaryCanContinue ? "No immediate reply is required." : "A blocking clarification is required.");
   const missionSummaryWakeHint = missionSummaryWakeHintSeed || missionSummaryQuestion || missionSummaryBlockedReason;
+  const controlTowerAutonomyState = controlTowerSummary?.autonomy_state || missionAutonomyStatus?.autonomy_status || "ready";
+  const controlTowerAutonomyTone: StripTone =
+    controlTowerAutonomyState === "blocked" ? "watch" : controlTowerAutonomyState === "guarded" ? "watch" : "good";
+  const controlTowerRetryBudget = controlTowerSummary?.retry_budget ?? 0;
+  const controlTowerRetryUsed = controlTowerSummary?.retry_used ?? 0;
+  const controlTowerRetryRemaining = Math.max(0, controlTowerRetryBudget - controlTowerRetryUsed);
+  const controlTowerSafeActions = (controlTowerSummary?.safe_operator_actions ?? []).filter(Boolean);
+  const recentControlInterventions = (controlTowerSummary?.recent_operator_interventions ?? []).filter(Boolean);
+  const supportedControlActions = controlTowerSafeActions.filter((action) =>
+    [
+      "resume mission",
+      "retry bounded action",
+      "refresh assumptions",
+      "sync helper returns",
+      "clear stale pending handoff",
+      "answer blocker",
+    ].includes(action.toLowerCase())
+  );
+  const unsupportedControlActions = controlTowerSafeActions.filter(
+    (action) => !supportedControlActions.includes(action)
+  );
   const repeatedItemCount = useMemo(() => {
     const counts = new Map<string, number>();
     for (const event of data.events_recent || []) {
@@ -2098,6 +2173,109 @@ export default function Dashboard() {
     }
   };
 
+  const runLoggedControlTowerIntervention = async (action: string, options?: { label?: string; reason?: string }) => {
+    if (!selectedMissionId) {
+      setErrorText("Select an expedition first");
+      return false;
+    }
+    const label = options?.label || titleCaseLabel(action.replace(/_/g, " "));
+    try {
+      setMissionSaving(true);
+      setMissionActionLabel(label);
+      const res = await fetch(`${API_BASE}/expeditions/${selectedMissionId}/interventions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, reason: options?.reason || undefined }),
+      });
+      const payload = (await res.json()) as {
+        ok?: boolean;
+        blocked?: boolean;
+        error?: string;
+        item?: ExpeditionDetail;
+        intervention?: ControlTowerIntervention;
+      };
+      if (payload.item) {
+        setSelectedMission(payload.item);
+      }
+      if (res.status === 409 || payload.blocked) {
+        setUiNotice({
+          tone: "watch",
+          title: `${label} blocked`,
+          detail: payload.error || payload.intervention?.blocked_reason || "This intervention is not currently safe to apply.",
+        });
+        return false;
+      }
+      if (!res.ok || !payload.ok || !payload.item) {
+        throw new Error(payload.error || `HTTP ${res.status}`);
+      }
+      setUiNotice({
+        tone: "good",
+        title: `${label} logged`,
+        detail: payload.intervention?.reason || "The operator intervention was recorded explicitly in the mission-local control tower log.",
+      });
+      await load();
+      return true;
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : `${label} failed`);
+      return false;
+    } finally {
+      setMissionSaving(false);
+      setMissionActionLabel("");
+    }
+  };
+
+  const answerBlocker = () => {
+    missionChatComposerRef.current?.focus();
+    setUiNotice({
+      tone: "info",
+      title: "Answer blocker in mission chat",
+      detail: missionSummaryQuestion || missionSummaryNextAnswer || "Use the mission chat composer below to send the missing detail.",
+    });
+  };
+
+  const runControlTowerAction = async (action: string) => {
+    const normalized = action.trim().toLowerCase();
+    if (normalized === "resume mission") {
+      await runLoggedControlTowerIntervention("resume_mission", {
+        label: "Resuming mission",
+        reason: "operator explicitly resumed the parked mission from control tower",
+      });
+      return;
+    }
+    if (normalized === "retry bounded action") {
+      await runLoggedControlTowerIntervention("retry_bounded_action", {
+        label: "Requesting bounded retry",
+        reason:
+          controlTowerSummary?.operator_attention_reason ||
+          controlTowerSummary?.last_retry_reason ||
+          controlTowerSummary?.last_blocked_reason ||
+          "Operator requested one bounded retry from the control tower.",
+      });
+      return;
+    }
+    if (normalized === "refresh assumptions") {
+      await runLoggedControlTowerIntervention("refresh_assumptions", {
+        label: "Refreshing assumptions",
+      });
+      return;
+    }
+    if (normalized === "sync helper returns") {
+      await runLoggedControlTowerIntervention("sync_helper_returns", {
+        label: "Syncing helper returns",
+      });
+      return;
+    }
+    if (normalized === "clear stale pending handoff") {
+      await runLoggedControlTowerIntervention("clear_stale_pending_handoff", {
+        label: "Clearing stale handoff",
+      });
+      return;
+    }
+    if (normalized === "answer blocker") {
+      answerBlocker();
+    }
+  };
+
   void [
     Activity,
     Database,
@@ -2540,46 +2718,6 @@ export default function Dashboard() {
                       </div>
                     </div>
 
-                    <div style={{ marginTop: 12, display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
-                      <div style={{ ...styles.previewBox, ...statusStripToneStyles[autonomyTone] }}>
-                        <div style={styles.subtleText}>Autonomy status</div>
-                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f5d0fe" }}>
-                          {missionAutonomyStatus?.autonomy_status || "ready"}
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                          {missionAutonomyStatus?.kill_switch_active
-                            ? "Return-all or nanny cooling is actively stopping movement."
-                            : missionAutonomyStatus?.parked
-                              ? "Mission parking is actively stopping movement."
-                              : "Only explicit, logged trigger movement is allowed."}
-                        </div>
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Last trigger outcome</div>
-                        <div style={{ marginTop: 4, fontSize: 13, fontWeight: 700, color: "#f5d0fe", lineHeight: 1.5 }}>
-                          {missionAutonomyStatus?.last_trigger_outcome || "idle: none"}
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5" }}>
-                          Pending action: {missionAutonomyStatus?.pending_action || "none"} · {missionAutonomyStatus?.pending_status || "idle"}
-                        </div>
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Retry budget</div>
-                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f5d0fe" }}>
-                          {missionAutonomyStatus?.retry_budget_summary || "0/0 used, 0 remaining"}
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5" }}>
-                          Bounded retry only. No hidden loops or background resubmits.
-                        </div>
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Last blocked reason</div>
-                        <div style={{ marginTop: 4, fontSize: 13, fontWeight: 700, color: "#fde68a", lineHeight: 1.5 }}>
-                          {missionAutonomyStatus?.last_blocked_reason || "No current autonomy block is recorded."}
-                        </div>
-                      </div>
-                    </div>
-
                     <div style={{ marginTop: 12, display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
                       <div style={styles.previewBox}>
                         <div style={styles.subtleText}>{missionSummaryCanContinue ? "Why it is continuing" : "Why it is blocked"}</div>
@@ -2845,6 +2983,167 @@ export default function Dashboard() {
                             : "No review preview has been opened yet."}
                       </div>
                       {missionLoading ? <div style={{ marginTop: 8, ...styles.subtleText }}>Loading mission detail...</div> : null}
+                    </div>
+                  </div>
+
+                  <div style={{ ...styles.recordCard, ...statusStripToneStyles[controlTowerAutonomyTone] }}>
+                    <div style={styles.recordMetaRow}>
+                      <div>
+                        <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Control Tower</div>
+                        <div style={styles.subtleText}>Operator control layer: what happened, what is blocked, who acted, and the safest next move.</div>
+                      </div>
+                      <span style={{ ...styles.badge, ...statusStripToneStyles[controlTowerAutonomyTone] }}>
+                        {controlTowerAutonomyState}
+                      </span>
+                    </div>
+
+                    <div style={{ marginTop: 12, display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Autonomy status</div>
+                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f5d0fe" }}>{controlTowerAutonomyState}</div>
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
+                          {missionAutonomyStatus?.kill_switch_active
+                            ? "Return-all or nanny cooling is stopping movement."
+                            : missionAutonomyStatus?.parked
+                              ? "Mission parking is stopping movement."
+                              : "Only explicit, logged movement is allowed."}
+                        </div>
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Latest trigger outcome</div>
+                        <div style={{ marginTop: 4, fontSize: 13, fontWeight: 700, color: "#f5d0fe", lineHeight: 1.5 }}>
+                          {controlTowerSummary?.last_trigger_outcome || missionAutonomyStatus?.last_trigger_outcome || "idle: none"}
+                        </div>
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
+                          {controlTowerSummary?.last_trigger?.trigger_kind
+                            ? `${titleCaseLabel(controlTowerSummary.last_trigger.trigger_kind)} · ${controlTowerSummary.last_trigger.status || "logged"}`
+                            : `Pending action: ${missionAutonomyStatus?.pending_action || "none"} · ${missionAutonomyStatus?.pending_status || "idle"}`}
+                        </div>
+                        {controlTowerSummary?.last_trigger?.reason ? (
+                          <div style={{ marginTop: 6, fontSize: 12, color: "#94a3b8", lineHeight: 1.5 }}>
+                            Reason: {controlTowerSummary.last_trigger.reason}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Retry budget</div>
+                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f5d0fe" }}>
+                          {controlTowerRetryUsed}/{controlTowerRetryBudget} used
+                        </div>
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
+                          {controlTowerRetryRemaining} remaining. Bounded retry only.
+                          {controlTowerSummary?.last_retry_reason ? ` Last retry: ${controlTowerSummary.last_retry_reason}.` : ""}
+                        </div>
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Latest block reason</div>
+                        <div style={{ marginTop: 4, fontSize: 13, fontWeight: 700, color: "#fde68a", lineHeight: 1.5 }}>
+                          {controlTowerSummary?.last_blocked_reason || "No current autonomy block is recorded."}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ marginTop: 12, display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Active handoff</div>
+                        <div style={{ marginTop: 8, fontSize: 13, color: "#e2e8f0", lineHeight: 1.55 }}>
+                          {controlTowerSummary?.active_role_handoff?.target_role
+                            ? `${controlTowerSummary.active_role_handoff.target_role} is ${controlTowerSummary.active_role_handoff.status || "active"} on ${controlTowerSummary.active_role_handoff.allowed_action || "a logged action"}.`
+                            : "No active handoff is open right now."}
+                        </div>
+                        {controlTowerSummary?.active_role_handoff?.reason ? (
+                          <div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8", lineHeight: 1.5 }}>
+                            {controlTowerSummary.active_role_handoff.reason}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Latest role activity</div>
+                        <div style={{ marginTop: 8, fontSize: 13, color: "#e2e8f0", lineHeight: 1.55 }}>
+                          {controlTowerSummary?.latest_role_activity?.role
+                            ? `${controlTowerSummary.latest_role_activity.role} last acted through ${titleCaseLabel(controlTowerSummary.latest_role_activity.kind || "activity")}.`
+                            : "No role activity has been summarized yet."}
+                        </div>
+                        <div style={{ marginTop: 8, fontSize: 12, color: "#cbd5f5", lineHeight: 1.55 }}>
+                          {controlTowerSummary?.latest_role_activity?.summary || "No recent role summary is available."}
+                        </div>
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Operator attention</div>
+                        <div style={{ marginTop: 8, fontSize: 13, color: "#fde68a", lineHeight: 1.55 }}>
+                          {controlTowerSummary?.operator_attention_reason || missionSummaryReason || "No immediate operator attention is required."}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ ...styles.previewBox, marginTop: 12 }}>
+                      <div style={styles.recordMetaRow}>
+                        <div>
+                          <div style={{ fontSize: 14, fontWeight: 700, color: "#f5d0fe" }}>Recent interventions</div>
+                          <div style={styles.subtleText}>Explicit operator actions recorded in the mission-local intervention log.</div>
+                        </div>
+                      </div>
+                      <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                        {recentControlInterventions.length ? (
+                          recentControlInterventions.slice(0, 3).map((entry) => (
+                            <div key={entry.intervention_id || `${entry.action}:${entry.created_at}`} style={styles.previewBox}>
+                              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+                                <div style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>
+                                  {titleCaseLabel((entry.action || "intervention").replace(/_/g, " "))}
+                                </div>
+                                <span style={entry.status === "blocked" ? { ...styles.badge, ...styles.badgeWarn } : { ...styles.badge, ...styles.badgeGood }}>
+                                  {entry.status || "logged"}
+                                </span>
+                              </div>
+                              <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.55 }}>
+                                {entry.blocked_reason || entry.reason || "No intervention detail recorded."}
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <span style={styles.subtleText}>No operator interventions have been logged for this mission yet.</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div style={{ ...styles.previewBox, marginTop: 12 }}>
+                      <div style={styles.recordMetaRow}>
+                        <div>
+                          <div style={{ fontSize: 14, fontWeight: 700, color: "#f5d0fe" }}>Safe operator actions</div>
+                          <div style={styles.subtleText}>Explicit buttons only. No hidden execution.</div>
+                        </div>
+                        {unsupportedControlActions.length ? (
+                          <span style={styles.badge}>{unsupportedControlActions.length} additional recommendation{unsupportedControlActions.length === 1 ? "" : "s"}</span>
+                        ) : null}
+                      </div>
+                      <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
+                        {supportedControlActions.length ? (
+                          supportedControlActions.map((action) => (
+                            <motion.button
+                              key={action}
+                              type="button"
+                              onClick={() => runControlTowerAction(action)}
+                              disabled={missionLoading || missionSaving || loading}
+                              style={action.toLowerCase() === "answer blocker" ? styles.refreshButton : styles.secondaryButton}
+                              whileHover={{ scale: 1.02 }}
+                              whileTap={{ scale: 0.98 }}
+                            >
+                              {titleCaseLabel(action)}
+                            </motion.button>
+                          ))
+                        ) : (
+                          <span style={styles.subtleText}>No explicit operator action is recommended right now.</span>
+                        )}
+                      </div>
+                      {unsupportedControlActions.length ? (
+                        <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
+                          {unsupportedControlActions.map((action) => (
+                            <span key={action} style={styles.badge}>
+                              {titleCaseLabel(action)}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                   </div>
 
@@ -3142,6 +3441,7 @@ export default function Dashboard() {
 
                     <div style={styles.previewBox}>
                       <textarea
+                        ref={missionChatComposerRef}
                         value={missionChatText}
                         onChange={(event) => setMissionChatDraft(event.target.value)}
                         placeholder="Ask a question, add more context, or give the mission a direct instruction."

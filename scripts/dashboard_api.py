@@ -46,6 +46,9 @@ RUNNER_RETURNS_DIRNAME = "runner_returns"
 RETRY_LEDGER_FILENAME = "retries.json"
 ASSUMPTIONS_DIRNAME = "assumptions"
 ASSUMPTION_LEDGER_FILENAME = "ledger.json"
+INTERVENTIONS_DIRNAME = "interventions"
+INTERVENTION_LOG_FILENAME = "log.jsonl"
+MIRROR_DIRNAME = "mirror"
 MEMORY_DIR = ROOT / "memory"
 DISPATCH_DIR = MEMORY_DIR / "dispatch"
 GOVERNANCE_DIR = ROOT / "logs" / "governance"
@@ -154,6 +157,7 @@ def normalize_event(raw: dict[str, Any]) -> dict[str, Any]:
         "honcho_bridge_watcher",
         "dispatch_petition",
         "item_world_nanny",
+        "operator_intervention",
     }
     allowed_statuses = {
         "created",
@@ -172,6 +176,8 @@ def normalize_event(raw: dict[str, Any]) -> dict[str, Any]:
         "warm",
         "hot",
         "paused",
+        "applied",
+        "blocked",
     }
     raw_type = raw.get("event_type") or "watcher_scan"
     raw_status = raw.get("status") or "created"
@@ -344,36 +350,53 @@ def _ensure_workbench_structure(mission_id: str) -> Path:
     return root
 
 
-def _mission_chat_path(mission_id: str) -> Path:
-    return _ensure_workbench_structure(mission_id) / "notes" / MISSION_CHAT_FILENAME
+def _workbench_notes_root(mission_id: str, *, ensure: bool = False) -> Path:
+    root = _ensure_workbench_structure(mission_id) if ensure else _workbench_root(mission_id)
+    return root / "notes"
 
 
-def _mission_parking_path(mission_id: str) -> Path:
-    return _ensure_workbench_structure(mission_id) / "notes" / MISSION_PARKING_FILENAME
+def _mission_chat_path(mission_id: str, *, ensure: bool = False) -> Path:
+    return _workbench_notes_root(mission_id, ensure=ensure) / MISSION_CHAT_FILENAME
 
 
-def _triggers_dir(mission_id: str) -> Path:
-    return _ensure_workbench_structure(mission_id) / "notes" / TRIGGERS_DIRNAME
+def _mission_parking_path(mission_id: str, *, ensure: bool = False) -> Path:
+    return _workbench_notes_root(mission_id, ensure=ensure) / MISSION_PARKING_FILENAME
 
 
-def _trigger_handoff_path(mission_id: str) -> Path:
-    return _triggers_dir(mission_id) / TRIGGER_HANDOFF_FILENAME
+def _triggers_dir(mission_id: str, *, ensure: bool = False) -> Path:
+    return _workbench_notes_root(mission_id, ensure=ensure) / TRIGGERS_DIRNAME
 
 
-def _runner_returns_dir(mission_id: str) -> Path:
-    return _ensure_workbench_structure(mission_id) / "notes" / RUNNER_RETURNS_DIRNAME
+def _trigger_handoff_path(mission_id: str, *, ensure: bool = False) -> Path:
+    return _triggers_dir(mission_id, ensure=ensure) / TRIGGER_HANDOFF_FILENAME
 
 
-def _retry_ledger_path(mission_id: str) -> Path:
-    return _ensure_workbench_structure(mission_id) / "notes" / RETRY_LEDGER_FILENAME
+def _runner_returns_dir(mission_id: str, *, ensure: bool = False) -> Path:
+    return _workbench_notes_root(mission_id, ensure=ensure) / RUNNER_RETURNS_DIRNAME
 
 
-def _assumptions_dir(mission_id: str) -> Path:
-    return _ensure_workbench_structure(mission_id) / "notes" / ASSUMPTIONS_DIRNAME
+def _retry_ledger_path(mission_id: str, *, ensure: bool = False) -> Path:
+    return _workbench_notes_root(mission_id, ensure=ensure) / RETRY_LEDGER_FILENAME
 
 
-def _assumption_ledger_path(mission_id: str) -> Path:
-    return _assumptions_dir(mission_id) / ASSUMPTION_LEDGER_FILENAME
+def _assumptions_dir(mission_id: str, *, ensure: bool = False) -> Path:
+    return _workbench_notes_root(mission_id, ensure=ensure) / ASSUMPTIONS_DIRNAME
+
+
+def _assumption_ledger_path(mission_id: str, *, ensure: bool = False) -> Path:
+    return _assumptions_dir(mission_id, ensure=ensure) / ASSUMPTION_LEDGER_FILENAME
+
+
+def _mirror_dir(mission_id: str, *, ensure: bool = False) -> Path:
+    return _workbench_notes_root(mission_id, ensure=ensure) / MIRROR_DIRNAME
+
+
+def _interventions_dir(mission_id: str, *, ensure: bool = False) -> Path:
+    return _workbench_notes_root(mission_id, ensure=ensure) / INTERVENTIONS_DIRNAME
+
+
+def _intervention_log_path(mission_id: str, *, ensure: bool = False) -> Path:
+    return _interventions_dir(mission_id, ensure=ensure) / INTERVENTION_LOG_FILENAME
 
 
 def _mission_manifest_payload(mission_id: str) -> dict[str, Any] | None:
@@ -674,9 +697,114 @@ def _read_runner_returns(mission_id: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _read_mirror_notes(mission_id: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    root = _mirror_dir(mission_id)
+    if not root.exists():
+        return rows
+    for path in sorted((p for p in root.glob("*.json") if p.is_file()), key=lambda p: p.stat().st_mtime, reverse=True):
+        payload = _load_json(path)
+        if not isinstance(payload, dict):
+            continue
+        summary = str(
+            payload.get("summary")
+            or payload.get("reflection")
+            or payload.get("note")
+            or payload.get("text")
+            or payload.get("body")
+            or ""
+        ).strip()
+        rows.append({
+            "note_id": str(payload.get("note_id") or payload.get("reflection_id") or path.stem).strip(),
+            "role": str(payload.get("role") or "spinetop-mirror").strip() or "spinetop-mirror",
+            "kind": str(payload.get("kind") or "mirror_reflection").strip() or "mirror_reflection",
+            "summary": summary,
+            "created_at": str(payload.get("created_at") or payload.get("updated_at") or "").strip(),
+            "path": path.relative_to(ROOT).as_posix(),
+        })
+    return rows
+
+
+def _read_operator_interventions(mission_id: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for payload in reversed(_read_jsonl(_intervention_log_path(mission_id))):
+        action = str(payload.get("action") or "").strip()
+        status = str(payload.get("status") or "").strip()
+        if not action or not status:
+            continue
+        rows.append({
+            "intervention_id": str(payload.get("intervention_id") or "").strip(),
+            "action": action,
+            "status": status,
+            "reason": str(payload.get("reason") or "").strip(),
+            "note": str(payload.get("note") or "").strip(),
+            "blocked_reason": str(payload.get("blocked_reason") or "").strip(),
+            "created_at": str(payload.get("created_at") or "").strip(),
+            "changed_paths": [str(item).strip() for item in payload.get("changed_paths", []) if str(item).strip()],
+        })
+    return rows
+
+
+def _append_operator_intervention(
+    mission_id: str,
+    *,
+    action: str,
+    status: str,
+    reason: str = "",
+    note: str = "",
+    blocked_reason: str = "",
+    changed_paths: list[str] | None = None,
+) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    created_at = iso_now()
+    action_text = str(action).strip()
+    status_text = str(status).strip().lower() or "applied"
+    record = {
+        "intervention_id": f"intervention_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{_short_digest(f'{mission}|{action_text}|{created_at}')}",
+        "mission_id": mission,
+        "action": action_text,
+        "status": status_text,
+        "reason": str(reason).strip(),
+        "note": str(note).strip(),
+        "blocked_reason": str(blocked_reason).strip(),
+        "created_at": created_at,
+        "changed_paths": [str(item).strip() for item in (changed_paths or []) if str(item).strip()],
+        "derived_only": True,
+    }
+    _append_jsonl(_intervention_log_path(mission, ensure=True), record)
+    detail = record["blocked_reason"] or record["reason"] or action_text
+    log_topology_event("operator_intervention", f"{mission}:{action_text}", status_text, detail[:240])
+    return record
+
+
+def _pending_runner_return_sync_count(mission_id: str, runner_returns: list[dict[str, Any]] | None = None) -> int:
+    mission = normalize_mission_id(mission_id)
+    rows = runner_returns if isinstance(runner_returns, list) else _read_runner_returns(mission)
+    known_instance_ids = {
+        str(item.get("instance_id") or "").strip()
+        for item in rows
+        if isinstance(item, dict) and str(item.get("instance_id") or "").strip()
+    }
+    pending = 0
+    for instance in _iter_helper_instances():
+        helper_type = str(instance.get("helper_type") or "").strip()
+        if helper_type not in {"runner_helper_2b", "retrieval_helper_2b"}:
+            continue
+        status = str(instance.get("status") or "").strip()
+        if status not in {"complete", "partial", "none_found", "blocked", "failed"}:
+            continue
+        instance_id = str(instance.get("helper_id") or "").strip()
+        if not instance_id or instance_id in known_instance_ids:
+            continue
+        output_payload, _ = _load_helper_output(instance)
+        if _linked_mission_id_for_helper(instance, output_payload) == mission:
+            pending += 1
+    return pending
+
+
 def _sync_runner_returns(mission_id: str) -> list[dict[str, Any]]:
     mission = normalize_mission_id(mission_id)
-    returns_dir = _runner_returns_dir(mission)
+    returns_dir = _runner_returns_dir(mission, ensure=True)
     existing = _read_runner_returns(mission)
     known_instance_ids = {
         str(item.get("instance_id") or "").strip()
@@ -713,21 +841,27 @@ def _sync_runner_returns_result(mission_id: str) -> dict[str, Any]:
     mission = normalize_mission_id(mission_id)
     before = _read_runner_returns(mission)
     before_ids = {
-        str(item.get("instance_id") or "").strip()
+        str(item.get("instance_id") or "").strip(): item
         for item in before
         if str(item.get("instance_id") or "").strip()
     }
     after = _sync_runner_returns(mission)
-    after_ids = {
-        str(item.get("instance_id") or "").strip()
+    created = [
+        {
+            "instance_id": instance_id,
+            "path": str(item.get("path") or "").strip(),
+        }
         for item in after
-        if str(item.get("instance_id") or "").strip()
-    }
-    new_ids = sorted(after_ids - before_ids)
+        if isinstance(item, dict)
+        for instance_id in [str(item.get("instance_id") or "").strip()]
+        if instance_id and instance_id not in before_ids
+    ]
+    created.sort(key=lambda item: str(item.get("instance_id") or ""))
     return {
         "mission_id": mission,
-        "created_count": len(new_ids),
-        "created_instance_ids": new_ids,
+        "created_count": len(created),
+        "created_instance_ids": [str(item.get("instance_id") or "").strip() for item in created],
+        "created": created,
         "runner_return_count": len(after),
         "latest_runner_return": after[0] if after else None,
     }
@@ -860,7 +994,7 @@ def _write_parking_status(
         record["parked_at"] = record["updated_at"]
     if normalized_status != "parked":
         record["parked_by"] = ""
-    _write_json(_mission_parking_path(mission), record)
+    _write_json(_mission_parking_path(mission, ensure=True), record)
     return record
 
 
@@ -974,7 +1108,7 @@ def _write_retry_ledger(mission_id: str, payload: dict[str, Any]) -> dict[str, A
     record["decision_log"] = _normalize_retry_log_items(record.get("decision_log"))
     record["updated_at"] = str(record.get("updated_at") or iso_now())
     record["derived_only"] = True
-    _write_json(_retry_ledger_path(mission), record)
+    _write_json(_retry_ledger_path(mission, ensure=True), record)
     return record
 
 
@@ -1000,7 +1134,7 @@ def _write_trigger_handoff(mission_id: str, payload: dict[str, Any]) -> dict[str
     record["mission_id"] = normalize_mission_id(mission_id)
     record["updated_at"] = str(record.get("updated_at") or iso_now())
     record["derived_only"] = True
-    _write_json(_trigger_handoff_path(mission_id), record)
+    _write_json(_trigger_handoff_path(mission_id, ensure=True), record)
     return record
 
 
@@ -1402,7 +1536,7 @@ def _create_trigger_record(
             "derived_only": True,
             "evaluation": evaluation,
         }
-        path = _triggers_dir(mission) / f"{trigger_id}.json"
+        path = _triggers_dir(mission, ensure=True) / f"{trigger_id}.json"
         retry_ledger = None
         if bool(spec.get("counts_against_retry_budget")):
             retry_decision = evaluation.get("retry_policy")
@@ -1664,7 +1798,7 @@ def _write_assumption_ledger_entries(mission_id: str, entries: list[dict[str, An
             normalized.append(row)
     normalized = _sorted_assumption_entries(normalized)
     _write_json(
-        _assumption_ledger_path(mission),
+        _assumption_ledger_path(mission, ensure=True),
         {
             "mission_id": mission,
             "derived_only": True,
@@ -1905,7 +2039,7 @@ def _refresh_assumption_ledger(mission_id: str) -> dict[str, Any]:
     written = _write_assumption_ledger_entries(mission, refreshed)
     return {
         "mission_id": mission,
-        "ledger_path": _assumption_ledger_path(mission).relative_to(ROOT).as_posix(),
+        "ledger_path": _assumption_ledger_path(mission, ensure=True).relative_to(ROOT).as_posix(),
         "derived_count": len(derived),
         "assumption_count": len(written),
         "active_assumption_count": len([item for item in written if str(item.get("status") or "") in {"active", "accepted"}]),
@@ -2640,7 +2774,7 @@ def _chat_reply(message: str, quick_reply: str | None, detail: dict[str, Any]) -
 def _append_chat_exchange(mission_id: str, message: str, *, quick_reply: str | None = None) -> dict[str, Any]:
     mission = normalize_mission_id(mission_id)
     detail = _build_expedition_detail(mission)
-    path = _mission_chat_path(mission)
+    path = _mission_chat_path(mission, ensure=True)
     user_item = {
         "message_id": f"chat_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{_short_digest(f'{mission}|user|{message}')}",
         "mission_id": mission,
@@ -3031,6 +3165,189 @@ def _mission_summary_payload(
     }
 
 
+def _safe_operator_actions(
+    *,
+    parking_status: dict[str, Any],
+    summary_preview: dict[str, Any],
+    last_blocked_reason: str,
+    retry_ledger: dict[str, Any],
+    latest_runner_return: dict[str, Any] | None,
+    latest_mirror_note: dict[str, Any] | None,
+    pending_helper_syncs: int,
+    active_handoff: dict[str, Any] | None,
+) -> list[str]:
+    actions: list[str] = []
+
+    def add(action: str, *, condition: bool = True) -> None:
+        action_text = str(action).strip()
+        if condition and action_text and action_text not in actions:
+            actions.append(action_text)
+
+    parked = str(parking_status.get("status") or "active") == "parked"
+    blocked_questions = [str(item).strip() for item in summary_preview.get("blocking_questions", []) if str(item).strip()]
+    blocked_reason = str(summary_preview.get("blocked_reason") or last_blocked_reason or "").strip()
+    operator_posture = str(summary_preview.get("operator_posture") or "").strip()
+    retry_budget_total = int(retry_ledger.get("retry_budget_total") or 0)
+    retry_budget_used = int(retry_ledger.get("retry_budget_used") or 0)
+    retry_available = retry_budget_used < retry_budget_total
+
+    add("resume mission", condition=parked)
+    add("answer blocker", condition=bool(blocked_questions) or bool(blocked_reason) or operator_posture == "needs_operator_answer")
+    add("refresh assumptions", condition=bool(summary_preview.get("assumption_review_needed")))
+    add("sync helper returns", condition=pending_helper_syncs > 0)
+    add("retry bounded action", condition=retry_available and _suggests_retry(latest_runner_return))
+    add("clear stale pending handoff", condition=isinstance(active_handoff, dict) and str(active_handoff.get("status") or "").strip() == "blocked")
+    add("inspect mirror note", condition=isinstance(latest_mirror_note, dict) and bool(latest_mirror_note.get("path")))
+
+    if isinstance(active_handoff, dict) and str(active_handoff.get("status") or "").strip() in {"pending", "active"}:
+        action = str(active_handoff.get("allowed_action") or "").strip()
+        if action == "resume_expedition":
+            add("resume mission")
+        elif action == "retry_expedition_refresh":
+            add("retry bounded action", condition=retry_available)
+
+    if not actions:
+        add(str(summary_preview.get("recommended_next_step") or "monitor mission state"))
+    return actions[:5]
+
+
+def _role_label_for_helper(helper_type: str) -> str:
+    helper = str(helper_type or "").strip()
+    if helper == "retrieval_helper_2b":
+        return "helper_2b"
+    if helper == "runner_helper_2b":
+        return "Expeditioner"
+    return helper or "unknown"
+
+
+def _latest_role_activity(
+    *,
+    latest_runner_return: dict[str, Any] | None,
+    latest_mirror_note: dict[str, Any] | None,
+    trigger_handoff: dict[str, Any],
+    manifest: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    candidates: list[dict[str, Any]] = []
+    if isinstance(latest_runner_return, dict) and (latest_runner_return.get("created_at") or latest_runner_return.get("path")):
+        candidates.append({
+            "role": _role_label_for_helper(str(latest_runner_return.get("helper_type") or latest_runner_return.get("runner_id") or "")),
+            "kind": "runner_return",
+            "summary": str(latest_runner_return.get("summary") or "").strip(),
+            "created_at": str(latest_runner_return.get("created_at") or "").strip(),
+            "source_ref": str(latest_runner_return.get("path") or latest_runner_return.get("source_ref") or "").strip(),
+        })
+    if isinstance(latest_mirror_note, dict) and (latest_mirror_note.get("created_at") or latest_mirror_note.get("path")):
+        candidates.append({
+            "role": "Mirror",
+            "kind": "mirror_note",
+            "summary": str(latest_mirror_note.get("summary") or "").strip(),
+            "created_at": str(latest_mirror_note.get("created_at") or "").strip(),
+            "source_ref": str(latest_mirror_note.get("path") or "").strip(),
+        })
+    if str(trigger_handoff.get("status") or "").strip() in {"pending", "active", "blocked"}:
+        candidates.append({
+            "role": str(trigger_handoff.get("target_role") or "").strip() or "Expeditioner",
+            "kind": "trigger_handoff",
+            "summary": str(trigger_handoff.get("allowed_action") or trigger_handoff.get("reason") or "").strip(),
+            "created_at": str(trigger_handoff.get("updated_at") or "").strip(),
+            "source_ref": _safe_relative_path(_trigger_handoff_path(str(trigger_handoff.get("mission_id") or ""))),
+        })
+    if isinstance(manifest, dict) and (manifest.get("updated_at") or manifest.get("created_at")):
+        candidates.append({
+            "role": "Expeditioner",
+            "kind": "mission_manifest",
+            "summary": str(manifest.get("summary") or manifest.get("recommended_next_step") or "").strip(),
+            "created_at": str(manifest.get("updated_at") or manifest.get("created_at") or "").strip(),
+            "source_ref": _safe_relative_path(mission_manifest_path(str(manifest.get("mission_id") or ""))),
+        })
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (str(item.get("created_at") or ""), str(item.get("source_ref") or "")), reverse=True)
+    return candidates[0]
+
+
+def _build_control_tower_summary(
+    *,
+    mission_id: str,
+    manifest: dict[str, Any] | None,
+    summary_preview: dict[str, Any],
+    autonomy_status: dict[str, Any],
+    latest_trigger: dict[str, Any] | None,
+    trigger_handoff: dict[str, Any],
+    retry_ledger: dict[str, Any],
+    parking_status: dict[str, Any],
+    runner_returns: list[dict[str, Any]],
+    mirror_notes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    latest_runner_return = runner_returns[0] if runner_returns else None
+    latest_mirror_note = mirror_notes[0] if mirror_notes else None
+    decision_log = retry_ledger.get("decision_log") if isinstance(retry_ledger.get("decision_log"), list) else []
+    last_retry_decision = decision_log[-1] if decision_log else {}
+    active_handoff = None
+    if str(trigger_handoff.get("status") or "").strip() in {"pending", "active", "blocked"}:
+        active_handoff = {
+            "target_role": str(trigger_handoff.get("target_role") or "").strip(),
+            "allowed_action": str(trigger_handoff.get("allowed_action") or "").strip(),
+            "status": str(trigger_handoff.get("status") or "").strip(),
+            "reason": str(trigger_handoff.get("reason") or "").strip(),
+            "updated_at": str(trigger_handoff.get("updated_at") or "").strip(),
+        }
+
+    pending_helper_syncs = _pending_runner_return_sync_count(mission_id, runner_returns)
+    blocked_questions = [str(item).strip() for item in summary_preview.get("blocking_questions", []) if str(item).strip()]
+    operator_attention_reason = (
+        str(autonomy_status.get("last_blocked_reason") or "").strip()
+        or (blocked_questions[0] if blocked_questions else "")
+        or str(summary_preview.get("operator_posture_reason") or "").strip()
+        or str((latest_mirror_note or {}).get("summary") or "").strip()
+    )
+    latest_role_activity = _latest_role_activity(
+        latest_runner_return=latest_runner_return,
+        latest_mirror_note=latest_mirror_note,
+        trigger_handoff=trigger_handoff,
+        manifest=manifest,
+    )
+    recent_interventions = _read_operator_interventions(mission_id)[:5]
+
+    return {
+        "autonomy_state": str(autonomy_status.get("autonomy_status") or autonomy_status.get("status") or "ready").strip(),
+        "last_trigger": (
+            {
+                "trigger_kind": str(latest_trigger.get("trigger_kind") or "").strip(),
+                "status": str(latest_trigger.get("status") or "").strip(),
+                "created_at": str(latest_trigger.get("created_at") or "").strip(),
+                "reason": str(latest_trigger.get("reason") or "").strip(),
+            }
+            if isinstance(latest_trigger, dict) and latest_trigger
+            else None
+        ),
+        "last_trigger_outcome": str(autonomy_status.get("last_trigger_outcome") or "").strip(),
+        "retry_budget": int(retry_ledger.get("retry_budget_total") or 0),
+        "retry_used": int(retry_ledger.get("retry_budget_used") or 0),
+        "last_retry_reason": str(
+            last_retry_decision.get("retry_reason")
+            or last_retry_decision.get("why_retried")
+            or retry_ledger.get("last_failure_reason")
+            or ""
+        ).strip(),
+        "last_blocked_reason": str(autonomy_status.get("last_blocked_reason") or "").strip(),
+        "active_role_handoff": active_handoff,
+        "latest_role_activity": latest_role_activity,
+        "operator_attention_reason": operator_attention_reason,
+        "recent_operator_interventions": recent_interventions,
+        "safe_operator_actions": _safe_operator_actions(
+            parking_status=parking_status,
+            summary_preview=summary_preview,
+            last_blocked_reason=str(autonomy_status.get("last_blocked_reason") or "").strip(),
+            retry_ledger=retry_ledger,
+            latest_runner_return=latest_runner_return,
+            latest_mirror_note=latest_mirror_note,
+            pending_helper_syncs=pending_helper_syncs,
+            active_handoff=active_handoff,
+        ),
+    }
+
+
 def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
     mission = normalize_mission_id(mission_id)
     mission_dir = _mission_root(mission)
@@ -3049,6 +3366,7 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
     latest_packet = _latest_clarification_summary(mission)
     runner_returns = _read_runner_returns(mission)
     latest_runner_return = runner_returns[0] if runner_returns else None
+    mirror_notes = _read_mirror_notes(mission)
     trigger_records = _read_trigger_records(mission)
     latest_trigger = trigger_records[0] if trigger_records else None
     pending_triggers = [item for item in trigger_records if str(item.get("status") or "") == "pending"]
@@ -3099,6 +3417,18 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
         return_all_enabled=bool(return_all.get("enabled")),
         nanny_cooling=str(nanny.get("temperature") or "cool") in {"warm", "hot"} or bool(nanny.get("cooldown_active")),
     )
+    control_tower_summary = _build_control_tower_summary(
+        mission_id=mission,
+        manifest=manifest if isinstance(manifest, dict) else None,
+        summary_preview=summary_preview,
+        autonomy_status=autonomy_status,
+        latest_trigger=latest_trigger,
+        trigger_handoff=trigger_handoff,
+        retry_ledger=retry_ledger,
+        parking_status=parking_status,
+        runner_returns=runner_returns,
+        mirror_notes=mirror_notes,
+    )
     status_badge = _mission_status_badge(
         current_state,
         manifest_status,
@@ -3142,6 +3472,7 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
         "trigger_handoff": trigger_handoff,
         "retry_ledger": retry_ledger,
         "autonomy_status": autonomy_status,
+        "control_tower_summary": control_tower_summary,
         "assumptions": assumption_entries,
         "active_assumption_count": len([item for item in assumption_entries if str(item.get("status") or "") in {"active", "accepted"}]),
         "assumption_count": len(assumption_entries),
@@ -3161,6 +3492,7 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
         "operator_options": list(summary_preview.get("operator_options") or []),
         "triage_bucket": str(summary_preview.get("triage_bucket") or ""),
         "mission_summary": summary_preview,
+        "mirror_notes": mirror_notes[:10],
         "mission_inputs": mission_inputs,
         "mission_chat": mission_chat,
         "workbench": {
@@ -3192,6 +3524,148 @@ def _write_mission_input(mission: str, content: str) -> dict[str, Any]:
     return {
         **record,
         "path": input_path.relative_to(ROOT).as_posix(),
+    }
+
+
+def _control_tower_intervention_reason(action: str, detail: dict[str, Any]) -> str:
+    summary = detail.get("control_tower_summary") if isinstance(detail.get("control_tower_summary"), dict) else {}
+    mission_summary = detail.get("mission_summary") if isinstance(detail.get("mission_summary"), dict) else {}
+    action_key = str(action).strip().lower()
+    if action_key == "resume_mission":
+        return "operator explicitly resumed the parked mission from control tower"
+    if action_key == "retry_bounded_action":
+        return (
+            str(summary.get("operator_attention_reason") or "").strip()
+            or str(summary.get("last_retry_reason") or "").strip()
+            or str(summary.get("last_blocked_reason") or "").strip()
+            or "operator requested one bounded retry from control tower"
+        )
+    if action_key == "refresh_assumptions":
+        return "operator requested an explicit assumption refresh from control tower"
+    if action_key == "sync_helper_returns":
+        return "operator requested a mission-local helper return sync from control tower"
+    if action_key == "clear_stale_pending_handoff":
+        return (
+            str(summary.get("last_blocked_reason") or "").strip()
+            or str(mission_summary.get("blocked_reason") or "").strip()
+            or "operator cleared a stale blocked handoff from control tower"
+        )
+    return "operator intervention from control tower"
+
+
+def _apply_control_tower_intervention(
+    mission_id: str,
+    *,
+    action: str,
+    reason: str = "",
+    note: str = "",
+) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    action_key = str(action).strip().lower()
+    if action_key not in {
+        "resume_mission",
+        "retry_bounded_action",
+        "refresh_assumptions",
+        "sync_helper_returns",
+        "clear_stale_pending_handoff",
+    }:
+        raise ValueError("unsupported intervention")
+
+    detail = _build_expedition_detail(mission)
+    effective_reason = str(reason).strip() or _control_tower_intervention_reason(action_key, detail)
+    changed_paths: list[str] = []
+    blocked_reason = ""
+    outcome: dict[str, Any] | None = None
+
+    if action_key == "resume_mission":
+        parking_status = detail.get("parking_status") if isinstance(detail.get("parking_status"), dict) else {}
+        if str(parking_status.get("status") or "active").strip() != "parked":
+            blocked_reason = "mission is not parked"
+        else:
+            record = _write_parking_status(mission, status="active", reason=effective_reason, parked_by="operator")
+            changed_paths.append(_mission_parking_path(mission).relative_to(ROOT).as_posix())
+            trigger = _create_trigger_record(
+                mission,
+                trigger_kind="mission_resumed",
+                reason=effective_reason,
+                source="control_tower_intervention",
+            )
+            if str(trigger.get("path") or "").strip():
+                changed_paths.append(str(trigger["path"]).strip())
+            changed_paths.append(_trigger_handoff_path(mission).relative_to(ROOT).as_posix())
+            outcome = {"parking_status": record, "trigger": trigger}
+    elif action_key == "retry_bounded_action":
+        trigger = _create_trigger_record(
+            mission,
+            trigger_kind="operator_refresh_requested",
+            reason=effective_reason,
+            source="control_tower_intervention",
+        )
+        if str(trigger.get("path") or "").strip():
+            changed_paths.append(str(trigger["path"]).strip())
+        if trigger.get("retry_ledger"):
+            changed_paths.append(_retry_ledger_path(mission).relative_to(ROOT).as_posix())
+        if str(((trigger.get("handoff") or {}).get("status") or "")).strip() == "pending":
+            changed_paths.append(_trigger_handoff_path(mission).relative_to(ROOT).as_posix())
+        evaluation = trigger.get("evaluation") if isinstance(trigger.get("evaluation"), dict) else {}
+        if str(trigger.get("status") or "").strip() == "blocked":
+            blocked_reason = str(evaluation.get("blocked_reason") or "retry blocked").strip()
+        outcome = {"trigger": trigger}
+    elif action_key == "refresh_assumptions":
+        refresh = _refresh_assumption_ledger(mission)
+        changed_paths.append(str(refresh.get("ledger_path") or _assumption_ledger_path(mission).relative_to(ROOT).as_posix()))
+        outcome = {"refresh": refresh}
+    elif action_key == "sync_helper_returns":
+        pending = _pending_runner_return_sync_count(mission)
+        if pending <= 0:
+            blocked_reason = "no unsynced helper returns are available"
+        else:
+            sync = _sync_runner_returns_result(mission)
+            created_paths = [
+                str(item.get("path") or "").strip()
+                for item in sync.get("created", [])
+                if isinstance(item, dict) and str(item.get("path") or "").strip()
+            ]
+            changed_paths.extend(created_paths)
+            outcome = {"sync": sync}
+    elif action_key == "clear_stale_pending_handoff":
+        handoff = _read_trigger_handoff(mission)
+        handoff_status = str(handoff.get("status") or "idle").strip()
+        if handoff_status != "blocked":
+            blocked_reason = "pending handoff is not a blocked stale overlay"
+        else:
+            cleared = _write_trigger_handoff(
+                mission,
+                {
+                    "trigger_id": "",
+                    "target_role": "",
+                    "allowed_action": "",
+                    "status": "idle",
+                    "reason": effective_reason,
+                    "policy_basis": "",
+                },
+            )
+            changed_paths.append(_trigger_handoff_path(mission).relative_to(ROOT).as_posix())
+            outcome = {"handoff": cleared}
+
+    status = "blocked" if blocked_reason else "applied"
+    intervention = _append_operator_intervention(
+        mission,
+        action=action_key,
+        status=status,
+        reason=effective_reason,
+        note=note,
+        blocked_reason=blocked_reason,
+        changed_paths=changed_paths,
+    )
+    item = _build_expedition_detail(mission)
+    return {
+        "ok": not bool(blocked_reason),
+        "blocked": bool(blocked_reason),
+        "error": blocked_reason,
+        "intervention": intervention,
+        "result": outcome or {},
+        "item": item,
     }
 
 
@@ -4636,6 +5110,43 @@ def api_expedition_triggers_create(mission_id: str):
         "trigger": trigger,
         "item": _build_expedition_detail(mission),
     })
+
+
+@app.post("/api/expeditions/<mission_id>/interventions")
+def api_expedition_interventions(mission_id: str):
+    try:
+        mission = normalize_mission_id(mission_id)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    if not _mission_exists(mission):
+        return jsonify({"ok": False, "error": "mission not found"}), 404
+    try:
+        payload = request.get_json(force=True) or {}
+    except Exception:
+        payload = {}
+
+    action = str(payload.get("action") or "").strip()
+    reason = str(payload.get("reason") or "").strip()
+    note = str(payload.get("note") or "").strip()
+    if not action:
+        return jsonify({"ok": False, "error": "action is required"}), 400
+    try:
+        result = _apply_control_tower_intervention(mission, action=action, reason=reason, note=note)
+    except ValueError as exc:
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+            "allowed_actions": [
+                "resume_mission",
+                "retry_bounded_action",
+                "refresh_assumptions",
+                "sync_helper_returns",
+                "clear_stale_pending_handoff",
+            ],
+        }), 400
+    if not result["ok"]:
+        return jsonify(result), 409
+    return jsonify(result)
 
 
 @app.post("/api/expeditions/<mission_id>/respond")
