@@ -555,7 +555,9 @@ type ExpeditionDetail = {
   latest_draft?: DraftRecord | Record<string, unknown> | null;
   latest_clarification_packet?: Record<string, unknown> | null;
   latest_runner_return?: RunnerReturn | Record<string, unknown> | null;
+  latest_agent_run?: Record<string, unknown> | null;
   runner_return_count?: number;
+  agent_run_count?: number;
   assumptions?: AssumptionEntry[];
   active_assumption_count?: number;
   assumption_count?: number;
@@ -635,6 +637,7 @@ type ExpeditionDetail = {
   artifact_count: number;
   input_count: number;
   chat_count: number;
+  agent_runs?: Record<string, unknown>[];
 };
 
 type MissionChatMessage = {
@@ -1405,12 +1408,32 @@ function formatAgeMinutes(value?: number | null): string {
   return `${days.toFixed(days < 10 ? 1 : 0)} d ago`;
 }
 
+function isMissionParked(
+  expedition?:
+    | {
+        parking_status?: { status?: string | null } | null;
+        triage_bucket?: string | null;
+        operator_posture?: string | null;
+        mission_summary?: { operator_posture?: string | null; triage_bucket?: string | null } | null;
+      }
+    | null
+): boolean {
+  if (!expedition) return false;
+  return (
+    expedition.parking_status?.status === "parked" ||
+    expedition.triage_bucket === "parked" ||
+    expedition.operator_posture === "parked" ||
+    expedition.mission_summary?.triage_bucket === "parked" ||
+    expedition.mission_summary?.operator_posture === "parked"
+  );
+}
+
 function expeditionPriority(expedition: ExpeditionSummary, selectedMissionId?: string | null): number {
   if (expedition.mission_id === selectedMissionId) return 0;
+  if (isMissionParked(expedition)) return 4;
   if (expedition.triage_bucket === "review") return 1;
   if (expedition.triage_bucket === "waiting") return 2;
   if (expedition.triage_bucket === "do_now") return 3;
-  if (expedition.triage_bucket === "parked") return 4;
   return 5;
 }
 
@@ -1454,8 +1477,8 @@ function groupExpeditions(expeditions: ExpeditionSummary[], selectedMissionId?: 
     return (a.primary.mission_id || "").localeCompare(b.primary.mission_id || "");
   });
 
-  const parked = groups.filter((group) => group.primary.triage_bucket === "parked");
-  const nonParked = groups.filter((group) => group.primary.triage_bucket !== "parked");
+  const parked = groups.filter((group) => missionFeedState(group.primary) === "PARKED");
+  const nonParked = groups.filter((group) => missionFeedState(group.primary) !== "PARKED");
   const selectedParked =
     selectedMissionId && parked.some((group) => group.items.some((item) => item.mission_id === selectedMissionId))
       ? parked.filter((group) => group.primary.mission_id === selectedMissionId || group.items.some((item) => item.mission_id === selectedMissionId))
@@ -1474,7 +1497,7 @@ function groupExpeditions(expeditions: ExpeditionSummary[], selectedMissionId?: 
 }
 
 function missionFeedState(expedition: ExpeditionSummary): FeedState {
-  if (expedition.parking_status?.status === "parked" || expedition.triage_bucket === "parked") return "PARKED";
+  if (isMissionParked(expedition)) return "PARKED";
   if (expedition.queue_hygiene?.review_ready || expedition.triage_bucket === "review") return "RETURNED";
   if (
     expedition.queue_hygiene?.blocked_candidate ||
@@ -1661,7 +1684,7 @@ export default function Dashboard() {
   const [dismissedMissionBuckets, setDismissedMissionBuckets] = useState<Record<string, DismissBucket>>({});
   const [showDuplicateMissions, setShowDuplicateMissions] = useState(false);
   const [showArchiveCandidates, setShowArchiveCandidates] = useState(false);
-  const [showParkedMissions, setShowParkedMissions] = useState(false);
+  const [showParkedMissions, setShowParkedMissions] = useState(true);
   const [triageMode, setTriageMode] = useState(false);
   const [workbenchFolder, setWorkbenchFolder] = useState("intake");
   const [selectedDraftPath, setSelectedDraftPath] = useState<string | null>(null);
@@ -1689,8 +1712,19 @@ export default function Dashboard() {
   const missionChatInFlightRef = useRef<string | null>(null);
   const autoTranslatedDraftRef = useRef<Record<string, string>>({});
   const autoReturnToBaseKeyRef = useRef<string | null>(null);
+  const hasInitializedMissionSelectionRef = useRef(false);
+  const pendingScrollRestoreRef = useRef<{ x: number; y: number } | null>(null);
+  const selectedMissionIdRef = useRef<string | null>(null);
   const unifiedDraftKey = selectedMissionId || "__new__";
   const unifiedIntentText = unifiedIntentDrafts[unifiedDraftKey] || "";
+  const selectedMissionSummary = selectedMissionId ? expeditions.find((item) => item.mission_id === selectedMissionId) ?? null : null;
+  const selectedMissionIsParked = isMissionParked(selectedMission) || isMissionParked(selectedMissionSummary);
+  const composerEligibleMissionId =
+    (selectedMissionId && selectedMissionSummary && missionFeedState(selectedMissionSummary) === "ACTIVE" ? selectedMissionId : null) ||
+    expeditions.find((item) => missionFeedState(item) === "ACTIVE")?.mission_id ||
+    null;
+  const composerRetargetedFromParkedMission =
+    !!selectedMissionId && selectedMissionIsParked && composerEligibleMissionId !== selectedMissionId;
 
   const loadJson = async <T,>(url: string): Promise<T> => {
     const res = await fetch(url);
@@ -1698,10 +1732,29 @@ export default function Dashboard() {
     return (await res.json()) as T;
   };
 
-  const load = async () => {
+  useEffect(() => {
+    selectedMissionIdRef.current = selectedMissionId;
+  }, [selectedMissionId]);
+
+  const restoreScrollPosition = () => {
+    const pending = pendingScrollRestoreRef.current;
+    if (!pending) return;
+    pendingScrollRestoreRef.current = null;
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        window.scrollTo(pending.x, pending.y);
+      });
+    });
+  };
+
+  const load = async (options?: { preserveScroll?: boolean }) => {
+    if (options?.preserveScroll) {
+      pendingScrollRestoreRef.current = { x: window.scrollX, y: window.scrollY };
+    }
     setLoading(true);
     try {
-      const [statusResult, runsResult, draftsResult, expeditionsResult] = await Promise.all([
+      const missionIdAtLoadStart = selectedMissionId;
+      const [statusResult, runsResult, draftsResult, expeditionsResult, selectedMissionResult] = await Promise.all([
         loadJson<StatusResponse>(`${API_BASE}/status`)
           .then((value) => ({ ok: true as const, value }))
           .catch((error) => ({ ok: false as const, error })),
@@ -1714,6 +1767,11 @@ export default function Dashboard() {
         loadJson<ExpeditionsResponse>(`${API_BASE}/expeditions`)
           .then((value) => ({ ok: true as const, value }))
           .catch((error) => ({ ok: false as const, error })),
+        missionIdAtLoadStart
+          ? loadJson<ExpeditionDetailResponse>(`${API_BASE}/expeditions/${missionIdAtLoadStart}`)
+              .then((value) => ({ ok: true as const, value, missionId: missionIdAtLoadStart }))
+              .catch((error) => ({ ok: false as const, error, missionId: missionIdAtLoadStart }))
+          : Promise.resolve({ ok: true as const, value: null, missionId: null }),
       ]);
 
       const errors: string[] = [];
@@ -1746,10 +1804,24 @@ export default function Dashboard() {
           expeditionsResult.value.queue_summary ||
             expeditionsResult.value.grouped_counts?.queue_summary || {}
         );
+        if (missionIdAtLoadStart && !items.some((item) => item.mission_id === missionIdAtLoadStart)) {
+          setSelectedMissionId((current) => (current === missionIdAtLoadStart ? null : current));
+          setSelectedMission((current) => (current?.mission_id === missionIdAtLoadStart ? null : current));
+        }
       } else {
         setExpeditions([]);
         setExpeditionQueueSummary({});
         errors.push(`expeditions: ${expeditionsResult.error instanceof Error ? expeditionsResult.error.message : "request failed"}`);
+      }
+
+      if (selectedMissionResult.ok && selectedMissionResult.value?.ok && selectedMissionResult.value.item && selectedMissionResult.missionId) {
+        if (selectedMissionIdRef.current === selectedMissionResult.missionId) {
+          setSelectedMission(selectedMissionResult.value.item);
+          const folders = selectedMissionResult.value.item.workbench?.folders || [];
+          if (folders.length && !folders.some((folder) => folder.name === workbenchFolder)) {
+            setWorkbenchFolder(folders[0].name);
+          }
+        }
       }
 
       setErrorText(errors.length ? `Using fallback data - ${errors.join(" | ")}` : "");
@@ -1765,18 +1837,37 @@ export default function Dashboard() {
       setSelectedMission(null);
     } finally {
       setLoading(false);
+      restoreScrollPosition();
     }
   };
 
   useEffect(() => {
     load();
-    const timer = window.setInterval(load, 5000);
+    const timer = window.setInterval(() => {
+      void load({ preserveScroll: true });
+    }, 5000);
     return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
-    if (!selectedMissionId && expeditions[0]?.mission_id) {
-      setSelectedMissionId(expeditions[0].mission_id);
+    if (selectedMissionId && expeditions.some((item) => item.mission_id === selectedMissionId)) {
+      hasInitializedMissionSelectionRef.current = true;
+      return;
+    }
+    if (selectedMissionId && !expeditions.some((item) => item.mission_id === selectedMissionId)) {
+      setSelectedMissionId(null);
+      setSelectedMission(null);
+      return;
+    }
+    if (!selectedMissionId && !hasInitializedMissionSelectionRef.current) {
+      const defaultMissionId =
+        expeditions.find((item) => missionFeedState(item) === "ACTIVE")?.mission_id ||
+        expeditions.find((item) => !isMissionParked(item))?.mission_id ||
+        expeditions[0]?.mission_id;
+      if (defaultMissionId) {
+        hasInitializedMissionSelectionRef.current = true;
+        setSelectedMissionId(defaultMissionId);
+      }
     }
   }, [expeditions, selectedMissionId]);
 
@@ -1815,25 +1906,25 @@ export default function Dashboard() {
     return () => {
       cancelled = true;
     };
-  }, [selectedMissionId, lastRefresh]);
+  }, [selectedMissionId]);
 
   useEffect(() => {
-    if (!selectedMissionId) return;
+    if (!composerEligibleMissionId) return;
     const content = unifiedIntentText.trim();
     if (!content) {
-      autoTranslatedDraftRef.current[selectedMissionId] = "";
+      autoTranslatedDraftRef.current[composerEligibleMissionId] = "";
       return;
     }
-    if (autoTranslatedDraftRef.current[selectedMissionId] === content) {
+    if (autoTranslatedDraftRef.current[composerEligibleMissionId] === content) {
       return;
     }
     const timer = window.setTimeout(() => {
-      setTranslatorDrafts((prev) => ({ ...prev, [selectedMissionId]: content }));
-      autoTranslatedDraftRef.current[selectedMissionId] = content;
-      void translateMissionPrompt(content, selectedMissionId, true);
+      setTranslatorDrafts((prev) => ({ ...prev, [composerEligibleMissionId]: content }));
+      autoTranslatedDraftRef.current[composerEligibleMissionId] = content;
+      void translateMissionPrompt(content, composerEligibleMissionId, true);
     }, 450);
     return () => window.clearTimeout(timer);
-  }, [selectedMissionId, unifiedIntentText]);
+  }, [composerEligibleMissionId, unifiedIntentText]);
 
   const packets = useMemo(() => groupPackets(data.events_recent || []), [data.events_recent]);
 
@@ -1977,16 +2068,25 @@ export default function Dashboard() {
   const latestDraft = selectedMission?.latest_draft ?? null;
   const latestClarificationPacket = selectedMission?.latest_clarification_packet ?? null;
   const latestRunnerReturn = selectedMission?.latest_runner_return ?? null;
+  const latestAgentRun = selectedMission?.latest_agent_run ?? null;
   const latestPromptTranslation = selectedMission?.latest_prompt_translation ?? null;
   const promptTranslationCount = selectedMission?.prompt_translation_count ?? 0;
   const dismissedTranslationId = selectedMissionId ? dismissedTranslationByMission[selectedMissionId] ?? null : null;
   const promptTranslationPreview =
     (selectedMissionId ? translatorPreviewByMission[selectedMissionId] ?? null : null) ||
     (latestPromptTranslation && latestPromptTranslation.translation_id !== dismissedTranslationId ? latestPromptTranslation : null);
+  const composerPromptTranslationPreview =
+    (composerEligibleMissionId ? translatorPreviewByMission[composerEligibleMissionId] ?? null : null) ||
+    (composerEligibleMissionId === selectedMissionId ? promptTranslationPreview : null);
   const missionSummary = selectedMission?.mission_summary ?? null;
   const missionParkingStatus = selectedMission?.parking_status ?? null;
   const missionAutonomyStatus = selectedMission?.autonomy_status ?? null;
   const controlTowerSummary = selectedMission?.control_tower_summary ?? null;
+  const latestRoleActivity = controlTowerSummary?.latest_role_activity ?? null;
+  const latestRoleActivityText =
+    latestRoleActivity?.role && latestRoleActivity?.summary
+      ? `${latestRoleActivity.role} -> ${latestRoleActivity.summary}`
+      : "No explicit role invocation recorded.";
   const runnerReturnCount = selectedMission?.runner_return_count ?? 0;
   const missionAssumptionEntries = selectedMission?.assumptions ?? [];
   const missionAssumptionCount = selectedMission?.assumption_count ?? missionAssumptionEntries.length;
@@ -2124,7 +2224,7 @@ export default function Dashboard() {
     const items: MissionAttentionItem[] = [];
 
     for (const expedition of expeditions) {
-      if (expedition.triage_bucket === "parked" || expedition.operator_posture === "parked") {
+      if (isMissionParked(expedition)) {
         items.push({
           key: `parked-${expedition.mission_id}`,
           mission_id: expedition.mission_id,
@@ -2199,7 +2299,7 @@ export default function Dashboard() {
     getRecordString(selectedMission?.manifest, "summary") ||
     selectedMission?.objective ||
     "No summary recorded yet.";
-  const localNewMissionTranslation: PromptTranslation | null = !selectedMissionId && unifiedIntentText.trim()
+  const localNewMissionTranslation: PromptTranslation | null = !composerEligibleMissionId && unifiedIntentText.trim()
     ? {
         translation_id: "local-new-mission",
         created_at: new Date().toISOString(),
@@ -2216,13 +2316,15 @@ export default function Dashboard() {
         recommended_safe_action: "create new mission from explicit operator intent",
         requires_operator_confirmation: true,
         translated_instruction: unifiedIntentText.trim(),
-        notes: ["No existing mission is focused, so this stays as a local start-mission draft until you confirm."],
+        notes: [
+          selectedMissionIsParked
+            ? "The focused mission is parked, so freeform input stays off that mission until you explicitly resume it."
+            : "No eligible active mission is focused, so this stays as a local start-mission draft until you confirm.",
+        ],
         derived_only: true,
       }
     : null;
-  const activeTranslationPreview =
-    (selectedMissionId ? promptTranslationPreview : null) ||
-    localNewMissionTranslation;
+  const activeTranslationPreview = composerPromptTranslationPreview || localNewMissionTranslation;
   const unifiedIntentLower = unifiedIntentText.trim().toLowerCase();
   const composerWantsQueueCleanup =
     !!unifiedIntentLower &&
@@ -2238,7 +2340,9 @@ export default function Dashboard() {
     ? "Existing mission"
     : composerWantsNewMission || activeTranslationPreview?.target_type === "new_mission"
       ? "New mission"
-      : "Existing mission";
+      : composerRetargetedFromParkedMission
+        ? "Another active mission"
+        : "Existing mission";
   const composerModeLabel = composerWantsQueueCleanup
     ? "Fix"
     : composerWantsNewMission || activeTranslationPreview?.target_type === "new_mission"
@@ -2256,7 +2360,7 @@ export default function Dashboard() {
     if (composerModeLabel === "Fix") return compactIntentLabel(unifiedIntentText, "Fix the mission flow");
     return compactIntentLabel(
       activeTranslationPreview?.recommended_safe_action || unifiedIntentText,
-      selectedMissionId ? "Continue the selected mission" : "Start a mission"
+      composerEligibleMissionId ? "Continue the active mission" : "Start a mission"
     );
   })();
   const composerRole = activeTranslationPreview?.recommended_role || (composerModeLabel === "Review" ? "sentinel" : "expeditioner");
@@ -2265,16 +2369,20 @@ export default function Dashboard() {
     ? ["Queue cleanup stays inside the current mission feed and does not delete anything."]
     : activeTranslationPreview?.notes?.length
       ? activeTranslationPreview.notes
-      : ["The composer is using the current mission focus and bounded local heuristics."];
+      : [
+          composerRetargetedFromParkedMission
+            ? "The focused mission is parked, so the composer is routing to another eligible active mission until you explicitly resume it."
+            : "The composer is using the current mission focus and bounded local heuristics.",
+        ];
   const composerInstruction = composerWantsQueueCleanup
     ? "Apply safe feed cleanup: collapse duplicates, park blocked missions, and mark archive candidates without changing backend triggers."
     : activeTranslationPreview?.translated_instruction || unifiedIntentText.trim();
   const composerPrimaryLabel =
-    composerWantsNewMission || (!selectedMissionId && !!unifiedIntentText.trim()) ? "Start mission" : "Do this";
+    composerWantsNewMission || (!composerEligibleMissionId && !!unifiedIntentText.trim()) ? "Start mission" : "Do this";
   const composerNeedsText =
     !composerWantsQueueCleanup &&
     !composerWantsNewMission &&
-    missionParkingStatus?.status !== "parked" &&
+    !selectedMissionIsParked &&
     selectedMission?.status_badge !== "ready_for_review" &&
     !latestDraftReviewPreview;
   const composerCanSubmit =
@@ -2308,7 +2416,7 @@ export default function Dashboard() {
     blockedReason: missionSummaryBlockedReason || missionSummaryReason,
   });
   const missionStateGauge = missionStateGaugeLabel({
-    parked: missionParkingStatus?.status === "parked",
+    parked: selectedMissionIsParked,
     blocked: !missionSummaryCanContinue || blockerType === "HUMAN",
     caution:
       !!missionAssumptionReviewNeeded ||
@@ -2355,8 +2463,7 @@ export default function Dashboard() {
   );
   const activeQueueItems = expeditions.filter(
     (expedition) =>
-      expedition.triage_bucket !== "parked" &&
-      expedition.triage_bucket !== "waiting" &&
+      missionFeedState(expedition) === "ACTIVE" &&
       !expedition.queue_hygiene?.archive_candidate &&
       !expedition.queue_hygiene?.duplicate_candidate
   );
@@ -2389,7 +2496,7 @@ export default function Dashboard() {
         action: "clean_queue" as const,
       };
     }
-    if (missionStateGauge === "PARKED") {
+    if (missionStateGauge === "PARKED" && !unifiedIntentText.trim()) {
       return {
         label: "Resume mission",
         detail: "Bring the parked mission back into the active lane.",
@@ -2410,7 +2517,7 @@ export default function Dashboard() {
         action: "review" as const,
       };
     }
-    if (!selectedMission || activeTranslationPreview?.target_type === "new_mission") {
+    if (!composerEligibleMissionId || activeTranslationPreview?.target_type === "new_mission") {
       return {
         label: "Start mission",
         detail: "Create a new mission from the confirmed intent in the top input.",
@@ -2419,7 +2526,9 @@ export default function Dashboard() {
     }
     return {
       label: "Continue mission",
-      detail: "Commit the confirmed intent to the focused mission through an explicit safe action.",
+      detail: composerRetargetedFromParkedMission
+        ? "Commit the confirmed intent to another eligible active mission until the parked mission is explicitly resumed."
+        : "Commit the confirmed intent to the focused mission through an explicit safe action.",
       action: "continue" as const,
     };
   })();
@@ -2430,7 +2539,7 @@ export default function Dashboard() {
       : activeTranslationPreview
         ? `${activeTranslationPreview.target_type === "new_mission"
             ? "New mission"
-            : `Mission ${activeTranslationPreview.target_mission_id || selectedMissionId || "selected"}`
+            : `Mission ${activeTranslationPreview.target_mission_id || composerEligibleMissionId || selectedMissionId || "selected"}`
           }: ${activeTranslationPreview.recommended_safe_action || dominantAction.detail}`
         : dominantAction.detail;
 
@@ -2908,8 +3017,8 @@ export default function Dashboard() {
     });
   };
 
-  const sendMissionChat = async (content: string, quickReply?: string) => {
-    const missionId = selectedMissionId;
+  const sendMissionChat = async (content: string, quickReply?: string, missionIdOverride?: string | null) => {
+    const missionId = missionIdOverride || selectedMissionId;
     if (!missionId) {
       setErrorText("Select an expedition first");
       return;
@@ -3246,7 +3355,7 @@ export default function Dashboard() {
     }
   };
 
-  const commitUnifiedIntent = async (mode?: "chat" | "input" | "create") => {
+  const commitUnifiedIntent = async (mode?: "chat" | "input" | "create", missionIdOverride?: string | null) => {
     const text = unifiedIntentText.trim();
     if (!text) {
       setUiNotice({
@@ -3256,10 +3365,12 @@ export default function Dashboard() {
       });
       return;
     }
+    const targetMissionId = missionIdOverride ?? composerEligibleMissionId ?? selectedMissionId;
+    const hasExistingTarget = !!targetMissionId && activeTranslationPreview?.target_type !== "new_mission";
     const safeAction = (activeTranslationPreview?.recommended_safe_action || "").toLowerCase();
     const resolvedMode =
       mode ||
-      (!selectedMission || activeTranslationPreview?.target_type === "new_mission"
+      (!hasExistingTarget
         ? "create"
         : /chat|answer|reply/.test(safeAction)
           ? "chat"
@@ -3270,14 +3381,15 @@ export default function Dashboard() {
       return;
     }
     if (resolvedMode === "chat") {
-      await sendMissionChat(text);
-      clearUnifiedIntentDraft(selectedMissionId);
+      await sendMissionChat(text, undefined, targetMissionId);
+      clearUnifiedIntentDraft(selectedMissionId || "__new__");
       return;
     }
-    if (selectedMissionId) {
-      setMissionInputDrafts((prev) => ({ ...prev, [selectedMissionId]: text }));
+    if (targetMissionId) {
+      setMissionInputDrafts((prev) => ({ ...prev, [targetMissionId]: text }));
     }
-    await sendMissionInput(text);
+    await sendMissionInput(text, targetMissionId || undefined);
+    clearUnifiedIntentDraft(selectedMissionId || "__new__");
   };
 
   const submitMissionComposer = async () => {
@@ -3498,6 +3610,17 @@ export default function Dashboard() {
                           <div style={{ marginTop: 6, fontSize: 13, color: "#cbd5f5", lineHeight: 1.55 }}>{getRecordString(latestRunnerReturn, "summary") || "No helper return is linked to this mission yet."}</div>
                           <div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8" }}>{mirrorDoorTest.available ? `${mirrorDoorBlocked} blocked, ${mirrorDoorAccepted} accepted, ${mirrorDoorUnexpected} unexpected mirror-door cases` : "Mirror-door summary not available."}</div>
                         </div>
+                        <div style={styles.previewBox}>
+                          <div style={styles.subtleText}>Latest role activity</div>
+                          <div style={{ marginTop: 6, fontSize: 13, color: "#cbd5f5", lineHeight: 1.55 }}>
+                            {latestRoleActivity?.role && latestRoleActivity?.summary
+                              ? `${latestRoleActivity.role} -> ${latestRoleActivity.summary}`
+                              : getRecordString(latestAgentRun, "summary") || "No explicit role invocation has been recorded yet."}
+                          </div>
+                          <div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8" }}>
+                            {latestRoleActivity?.created_at || getRecordString(latestAgentRun, "created_at") || "Awaiting explicit invocation"}
+                          </div>
+                        </div>
                       </div>
                       {shouldShowReturnToBase ? (
                         <div style={{ ...styles.previewBox, borderColor: "rgba(251,191,36,0.35)", background: "rgba(120,53,15,0.16)", marginTop: 0 }}>
@@ -3516,7 +3639,7 @@ export default function Dashboard() {
       </div>
 
       {showArchiveCandidates ? <div style={{ ...styles.recordCard, marginTop: 16 }}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Archive candidates</div><div style={styles.subtleText}>Dismissed or quiet missions stay here with their data intact.</div></div></div><div style={{ marginTop: 12, display: "grid", gap: 8 }}>{archiveFeedGroups.length ? archiveFeedGroups.map((group) => <div key={`archive-${group.group_key}`} style={styles.previewBox}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>{group.primary.objective || group.primary.mission_id}</div><div style={styles.subtleText}>{missionFeedSummary(group.primary)}</div></div><button type="button" onClick={() => restoreDismissedMission(group.primary.mission_id)} style={styles.secondaryButton}>View</button></div></div>) : <div style={styles.subtleText}>No archive candidates are hidden.</div>}</div></div> : null}
-      {showParkedMissions ? <div style={{ ...styles.recordCard, marginTop: 16 }}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Parked missions</div><div style={styles.subtleText}>Parked missions are quiet, retrievable, and never deleted.</div></div></div><div style={{ marginTop: 12, display: "grid", gap: 8 }}>{parkedFeedGroups.length ? parkedFeedGroups.map((group) => <div key={`parked-${group.group_key}`} style={styles.previewBox}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>{group.primary.objective || group.primary.mission_id}</div><div style={styles.subtleText}>{group.primary.operator_posture_reason || missionFeedSummary(group.primary)}</div></div><button type="button" onClick={() => restoreDismissedMission(group.primary.mission_id)} style={styles.secondaryButton}>View</button></div></div>) : <div style={styles.subtleText}>No parked missions are hidden.</div>}</div></div> : null}
+      {showParkedMissions ? <div style={{ ...styles.recordCard, marginTop: 16 }}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Parked missions</div><div style={styles.subtleText}>Parked missions are quiet, retrievable, and never deleted.</div></div></div><div style={{ marginTop: 12, display: "grid", gap: 8 }}>{parkedFeedGroups.length ? parkedFeedGroups.map((group) => <div key={`parked-${group.group_key}`} style={styles.previewBox}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>{group.primary.objective || group.primary.mission_id}</div><div style={styles.subtleText}>{group.primary.operator_posture_reason || missionFeedSummary(group.primary)}</div></div><button type="button" onClick={() => void setMissionParking("active", group.primary.mission_id)} style={styles.secondaryButton}>Resume</button></div></div>) : <div style={styles.subtleText}>No parked missions are hidden.</div>}</div></div> : null}
       {showDuplicateMissions ? <div style={{ ...styles.recordCard, marginTop: 16 }}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Duplicates</div><div style={styles.subtleText}>Collapsed duplicates stay grouped here so the main feed stays quiet.</div></div></div><div style={{ marginTop: 12, display: "grid", gap: 8 }}>{duplicateFeedGroups.length ? duplicateFeedGroups.map((group) => <div key={`duplicate-${group.group_key}`} style={styles.previewBox}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>{group.primary.objective || group.primary.mission_id}</div><div style={styles.subtleText}>{group.duplicate_count} related mission{group.duplicate_count === 1 ? "" : "s"}</div></div><button type="button" onClick={() => restoreDismissedMission(group.primary.mission_id)} style={styles.secondaryButton}>View</button></div></div>) : <div style={styles.subtleText}>No duplicate groups are hidden.</div>}</div></div> : null}
     </div>
   );
@@ -3586,7 +3709,11 @@ export default function Dashboard() {
             <div>
               <div style={{ fontSize: 22, fontWeight: 800, color: "#fef3c7" }}>Mission Composer</div>
               <div style={styles.subtleText}>
-                {selectedMissionId ? `Focused mission: ${selectedMissionId}` : "No mission selected. New mission drafts start here."}
+                {selectedMissionId
+                  ? selectedMissionIsParked
+                    ? `Focused mission: ${selectedMissionId} (parked). Freeform input will not target it until you explicitly resume it.`
+                    : `Focused mission: ${selectedMissionId}`
+                  : "No mission selected. New mission drafts start here."}
               </div>
             </div>
             <span style={{ ...styles.badge, ...styles.badgeOutline }}>{composerPrimaryLabel}</span>
@@ -3823,7 +3950,7 @@ export default function Dashboard() {
                 </div>
               ) : null}
 
-              <details style={styles.recordCard}><summary style={{ cursor: "pointer", fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Control Tower details</summary><div style={{ marginTop: 12, display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}><div style={styles.previewBox}><div style={styles.subtleText}>Autonomy</div><div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f8fafc" }}>{controlTowerAutonomyState}</div></div><div style={styles.previewBox}><div style={styles.subtleText}>Retry budget</div><div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f8fafc" }}>{controlTowerRetryRemaining} remaining</div></div><div style={styles.previewBox}><div style={styles.subtleText}>Attention reason</div><div style={{ marginTop: 4, fontSize: 12, color: "#cbd5f5" }}>{controlTowerSummary?.operator_attention_reason || missionSummaryReason}</div></div></div></details>
+              <details style={styles.recordCard}><summary style={{ cursor: "pointer", fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Control Tower details</summary><div style={{ marginTop: 12, display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}><div style={styles.previewBox}><div style={styles.subtleText}>Autonomy</div><div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f8fafc" }}>{controlTowerAutonomyState}</div></div><div style={styles.previewBox}><div style={styles.subtleText}>Retry budget</div><div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f8fafc" }}>{controlTowerRetryRemaining} remaining</div></div><div style={styles.previewBox}><div style={styles.subtleText}>Attention reason</div><div style={{ marginTop: 4, fontSize: 12, color: "#cbd5f5" }}>{controlTowerSummary?.operator_attention_reason || missionSummaryReason}</div></div><div style={styles.previewBox}><div style={styles.subtleText}>Latest role activity</div><div style={{ marginTop: 4, fontSize: 12, color: "#cbd5f5" }}>{latestRoleActivityText}</div></div></div></details>
               <details style={styles.recordCard}><summary style={{ cursor: "pointer", fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Assumptions</summary><div style={{ marginTop: 12, display: "grid", gap: 8 }}><div style={{ ...styles.previewBox, fontSize: 12, color: "#cbd5f5" }}>{missionActiveAssumptionCount} active of {missionAssumptionCount} total. Derived only, mission-local only, never canonical truth.</div>{visibleMissionAssumptions.length ? visibleMissionAssumptions.map((assumption) => <div key={assumption.assumption_id} style={styles.recordCard}><div style={styles.recordMetaRow}><div style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>{assumption.text}</div><div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const }}><span style={assumptionStatusBadgeStyle(assumption.status)}>{assumption.status}</span><span style={assumptionOperatorBadgeStyle(assumption.confirmation?.operator_status || "unreviewed")}>{assumption.confirmation?.operator_status || "unreviewed"}</span></div></div><div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8" }}>{assumption.reason}</div><div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" as const }}><button type="button" onClick={() => void reviewAssumption(assumption.assumption_id, "confirm")} style={styles.secondaryButton}>Accept</button><button type="button" onClick={() => void reviewAssumption(assumption.assumption_id, "reject")} style={styles.secondaryButton}>Reject</button></div></div>) : <div style={styles.subtleText}>No assumptions are visible yet.</div>}</div></details>
               <details style={styles.recordCard}><summary style={{ cursor: "pointer", fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Runner returns</summary><div style={{ marginTop: 12, display: "grid", gap: 10 }}><div style={styles.previewBox}><div style={styles.subtleText}>Latest helper return</div><div style={{ marginTop: 4, fontSize: 13, color: "#cbd5f5" }}>{getRecordString(latestRunnerReturn, "summary") || "No helper return is linked to this mission yet."}</div></div><button type="button" onClick={() => void syncRunnerReturns()} style={styles.secondaryButton}>Sync helper returns</button></div></details>
               <details style={styles.recordCard}><summary style={{ cursor: "pointer", fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Mirror</summary><div style={styles.previewBox}><div style={styles.subtleText}>Mirror-door summary</div><div style={{ marginTop: 4, fontSize: 13, color: "#cbd5f5" }}>{mirrorDoorTest.available ? `${mirrorDoorBlocked} blocked correctly, ${mirrorDoorAccepted} accepted, ${mirrorDoorUnexpected} unexpected` : "Mirror-door summary not available."}</div></div></details>
@@ -3938,7 +4065,7 @@ export default function Dashboard() {
 
             <div style={styles.refreshRow}>
               <div style={{ fontSize: 12, color: "#94a3b8" }}>Last refresh: {lastRefresh}</div>
-              <button onClick={load} disabled={loading} style={styles.refreshButton}>
+              <button onClick={() => void load({ preserveScroll: true })} disabled={loading} style={styles.refreshButton}>
                 <RefreshCw size={16} />
                 Refresh
               </button>

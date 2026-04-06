@@ -19,6 +19,7 @@ Start here:
 - [Mirror v1 Contract](mirror_contract_v1.md)
 - [Sentinel Model Lifecycle](hermes_model_lifecycle_v1.md)
 - [Hermes Profile Bootstrap](hermes_profile_bootstrap_v1.md)
+- [Agent Invocation Layer](agent_invocation_layer_v1.md)
 - [Sentinel Role Config](../config/sentinel_role.json)
 - [Mirror Role Config](../config/mirror_role.json)
 - [Knowledge Flow](knowledge_flow_README.md)

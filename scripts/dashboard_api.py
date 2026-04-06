@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from flask import Flask, jsonify, request
 
+from agent_invocation import invoke_role
 from autonomy_guardrails import build_autonomy_status_view, evaluate_autonomy_guardrails
 from validate_clarification_packet import validate_clarification_packet
 from state_machine import (
@@ -59,6 +60,7 @@ ASSUMPTION_LEDGER_FILENAME = "ledger.json"
 INTERVENTIONS_DIRNAME = "interventions"
 INTERVENTION_LOG_FILENAME = "log.jsonl"
 MIRROR_DIRNAME = "mirror"
+AGENT_RUNS_DIRNAME = "agent_runs"
 MEMORY_DIR = ROOT / "memory"
 DISPATCH_DIR = MEMORY_DIR / "dispatch"
 GOVERNANCE_DIR = ROOT / "logs" / "governance"
@@ -418,6 +420,13 @@ def _mirror_dir(mission_id: str, *, ensure: bool = False) -> Path:
     return _workbench_notes_root(mission_id, ensure=ensure) / MIRROR_DIRNAME
 
 
+def _agent_runs_dir(mission_id: str, *, ensure: bool = False) -> Path:
+    root = _workbench_notes_root(mission_id, ensure=ensure) / AGENT_RUNS_DIRNAME
+    if ensure:
+        root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def _interventions_dir(mission_id: str, *, ensure: bool = False) -> Path:
     return _workbench_notes_root(mission_id, ensure=ensure) / INTERVENTIONS_DIRNAME
 
@@ -760,6 +769,38 @@ def _read_mirror_notes(mission_id: str) -> list[dict[str, Any]]:
             "summary": summary,
             "created_at": str(payload.get("created_at") or payload.get("updated_at") or "").strip(),
             "path": path.relative_to(ROOT).as_posix(),
+        })
+    return rows
+
+
+def _read_agent_runs(mission_id: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    root = _agent_runs_dir(mission_id)
+    if not root.exists():
+        return rows
+    for path in sorted((p for p in root.glob("*.json") if p.is_file()), key=lambda p: p.stat().st_mtime, reverse=True):
+        payload = _load_json(path)
+        if not isinstance(payload, dict):
+            continue
+        output = payload.get("output") if isinstance(payload.get("output"), dict) else {}
+        summary = str(
+            payload.get("summary")
+            or output.get("result")
+            or payload.get("result")
+            or ""
+        ).strip()
+        rows.append({
+            "run_id": str(payload.get("run_id") or path.stem).strip(),
+            "role": str(payload.get("role") or "").strip(),
+            "role_label": str(payload.get("role_label") or "").strip(),
+            "kind": str(payload.get("artifact_kind") or "agent_role_invocation").strip(),
+            "summary": summary,
+            "created_at": str(payload.get("created_at") or "").strip(),
+            "path": path.relative_to(ROOT).as_posix(),
+            "status": str(payload.get("status") or "").strip(),
+            "trigger_reason": str(payload.get("trigger_reason") or "").strip(),
+            "confidence": payload.get("confidence", output.get("confidence")),
+            "next_step": str(payload.get("next_step") or output.get("next_step") or "").strip(),
         })
     return rows
 
@@ -3504,12 +3545,21 @@ def _role_label_for_helper(helper_type: str) -> str:
 
 def _latest_role_activity(
     *,
+    latest_agent_run: dict[str, Any] | None,
     latest_runner_return: dict[str, Any] | None,
     latest_mirror_note: dict[str, Any] | None,
     trigger_handoff: dict[str, Any],
     manifest: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
     candidates: list[dict[str, Any]] = []
+    if isinstance(latest_agent_run, dict) and (latest_agent_run.get("created_at") or latest_agent_run.get("path")):
+        candidates.append({
+            "role": str(latest_agent_run.get("role_label") or latest_agent_run.get("role") or "").strip() or "role",
+            "kind": "agent_run",
+            "summary": str(latest_agent_run.get("summary") or "").strip(),
+            "created_at": str(latest_agent_run.get("created_at") or "").strip(),
+            "source_ref": str(latest_agent_run.get("path") or "").strip(),
+        })
     if isinstance(latest_runner_return, dict) and (latest_runner_return.get("created_at") or latest_runner_return.get("path")):
         candidates.append({
             "role": _role_label_for_helper(str(latest_runner_return.get("helper_type") or latest_runner_return.get("runner_id") or "")),
@@ -3558,9 +3608,11 @@ def _build_control_tower_summary(
     trigger_handoff: dict[str, Any],
     retry_ledger: dict[str, Any],
     parking_status: dict[str, Any],
+    agent_runs: list[dict[str, Any]],
     runner_returns: list[dict[str, Any]],
     mirror_notes: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    latest_agent_run = agent_runs[0] if agent_runs else None
     latest_runner_return = runner_returns[0] if runner_returns else None
     latest_mirror_note = mirror_notes[0] if mirror_notes else None
     decision_log = retry_ledger.get("decision_log") if isinstance(retry_ledger.get("decision_log"), list) else []
@@ -3584,6 +3636,7 @@ def _build_control_tower_summary(
         or str((latest_mirror_note or {}).get("summary") or "").strip()
     )
     latest_role_activity = _latest_role_activity(
+        latest_agent_run=latest_agent_run,
         latest_runner_return=latest_runner_return,
         latest_mirror_note=latest_mirror_note,
         trigger_handoff=trigger_handoff,
@@ -3647,6 +3700,7 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
     latest_run = _latest_run_summary(mission)
     latest_draft = _latest_draft_summary(mission)
     latest_packet = _latest_clarification_summary(mission)
+    agent_runs = _read_agent_runs(mission)
     runner_returns = _read_runner_returns(mission)
     latest_runner_return = runner_returns[0] if runner_returns else None
     mirror_notes = _read_mirror_notes(mission)
@@ -3711,6 +3765,7 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
         trigger_handoff=trigger_handoff,
         retry_ledger=retry_ledger,
         parking_status=parking_status,
+        agent_runs=agent_runs,
         runner_returns=runner_returns,
         mirror_notes=mirror_notes,
     )
@@ -3781,7 +3836,9 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
         "latest_draft": latest_draft,
         "latest_clarification_packet": latest_packet,
         "latest_runner_return": latest_runner_return,
+        "latest_agent_run": agent_runs[0] if agent_runs else None,
         "runner_return_count": len(runner_returns),
+        "agent_run_count": len(agent_runs),
         "triggers": trigger_records[:20],
         "latest_trigger": latest_trigger,
         "trigger_count": len(trigger_records),
@@ -3811,6 +3868,7 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
         "queue_hygiene": queue_hygiene,
         "mission_summary": summary_preview,
         "mirror_notes": mirror_notes[:10],
+        "agent_runs": agent_runs[:10],
         "latest_prompt_translation": latest_prompt_translation,
         "prompt_translation_count": len(prompt_translations),
         "prompt_translations": prompt_translations[:10],
@@ -5479,6 +5537,49 @@ def api_expedition_sync_runner_returns(mission_id: str):
     return jsonify({
         "ok": True,
         "sync": sync,
+        "item": item,
+    })
+
+
+@app.post("/api/expeditions/<mission_id>/invoke-role")
+def api_expedition_invoke_role(mission_id: str):
+    try:
+        mission = normalize_mission_id(mission_id)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    if not _mission_exists(mission):
+        return jsonify({"ok": False, "error": "mission not found"}), 404
+    try:
+        payload = request.get_json(force=True) or {}
+    except Exception:
+        payload = {}
+
+    role_id = str(payload.get("role_id") or "").strip()
+    input_payload = payload.get("input_payload")
+    if not role_id:
+        return jsonify({"ok": False, "error": "role_id is required"}), 400
+    if input_payload is None:
+        input_payload = {}
+    if not isinstance(input_payload, dict):
+        return jsonify({"ok": False, "error": "input_payload must be an object"}), 400
+    if "trigger_reason" not in input_payload and payload.get("trigger_reason") is not None:
+        input_payload = dict(input_payload)
+        input_payload["trigger_reason"] = str(payload.get("trigger_reason") or "").strip()
+
+    try:
+        result = invoke_role(role_id, mission, input_payload)
+        log_topology_event(
+            "operator_intervention",
+            f"{result['role']}:{mission}",
+            "success" if result.get("ok") else str(result.get("status") or "created"),
+            str(((result.get("output") or {}) if isinstance(result.get("output"), dict) else {}).get("result") or "").strip(),
+        )
+        item = _build_expedition_detail(mission)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({
+        "ok": True,
+        "invocation": result,
         "item": item,
     })
 
