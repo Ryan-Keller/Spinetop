@@ -11,6 +11,30 @@ import {
   FileText,
   ClipboardList,
 } from "lucide-react";
+import {
+  blockerTypeLabel,
+  compactIntentLabel,
+  compactLabel,
+  deriveAttentionItems,
+  deriveExpeditionStatusTone,
+  deriveFeedBuckets,
+  deriveGateOpen,
+  derivePrimaryAction,
+  deriveQueueCounts,
+  dismissBucketForGroup,
+  dismissLabelForBucket,
+  getRecordObject,
+  getRecordString,
+  groupExpeditions,
+  isMissionParked,
+  missionConfidenceLabel,
+  missionFeedState,
+  missionFeedSummary,
+  missionStateGaugeLabel,
+  queuePressureLabel,
+} from "./dashboardSelectors";
+import { useDashboardData } from "./useDashboardData";
+import { useMissionActions } from "./useMissionActions";
 
 type EventStatus = "created" | "promotable" | "success" | "error" | "skipped";
 
@@ -351,37 +375,7 @@ type ExpeditionSummary = {
   path: string;
 };
 
-type ExpeditionGroup = {
-  group_key: string;
-  primary: ExpeditionSummary;
-  items: ExpeditionSummary[];
-  duplicate_count: number;
-  hidden_duplicate_count: number;
-};
-
-type FeedState = "ACTIVE" | "BLOCKED" | "RETURNED" | "PARKED";
-
 type DismissBucket = "archive" | "parked" | "duplicates";
-
-type ExpeditionGroupedCounts = {
-  total_missions?: number;
-  total_groups?: number;
-  duplicate_groups?: number;
-  duplicate_candidates?: number;
-  hidden_duplicate_count?: number;
-  queue_summary?: QueueSummary;
-};
-
-type QueueSummary = {
-  total_queued?: number;
-  active?: number;
-  parked?: number;
-  blocked?: number;
-  duplicate_candidates?: number;
-  stale_candidates?: number;
-  review_ready?: number;
-  archive_close_candidates?: number;
-};
 
 type MissionAttentionItem = {
   key: string;
@@ -666,21 +660,6 @@ type StatusResponse = {
   helper_2b_runtime?: Helper2bRuntimeStatus;
   mirror_door_test: MirrorDoorTestStatus;
   storage_overview?: StorageOverview;
-};
-
-type ExpeditionsResponse = {
-  ok: boolean;
-  source_root?: string;
-  items: ExpeditionSummary[];
-  grouped_counts?: ExpeditionGroupedCounts;
-  queue_summary?: QueueSummary;
-};
-
-type ExpeditionDetailResponse = {
-  ok: boolean;
-  available: boolean;
-  item: ExpeditionDetail | null;
-  error?: string;
 };
 
 type NoticeTone = "good" | "watch" | "bad" | "info";
@@ -1408,166 +1387,10 @@ function formatAgeMinutes(value?: number | null): string {
   return `${days.toFixed(days < 10 ? 1 : 0)} d ago`;
 }
 
-function isMissionParked(
-  expedition?:
-    | {
-        parking_status?: { status?: string | null } | null;
-        triage_bucket?: string | null;
-        operator_posture?: string | null;
-        mission_summary?: { operator_posture?: string | null; triage_bucket?: string | null } | null;
-      }
-    | null
-): boolean {
-  if (!expedition) return false;
-  return (
-    expedition.parking_status?.status === "parked" ||
-    expedition.triage_bucket === "parked" ||
-    expedition.operator_posture === "parked" ||
-    expedition.mission_summary?.triage_bucket === "parked" ||
-    expedition.mission_summary?.operator_posture === "parked"
-  );
-}
-
-function expeditionPriority(expedition: ExpeditionSummary, selectedMissionId?: string | null): number {
-  if (expedition.mission_id === selectedMissionId) return 0;
-  if (isMissionParked(expedition)) return 4;
-  if (expedition.triage_bucket === "review") return 1;
-  if (expedition.triage_bucket === "waiting") return 2;
-  if (expedition.triage_bucket === "do_now") return 3;
-  return 5;
-}
-
-function groupExpeditions(expeditions: ExpeditionSummary[], selectedMissionId?: string | null) {
-  const grouped = new Map<string, ExpeditionSummary[]>();
-  for (const expedition of expeditions) {
-    const groupKey = expedition.duplicate_group_key || expedition.objective_normalized || expedition.mission_id;
-    if (!grouped.has(groupKey)) {
-      grouped.set(groupKey, []);
-    }
-    grouped.get(groupKey)!.push(expedition);
-  }
-
-  const groups: ExpeditionGroup[] = Array.from(grouped.entries()).map(([groupKey, items]) => {
-    const sortedItems = [...items].sort((a, b) => {
-      const rankDiff = (a.duplicate_rank ?? 9999) - (b.duplicate_rank ?? 9999);
-      if (rankDiff !== 0) return rankDiff;
-      const lastUpdatedDiff = (b.last_updated || "").localeCompare(a.last_updated || "");
-      if (lastUpdatedDiff !== 0) return lastUpdatedDiff;
-      const createdDiff = (b.created_at || "").localeCompare(a.created_at || "");
-      if (createdDiff !== 0) return createdDiff;
-      return (a.mission_id || "").localeCompare(b.mission_id || "");
-    });
-    const primary = sortedItems.find((item) => item.is_group_primary) ?? sortedItems[0];
-    return {
-      group_key: groupKey,
-      primary,
-      items: sortedItems,
-      duplicate_count: sortedItems.length,
-      hidden_duplicate_count: Math.max(0, sortedItems.length - 1),
-    };
-  });
-
-  groups.sort((a, b) => {
-    const priorityDiff = expeditionPriority(a.primary, selectedMissionId) - expeditionPriority(b.primary, selectedMissionId);
-    if (priorityDiff !== 0) return priorityDiff;
-    const updatedDiff = (b.primary.last_updated || "").localeCompare(a.primary.last_updated || "");
-    if (updatedDiff !== 0) return updatedDiff;
-    const createdDiff = (b.primary.created_at || "").localeCompare(a.primary.created_at || "");
-    if (createdDiff !== 0) return createdDiff;
-    return (a.primary.mission_id || "").localeCompare(b.primary.mission_id || "");
-  });
-
-  const parked = groups.filter((group) => missionFeedState(group.primary) === "PARKED");
-  const nonParked = groups.filter((group) => missionFeedState(group.primary) !== "PARKED");
-  const selectedParked =
-    selectedMissionId && parked.some((group) => group.items.some((item) => item.mission_id === selectedMissionId))
-      ? parked.filter((group) => group.primary.mission_id === selectedMissionId || group.items.some((item) => item.mission_id === selectedMissionId))
-      : [];
-  const visibleGroups = [...nonParked, ...selectedParked].slice(0, 8);
-  const hiddenParkedCount = Math.max(0, parked.length - selectedParked.length);
-  const hiddenDuplicateCount = groups.reduce((sum, group) => sum + group.hidden_duplicate_count, 0);
-
-  return {
-    groups: visibleGroups,
-    allGroups: groups,
-    hiddenParkedCount,
-    hiddenDuplicateCount,
-    totalGroups: groups.length,
-  };
-}
-
-function missionFeedState(expedition: ExpeditionSummary): FeedState {
-  if (isMissionParked(expedition)) return "PARKED";
-  if (expedition.queue_hygiene?.review_ready || expedition.triage_bucket === "review") return "RETURNED";
-  if (
-    expedition.queue_hygiene?.blocked_candidate ||
-    expedition.operator_posture === "needs_operator_answer" ||
-    expedition.triage_bucket === "waiting" ||
-    expedition.status_badge === "waiting_for_user"
-  ) {
-    return "BLOCKED";
-  }
-  return "ACTIVE";
-}
-
-function missionConfidenceLabel(expedition: ExpeditionSummary): "LOW" | "MEDIUM" | "HIGH" {
-  const label = expedition.mission_summary?.confidence_label;
-  if (label === "high") return "HIGH";
-  if (label === "low") return "LOW";
-  return "MEDIUM";
-}
-
-function missionFeedSummary(expedition: ExpeditionSummary): string {
-  return (
-    expedition.mission_summary?.latest_summary ||
-    expedition.mission_summary?.summary ||
-    expedition.summary ||
-    expedition.operator_posture_reason ||
-    expedition.queue_action_reason ||
-    "No compressed mission summary yet."
-  );
-}
-
-function missionPrimaryActionLabel(expedition: ExpeditionSummary): string {
-  const state = missionFeedState(expedition);
-  if (state === "BLOCKED") return "Resolve";
-  if (state === "RETURNED") return "Review";
-  if (state === "PARKED") return "Resume";
-  return "Continue";
-}
-
-function dismissLabelForBucket(bucket: DismissBucket): string {
-  if (bucket === "duplicates") return "Hide duplicate";
-  if (bucket === "archive") return "Mark archive candidate";
-  return "Park mission";
-}
-
-function dismissBucketForGroup(group: ExpeditionGroup): DismissBucket {
-  const expedition = group.primary;
-  if (group.duplicate_count > 1) return "duplicates";
-  if (missionFeedState(expedition) === "BLOCKED") return "parked";
-  if (missionFeedState(expedition) === "PARKED") return "parked";
-  if (missionFeedState(expedition) === "RETURNED" || expedition.queue_hygiene?.archive_candidate) return "archive";
-  return "parked";
-}
-
-function getRecordString(record: unknown, key: string): string {
-  if (!record || typeof record !== "object") return "";
-  const value = (record as Record<string, unknown>)[key];
-  return typeof value === "string" ? value : "";
-}
-
 function getRecordNumber(record: unknown, key: string): number | null {
   if (!record || typeof record !== "object") return null;
   const value = (record as Record<string, unknown>)[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function getRecordObject(record: unknown, key: string): Record<string, unknown> | null {
-  if (!record || typeof record !== "object") return null;
-  const value = (record as Record<string, unknown>)[key];
-  if (!value || typeof value !== "object") return null;
-  return value as Record<string, unknown>;
 }
 
 function formatConfidence(value: number | null | undefined, fallback = "unknown"): string {
@@ -1577,58 +1400,6 @@ function formatConfidence(value: number | null | undefined, fallback = "unknown"
 
 void getRecordNumber;
 void formatConfidence;
-
-function titleCaseLabel(value: string): string {
-  return value
-    .split(/[\s_]+/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
-
-function compactLabel(value: string | null | undefined, fallback: string): string {
-  const text = String(value || "").trim();
-  return text ? titleCaseLabel(text) : fallback;
-}
-
-function missionStateGaugeLabel(args: {
-  parked: boolean;
-  blocked: boolean;
-  caution: boolean;
-}): "ACTIVE" | "CAUTION" | "BLOCKED" | "PARKED" {
-  if (args.parked) return "PARKED";
-  if (args.blocked) return "BLOCKED";
-  if (args.caution) return "CAUTION";
-  return "ACTIVE";
-}
-
-function queuePressureLabel(queueSummary: QueueSummary, totalExpeditions: number): "LIGHT" | "MODERATE" | "OVERLOADED" {
-  const totalQueued = queueSummary.total_queued ?? totalExpeditions;
-  const blocked = queueSummary.blocked ?? 0;
-  const duplicates = queueSummary.duplicate_candidates ?? 0;
-  if (totalQueued >= 8 || blocked >= 3 || duplicates >= 3) return "OVERLOADED";
-  if (totalQueued >= 4 || blocked >= 1 || duplicates >= 1) return "MODERATE";
-  return "LIGHT";
-}
-
-function blockerTypeLabel(args: {
-  canContinue: boolean;
-  operatorPosture: string;
-  blockingQuestions: string[];
-  queueHygiene?: ExpeditionSummary["queue_hygiene"];
-  blockedReason: string;
-}): "HUMAN" | "SYSTEM" | "JUNK" {
-  if (args.queueHygiene?.junk_pattern || args.queueHygiene?.duplicate_candidate || args.queueHygiene?.archive_candidate) {
-    return "JUNK";
-  }
-  if (!args.canContinue || args.operatorPosture === "needs_operator_answer" || args.blockingQuestions.length > 0) {
-    return "HUMAN";
-  }
-  if (/(retry|budget|handoff|system|refresh|pending|guard|blocked)/i.test(args.blockedReason || "")) {
-    return "SYSTEM";
-  }
-  return "SYSTEM";
-}
 
 function toneForGauge(value: string): StripTone {
   if (["ACTIVE", "READY", "HIGH", "LIGHT"].includes(value)) return "good";
@@ -1649,31 +1420,8 @@ function assumptionOperatorBadgeStyle(operatorStatus: string): React.CSSProperti
   return { ...styles.badge, ...styles.badgeWarn };
 }
 
-function titleCaseSentence(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return "";
-  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
-}
-
-function compactIntentLabel(value: string, fallback: string): string {
-  const trimmed = value
-    .replace(/\s+/g, " ")
-    .replace(/^(please|can you|could you|i want to|i need to|let's|lets)\s+/i, "")
-    .trim();
-  if (!trimmed) return fallback;
-  const clipped = trimmed.length > 88 ? `${trimmed.slice(0, 85).trimEnd()}...` : trimmed;
-  return titleCaseSentence(clipped);
-}
-
 export default function Dashboard() {
   const [viewMode, setViewMode] = useState<"missions" | "diagnostics">("missions");
-  const [data, setData] = useState<StatusResponse>(fallbackData);
-  const [hermesRuns, setHermesRuns] = useState<HermesRun[]>([]);
-  const [petitionDrafts, setPetitionDrafts] = useState<DraftRecord[]>([]);
-  const [expeditions, setExpeditions] = useState<ExpeditionSummary[]>(fallbackExpeditions);
-  const [expeditionQueueSummary, setExpeditionQueueSummary] = useState<QueueSummary>({});
-  const [selectedMissionId, setSelectedMissionId] = useState<string | null>(null);
-  const [selectedMission, setSelectedMission] = useState<ExpeditionDetail | null>(null);
   const [newMissionObjective, setNewMissionObjective] = useState("");
   const [unifiedIntentDrafts, setUnifiedIntentDrafts] = useState<Record<string, string>>({});
   const [missionInputDrafts, setMissionInputDrafts] = useState<Record<string, string>>({});
@@ -1685,13 +1433,13 @@ export default function Dashboard() {
   const [showDuplicateMissions, setShowDuplicateMissions] = useState(false);
   const [showArchiveCandidates, setShowArchiveCandidates] = useState(false);
   const [showParkedMissions, setShowParkedMissions] = useState(true);
+  const [expandedMissionIds, setExpandedMissionIds] = useState<Record<string, boolean>>({});
   const [triageMode, setTriageMode] = useState(false);
   const [workbenchFolder, setWorkbenchFolder] = useState("intake");
   const [selectedDraftPath, setSelectedDraftPath] = useState<string | null>(null);
   const [showAllAssumptions, setShowAllAssumptions] = useState(false);
   const [uiNotice, setUiNotice] = useState<UiNotice | null>(null);
   const [returnToBaseCountdown, setReturnToBaseCountdown] = useState<number | null>(null);
-  const [missionLoading, setMissionLoading] = useState(false);
   const [missionSaving, setMissionSaving] = useState(false);
   const [translatorSaving, setTranslatorSaving] = useState(false);
   const [missionActionLabel, setMissionActionLabel] = useState("");
@@ -1704,17 +1452,36 @@ export default function Dashboard() {
     { key: "governance", label: "Governance fidelity", value: 88, hint: "how strictly the mission honors the safe lanes" },
     { key: "uncertainty", label: "Uncertainty tolerance", value: 55, hint: "how boldly the mission handles fuzzy tasks" },
   ]);
-  const [loading, setLoading] = useState(false);
-  const [lastRefresh, setLastRefresh] = useState("demo data");
-  const [errorText, setErrorText] = useState("");
   const [selectedRecord, setSelectedRecord] = useState<string | null>(null);
   const missionInputInFlightRef = useRef<string | null>(null);
   const missionChatInFlightRef = useRef<string | null>(null);
   const autoTranslatedDraftRef = useRef<Record<string, string>>({});
   const autoReturnToBaseKeyRef = useRef<string | null>(null);
-  const hasInitializedMissionSelectionRef = useRef(false);
-  const pendingScrollRestoreRef = useRef<{ x: number; y: number } | null>(null);
-  const selectedMissionIdRef = useRef<string | null>(null);
+  const {
+    data,
+    hermesRuns,
+    petitionDrafts,
+    expeditions,
+    expeditionQueueSummary,
+    selectedMissionId,
+    setSelectedMissionId,
+    selectedMission,
+    setSelectedMission,
+    missionDetailsById,
+    loading,
+    missionLoading,
+    lastRefresh,
+    errorText,
+    setErrorText,
+    load,
+    loadMissionDetail,
+  } = useDashboardData({
+    apiBase: API_BASE,
+    fallbackData,
+    fallbackExpeditions,
+    workbenchFolder,
+    setWorkbenchFolder,
+  });
   const unifiedDraftKey = selectedMissionId || "__new__";
   const unifiedIntentText = unifiedIntentDrafts[unifiedDraftKey] || "";
   const selectedMissionSummary = selectedMissionId ? expeditions.find((item) => item.mission_id === selectedMissionId) ?? null : null;
@@ -1723,190 +1490,27 @@ export default function Dashboard() {
     (selectedMissionId && selectedMissionSummary && missionFeedState(selectedMissionSummary) === "ACTIVE" ? selectedMissionId : null) ||
     expeditions.find((item) => missionFeedState(item) === "ACTIVE")?.mission_id ||
     null;
-  const composerRetargetedFromParkedMission =
-    !!selectedMissionId && selectedMissionIsParked && composerEligibleMissionId !== selectedMissionId;
-
-  const loadJson = async <T,>(url: string): Promise<T> => {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return (await res.json()) as T;
-  };
-
-  useEffect(() => {
-    selectedMissionIdRef.current = selectedMissionId;
-  }, [selectedMissionId]);
-
-  const restoreScrollPosition = () => {
-    const pending = pendingScrollRestoreRef.current;
-    if (!pending) return;
-    pendingScrollRestoreRef.current = null;
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
-        window.scrollTo(pending.x, pending.y);
-      });
-    });
-  };
-
-  const load = async (options?: { preserveScroll?: boolean }) => {
-    if (options?.preserveScroll) {
-      pendingScrollRestoreRef.current = { x: window.scrollX, y: window.scrollY };
-    }
-    setLoading(true);
-    try {
-      const missionIdAtLoadStart = selectedMissionId;
-      const [statusResult, runsResult, draftsResult, expeditionsResult, selectedMissionResult] = await Promise.all([
-        loadJson<StatusResponse>(`${API_BASE}/status`)
-          .then((value) => ({ ok: true as const, value }))
-          .catch((error) => ({ ok: false as const, error })),
-        loadJson<{ ok: boolean; items: HermesRun[] }>(`${API_BASE}/hermes/runs?limit=6`)
-          .then((value) => ({ ok: true as const, value }))
-          .catch((error) => ({ ok: false as const, error })),
-        loadJson<{ ok: boolean; items: DraftRecord[] }>(`${API_BASE}/petition-drafts?limit=6`)
-          .then((value) => ({ ok: true as const, value }))
-          .catch((error) => ({ ok: false as const, error })),
-        loadJson<ExpeditionsResponse>(`${API_BASE}/expeditions`)
-          .then((value) => ({ ok: true as const, value }))
-          .catch((error) => ({ ok: false as const, error })),
-        missionIdAtLoadStart
-          ? loadJson<ExpeditionDetailResponse>(`${API_BASE}/expeditions/${missionIdAtLoadStart}`)
-              .then((value) => ({ ok: true as const, value, missionId: missionIdAtLoadStart }))
-              .catch((error) => ({ ok: false as const, error, missionId: missionIdAtLoadStart }))
-          : Promise.resolve({ ok: true as const, value: null, missionId: null }),
-      ]);
-
-      const errors: string[] = [];
-
-      if (statusResult.ok) {
-        setData(statusResult.value);
-      } else {
-        setData(fallbackData);
-        errors.push(`status: ${statusResult.error instanceof Error ? statusResult.error.message : "request failed"}`);
-      }
-
-      if (runsResult.ok) {
-        setHermesRuns(Array.isArray(runsResult.value.items) ? runsResult.value.items : []);
-      } else {
-        setHermesRuns([]);
-        errors.push(`hermes runs: ${runsResult.error instanceof Error ? runsResult.error.message : "request failed"}`);
-      }
-
-      if (draftsResult.ok) {
-        setPetitionDrafts(Array.isArray(draftsResult.value.items) ? draftsResult.value.items : []);
-      } else {
-        setPetitionDrafts([]);
-        errors.push(`drafts: ${draftsResult.error instanceof Error ? draftsResult.error.message : "request failed"}`);
-      }
-
-      if (expeditionsResult.ok) {
-        const items = Array.isArray(expeditionsResult.value.items) ? expeditionsResult.value.items : [];
-        setExpeditions(items);
-        setExpeditionQueueSummary(
-          expeditionsResult.value.queue_summary ||
-            expeditionsResult.value.grouped_counts?.queue_summary || {}
-        );
-        if (missionIdAtLoadStart && !items.some((item) => item.mission_id === missionIdAtLoadStart)) {
-          setSelectedMissionId((current) => (current === missionIdAtLoadStart ? null : current));
-          setSelectedMission((current) => (current?.mission_id === missionIdAtLoadStart ? null : current));
-        }
-      } else {
-        setExpeditions([]);
-        setExpeditionQueueSummary({});
-        errors.push(`expeditions: ${expeditionsResult.error instanceof Error ? expeditionsResult.error.message : "request failed"}`);
-      }
-
-      if (selectedMissionResult.ok && selectedMissionResult.value?.ok && selectedMissionResult.value.item && selectedMissionResult.missionId) {
-        if (selectedMissionIdRef.current === selectedMissionResult.missionId) {
-          setSelectedMission(selectedMissionResult.value.item);
-          const folders = selectedMissionResult.value.item.workbench?.folders || [];
-          if (folders.length && !folders.some((folder) => folder.name === workbenchFolder)) {
-            setWorkbenchFolder(folders[0].name);
-          }
-        }
-      }
-
-      setErrorText(errors.length ? `Using fallback data - ${errors.join(" | ")}` : "");
-      setLastRefresh(new Date().toLocaleTimeString());
-    } catch (err) {
-      setData(fallbackData);
-      setErrorText(`Using fallback data - ${err instanceof Error ? err.message : "request failed"}`);
-      setLastRefresh("fallback mode");
-      setHermesRuns([]);
-      setPetitionDrafts([]);
-      setExpeditions([]);
-      setExpeditionQueueSummary({});
-      setSelectedMission(null);
-    } finally {
-      setLoading(false);
-      restoreScrollPosition();
-    }
-  };
-
-  useEffect(() => {
-    load();
-    const timer = window.setInterval(() => {
-      void load({ preserveScroll: true });
-    }, 5000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    if (selectedMissionId && expeditions.some((item) => item.mission_id === selectedMissionId)) {
-      hasInitializedMissionSelectionRef.current = true;
-      return;
-    }
-    if (selectedMissionId && !expeditions.some((item) => item.mission_id === selectedMissionId)) {
-      setSelectedMissionId(null);
-      setSelectedMission(null);
-      return;
-    }
-    if (!selectedMissionId && !hasInitializedMissionSelectionRef.current) {
-      const defaultMissionId =
-        expeditions.find((item) => missionFeedState(item) === "ACTIVE")?.mission_id ||
-        expeditions.find((item) => !isMissionParked(item))?.mission_id ||
-        expeditions[0]?.mission_id;
-      if (defaultMissionId) {
-        hasInitializedMissionSelectionRef.current = true;
-        setSelectedMissionId(defaultMissionId);
-      }
-    }
-  }, [expeditions, selectedMissionId]);
+  const composerRetargetedFromParkedMission = !!selectedMissionId && selectedMissionIsParked && composerEligibleMissionId !== selectedMissionId;
 
   useEffect(() => {
     setShowAllAssumptions(false);
   }, [selectedMissionId]);
 
   useEffect(() => {
-    let cancelled = false;
-    if (!selectedMissionId) {
-      setSelectedMission(null);
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    setMissionLoading(true);
-    loadJson<ExpeditionDetailResponse>(`${API_BASE}/expeditions/${selectedMissionId}`)
-      .then((response) => {
-        if (cancelled) return;
-        setSelectedMission(response.ok && response.item ? response.item : null);
-        const folders = response.ok && response.item?.workbench?.folders ? response.item.workbench.folders : [];
-        if (folders.length && !folders.some((folder) => folder.name === workbenchFolder)) {
-          setWorkbenchFolder(folders[0].name);
+    setExpandedMissionIds((prev) => {
+      const activeIds = new Set(expeditions.map((item) => item.mission_id));
+      let changed = false;
+      const next: Record<string, boolean> = {};
+      for (const [missionId, expanded] of Object.entries(prev)) {
+        if (expanded && activeIds.has(missionId)) {
+          next[missionId] = true;
+        } else if (expanded) {
+          changed = true;
         }
-      })
-      .catch(() => {
-        if (!cancelled) setSelectedMission(null);
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setMissionLoading(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedMissionId]);
+      }
+      return changed ? next : prev;
+    });
+  }, [expeditions]);
 
   useEffect(() => {
     if (!composerEligibleMissionId) return;
@@ -1978,24 +1582,8 @@ export default function Dashboard() {
     setTranslatorDrafts((prev) => ({ ...prev, [missionId]: "" }));
   };
 
-  const queueCounts = useMemo(() => {
-    const events = data.events_recent || [];
-    const inbox = events.filter((e) => e.event_type === "hermes_write").length;
-    const promotion = events.filter((e) => e.event_type === "watcher_scan" || e.event_type === "promote").length;
-    const collective = events.filter((e) => e.event_type === "approve").length;
-    const honcho = data.honcho_sessions_total || 0;
-    return [inbox, promotion, collective, honcho];
-  }, [data.events_recent, data.honcho_sessions_total]);
-
-  const gateOpen = useMemo(() => {
-    const events = data.events_recent || [];
-    return [
-      true,
-      events.some((e) => e.event_type === "watcher_scan"),
-      events.some((e) => e.event_type === "approve" && e.status === "success"),
-      events.some((e) => e.event_type === "honcho_bridge" && e.status === "success"),
-    ];
-  }, [data.events_recent]);
+  const queueCounts = useMemo(() => deriveQueueCounts(data), [data]);
+  const gateOpen = useMemo(() => deriveGateOpen(data), [data]);
 
   const returnAll = data.return_all ?? fallbackData.return_all;
   const nanny = data.nanny ?? fallbackData.nanny;
@@ -2068,7 +1656,6 @@ export default function Dashboard() {
   const latestDraft = selectedMission?.latest_draft ?? null;
   const latestClarificationPacket = selectedMission?.latest_clarification_packet ?? null;
   const latestRunnerReturn = selectedMission?.latest_runner_return ?? null;
-  const latestAgentRun = selectedMission?.latest_agent_run ?? null;
   const latestPromptTranslation = selectedMission?.latest_prompt_translation ?? null;
   const promptTranslationCount = selectedMission?.prompt_translation_count ?? 0;
   const dismissedTranslationId = selectedMissionId ? dismissedTranslationByMission[selectedMissionId] ?? null : null;
@@ -2220,74 +1807,10 @@ export default function Dashboard() {
     }
     return Array.from(counts.values()).filter((count) => count > 1).reduce((sum, count) => sum + count - 1, 0);
   }, [data.events_recent]);
-  const attentionItems = useMemo<MissionAttentionItem[]>(() => {
-    const items: MissionAttentionItem[] = [];
-
-    for (const expedition of expeditions) {
-      if (isMissionParked(expedition)) {
-        items.push({
-          key: `parked-${expedition.mission_id}`,
-          mission_id: expedition.mission_id,
-          title: expedition.objective || expedition.mission_id,
-          detail: expedition.operator_posture_reason || expedition.summary || expedition.current_state,
-          badge: "Parked",
-          tone: "watch",
-        });
-      } else if (expedition.triage_bucket === "waiting" || expedition.operator_posture === "needs_operator_answer" || expedition.status_badge === "waiting_for_user") {
-        items.push({
-          key: `wait-${expedition.mission_id}`,
-          mission_id: expedition.mission_id,
-          title: expedition.objective || expedition.mission_id,
-          detail: expedition.operator_posture_reason || expedition.summary || expedition.current_state,
-          badge: "Needs operator",
-          tone: "watch",
-        });
-      } else if (expedition.triage_bucket === "do_now" && expedition.operator_posture === "proceed_with_assumptions") {
-        items.push({
-          key: `assume-${expedition.mission_id}`,
-          mission_id: expedition.mission_id,
-          title: expedition.objective || expedition.mission_id,
-          detail: expedition.operator_posture_reason || expedition.summary || "Can continue under assumptions",
-          badge: "Assumption-capable",
-          tone: "good",
-        });
-      } else if (expedition.status_badge === "ready_for_review" || expedition.current_state === "PACKAGE_READY") {
-        items.push({
-          key: `review-${expedition.mission_id}`,
-          mission_id: expedition.mission_id,
-          title: expedition.objective || expedition.mission_id,
-          detail: expedition.summary || "ready for review",
-          badge: "Ready for review",
-          tone: "good",
-        });
-      }
-    }
-
-    for (const draft of petitionDrafts) {
-      const preview = draft.review_preview;
-      if (draft.ok && preview && !preview.submission_allowed) {
-        items.push({
-          key: `draft-${draft.source_path || draft.draft?.petition_id || "draft"}`,
-          title: draft.draft?.petition_id || draft.source_path || "draft",
-          detail: preview.submission_gate?.reason || "review preview blocked",
-          badge: "Draft blocked",
-          tone: "watch",
-        });
-      }
-    }
-
-    if (repeatedItemCount > 0) {
-      items.push({
-        key: "noisy-signals",
-        title: "Repeated telemetry",
-        detail: `${repeatedItemCount} repeated record${repeatedItemCount === 1 ? "" : "s"} in recent events`,
-        badge: "Noisy",
-        tone: "watch",
-      });
-    }
-
-    return items.slice(0, 8);
-  }, [expeditions, petitionDrafts, repeatedItemCount]);
+  const attentionItems = useMemo<MissionAttentionItem[]>(
+    () => deriveAttentionItems(expeditions, petitionDrafts, repeatedItemCount),
+    [expeditions, petitionDrafts, repeatedItemCount]
+  );
   const visibleExpeditions = useMemo(() => groupExpeditions(expeditions, selectedMissionId), [expeditions, selectedMissionId]);
   const queueSummary = expeditionQueueSummary;
   const blockedWaitingCount = attentionItems.filter((item) => item.key !== "noisy-signals").length;
@@ -2467,71 +1990,35 @@ export default function Dashboard() {
       !expedition.queue_hygiene?.archive_candidate &&
       !expedition.queue_hygiene?.duplicate_candidate
   );
-  const allExpeditionGroups = visibleExpeditions.allGroups;
-  const mainFeedGroups = allExpeditionGroups.filter((group) => {
-    const missionId = group.primary.mission_id;
-    if (dismissedMissionBuckets[missionId]) return false;
-    const state = missionFeedState(group.primary);
-    if (group.primary.queue_hygiene?.archive_candidate) return false;
-    if (state === "PARKED") return false;
-    return true;
-  });
-  const parkedFeedGroups = allExpeditionGroups.filter((group) => {
-    const missionId = group.primary.mission_id;
-    return dismissedMissionBuckets[missionId] === "parked" || missionFeedState(group.primary) === "PARKED";
-  });
-  const archiveFeedGroups = allExpeditionGroups.filter((group) => {
-    const missionId = group.primary.mission_id;
-    return dismissedMissionBuckets[missionId] === "archive" || !!group.primary.queue_hygiene?.archive_candidate;
-  });
-  const duplicateFeedGroups = allExpeditionGroups.filter((group) => {
-    const missionId = group.primary.mission_id;
-    return dismissedMissionBuckets[missionId] === "duplicates" || group.duplicate_count > 1;
-  });
-  const dominantAction = (() => {
-    if (queuePressure === "OVERLOADED") {
-      return {
-        label: "Clean Queue",
-        detail: "Group duplicates, park blocked missions, and mark archive candidates without deleting anything.",
-        action: "clean_queue" as const,
-      };
-    }
-    if (missionStateGauge === "PARKED" && !unifiedIntentText.trim()) {
-      return {
-        label: "Resume mission",
-        detail: "Bring the parked mission back into the active lane.",
-        action: "resume" as const,
-      };
-    }
-    if (missionStateGauge === "BLOCKED") {
-      return {
-        label: "Resolve blocker",
-        detail: `Current blocker type: ${blockerType}.`,
-        action: "resolve_blocker" as const,
-      };
-    }
-    if (selectedMission?.status_badge === "ready_for_review" || !!latestDraftReviewPreview) {
-      return {
-        label: "Review mission",
-        detail: "Open the latest review-ready material without changing backend behavior.",
-        action: "review" as const,
-      };
-    }
-    if (!composerEligibleMissionId || activeTranslationPreview?.target_type === "new_mission") {
-      return {
-        label: "Start mission",
-        detail: "Create a new mission from the confirmed intent in the top input.",
-        action: "start" as const,
-      };
-    }
-    return {
-      label: "Continue mission",
-      detail: composerRetargetedFromParkedMission
-        ? "Commit the confirmed intent to another eligible active mission until the parked mission is explicitly resumed."
-        : "Commit the confirmed intent to the focused mission through an explicit safe action.",
-      action: "continue" as const,
-    };
-  })();
+  const { mainFeedGroups, parkedFeedGroups, archiveFeedGroups, duplicateFeedGroups } = useMemo(
+    () => deriveFeedBuckets({ visibleGroups: visibleExpeditions, dismissedMissionBuckets }),
+    [visibleExpeditions, dismissedMissionBuckets]
+  );
+  const dominantAction = useMemo(
+    () =>
+      derivePrimaryAction({
+        queuePressure,
+        missionStateGauge,
+        blockerType,
+        selectedMissionStatusBadge: selectedMission?.status_badge,
+        latestDraftReviewPreview,
+        composerEligibleMissionId,
+        activeTranslationPreview,
+        composerRetargetedFromParkedMission,
+        unifiedIntentText,
+      }),
+    [
+      queuePressure,
+      missionStateGauge,
+      blockerType,
+      selectedMission?.status_badge,
+      latestDraftReviewPreview,
+      composerEligibleMissionId,
+      activeTranslationPreview,
+      composerRetargetedFromParkedMission,
+      unifiedIntentText,
+    ]
+  );
   const shellResultLine = errorText
     ? errorText
     : uiNotice
@@ -2543,12 +2030,7 @@ export default function Dashboard() {
           }: ${activeTranslationPreview.recommended_safe_action || dominantAction.detail}`
         : dominantAction.detail;
 
-  const expeditionStatusTone: Record<ExpeditionStatusBadge, StripTone> = {
-    waiting_for_user: "watch",
-    researching: "good",
-    ready_for_review: "good",
-    idle: "off",
-  };
+  const expeditionStatusTone: Record<ExpeditionStatusBadge, StripTone> = deriveExpeditionStatusTone();
 
   const openMissionsView = () => {
     setViewMode("missions");
@@ -2569,16 +2051,33 @@ export default function Dashboard() {
   };
 
   const toggleMissionExpansion = (missionId: string, detail?: string) => {
-    if (selectedMissionId === missionId) {
-      setSelectedMissionId(null);
-      setSelectedMission(null);
-      return;
+    const isExpanded = !!expandedMissionIds[missionId];
+    setExpandedMissionIds((prev) => {
+      if (isExpanded) {
+        const next = { ...prev };
+        delete next[missionId];
+        return next;
+      }
+      return { ...prev, [missionId]: true };
+    });
+    if (!isExpanded && !missionDetailsById[missionId]) {
+      void loadMissionDetail(missionId);
     }
-    focusMission(missionId, detail);
+    setUiNotice({
+      tone: "info",
+      title: isExpanded ? "Mission collapsed" : "Mission expanded",
+      detail: detail || `${isExpanded ? "Collapsed" : "Expanded"} ${missionId} in the feed.`,
+    });
   };
 
   const rememberDismissedMission = (missionId: string, bucket: DismissBucket) => {
     setDismissedMissionBuckets((prev) => ({ ...prev, [missionId]: bucket }));
+    setExpandedMissionIds((prev) => {
+      if (!prev[missionId]) return prev;
+      const next = { ...prev };
+      delete next[missionId];
+      return next;
+    });
     if (selectedMissionId === missionId) {
       setSelectedMissionId(null);
       setSelectedMission(null);
@@ -2595,8 +2094,12 @@ export default function Dashboard() {
   };
 
   const focusMission = (missionId: string, detail?: string) => {
+    setExpandedMissionIds((prev) => ({ ...prev, [missionId]: true }));
     setSelectedMissionId(missionId);
     setViewMode("missions");
+    if (!missionDetailsById[missionId]) {
+      void loadMissionDetail(missionId);
+    }
     setUiNotice({
       tone: "good",
       title: "Mission selected",
@@ -2676,271 +2179,79 @@ export default function Dashboard() {
     });
   };
 
-  const refreshAssumptions = async () => {
-    if (!selectedMissionId) {
-      setErrorText("Select an expedition first");
-      return;
-    }
-    try {
-      setMissionSaving(true);
-      setMissionActionLabel("Refreshing assumptions");
-      const res = await fetch(`${API_BASE}/expeditions/${selectedMissionId}/refresh-assumptions`, {
-        method: "POST",
-      });
-      const payload = (await res.json()) as {
-        ok?: boolean;
-        item?: ExpeditionDetail;
-        refresh?: { active_assumption_count?: number };
-        error?: string;
-      };
-      if (!res.ok || !payload.ok || !payload.item) {
-        throw new Error(payload.error || `HTTP ${res.status}`);
-      }
-      setSelectedMission(payload.item);
-      setUiNotice({
-        tone: "good",
-        title: "Assumptions refreshed",
-        detail: `${payload.refresh?.active_assumption_count ?? payload.item.active_assumption_count ?? 0} active mission-local assumptions are now visible.`,
-      });
-      await load();
-    } catch (error) {
-      setErrorText(error instanceof Error ? error.message : "Assumption refresh failed");
-    } finally {
-      setMissionSaving(false);
-      setMissionActionLabel("");
-    }
-  };
-
-  const reviewAssumption = async (assumptionId: string, action: "confirm" | "reject") => {
-    if (!selectedMissionId) {
-      setErrorText("Select an expedition first");
-      return;
-    }
-    try {
-      setMissionSaving(true);
-      setMissionActionLabel(action === "confirm" ? "Accepting assumption" : "Rejecting assumption");
-      const res = await fetch(`${API_BASE}/expeditions/${selectedMissionId}/assumptions/${assumptionId}/${action}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      const payload = (await res.json()) as {
-        ok?: boolean;
-        item?: ExpeditionDetail;
-        assumption?: AssumptionEntry;
-        error?: string;
-      };
-      if (!res.ok || !payload.ok || !payload.item) {
-        throw new Error(payload.error || `HTTP ${res.status}`);
-      }
-      setSelectedMission(payload.item);
-      setUiNotice({
-        tone: action === "confirm" ? "good" : "watch",
-        title: action === "confirm" ? "Assumption accepted" : "Assumption rejected",
-        detail: payload.assumption?.text || `Mission-local assumption ${assumptionId} was reviewed.`,
-      });
-      await load();
-    } catch (error) {
-      setErrorText(error instanceof Error ? error.message : "Assumption review failed");
-    } finally {
-      setMissionSaving(false);
-      setMissionActionLabel("");
-    }
-  };
-
-  const syncRunnerReturns = async () => {
-    if (!selectedMissionId) {
-      setErrorText("Select an expedition first");
-      return;
-    }
-    try {
-      setMissionSaving(true);
-      setMissionActionLabel("Syncing helper returns");
-      const res = await fetch(`${API_BASE}/expeditions/${selectedMissionId}/sync-runner-returns`, {
-        method: "POST",
-      });
-      const payload = (await res.json()) as {
-        ok?: boolean;
-        item?: ExpeditionDetail;
-        sync?: { created_count?: number; runner_return_count?: number };
-        error?: string;
-      };
-      if (!res.ok || !payload.ok || !payload.item) {
-        throw new Error(payload.error || `HTTP ${res.status}`);
-      }
-      setSelectedMission(payload.item);
-      setUiNotice({
-        tone: "good",
-        title: "Helper returns synced",
-        detail: `${payload.sync?.created_count ?? 0} new mission-local helper return packet(s) captured.`,
-      });
-      await load();
-    } catch (error) {
-      setErrorText(error instanceof Error ? error.message : "Runner return sync failed");
-    } finally {
-      setMissionSaving(false);
-      setMissionActionLabel("");
-    }
-  };
-
-  const openReviewPreview = (previewPath?: string | null) => {
-    if (previewPath) {
-      setSelectedDraftPath(previewPath);
-    }
-    setViewMode("diagnostics");
-    setUiNotice({
-      tone: "info",
-      title: "Review preview opened",
-      detail: previewPath ? `Draft preview focus set to ${previewPath}.` : "Draft previews are visible in diagnostics.",
-    });
-  };
-
-  const createMission = async (objectiveOverride?: string) => {
-    const objective = (objectiveOverride ?? newMissionObjective).trim();
-    if (!objective) {
-      setErrorText("Objective is required to create an expedition");
-      return;
-    }
-    try {
-      setMissionSaving(true);
-      setMissionActionLabel("Creating expedition");
-      const res = await fetch(`${API_BASE}/expeditions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ objective }),
-      });
-      const payload = (await res.json()) as { ok?: boolean; item?: ExpeditionDetail; error?: string };
-      if (!res.ok || !payload.ok || !payload.item) {
-        throw new Error(payload.error || `HTTP ${res.status}`);
-      }
-      setNewMissionObjective("");
-      clearUnifiedIntentDraft("__new__");
-      setSelectedMissionId(payload.item.mission_id);
-      setSelectedMission(payload.item);
-      setWorkbenchFolder(payload.item.workbench.folders[0]?.name || "intake");
-      clearMissionInputDraft(payload.item.mission_id);
-      clearMissionChatDraft(payload.item.mission_id);
-      setUiNotice({
-        tone: "good",
-        title: "Mission created",
-        detail: `${payload.item.mission_id} is active and ready for operator input.`,
-      });
-      setViewMode("missions");
-      await load();
-    } catch (error) {
-      setErrorText(error instanceof Error ? error.message : "Mission creation failed");
-    } finally {
-      setMissionSaving(false);
-      setMissionActionLabel("");
-    }
-  };
-
-  const sendMissionInput = async (contentOverride?: string, missionIdOverride?: string) => {
-    const missionId = missionIdOverride || selectedMissionId;
-    if (!missionId) {
-      setErrorText("Select an expedition first");
-      return;
-    }
-    const content = (contentOverride ?? missionInputText).trim();
-    if (!content) {
-      setErrorText("Mission input cannot be empty");
-      return;
-    }
-    const submissionKey = `${missionId}:${content}`;
-    if (missionInputInFlightRef.current === submissionKey) {
-      return;
-    }
-    try {
-      missionInputInFlightRef.current = submissionKey;
-      setMissionSaving(true);
-      setMissionActionLabel("Sending mission input");
-      const res = await fetch(`${API_BASE}/expeditions/${missionId}/input`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
-      });
-      const payload = (await res.json()) as {
-        ok?: boolean;
-        item?: MissionInputRecord;
-        translation?: PromptTranslation;
-        mission?: ExpeditionDetail;
-        error?: string;
-      };
-      if (!res.ok || !payload.ok) {
-        throw new Error(payload.error || `HTTP ${res.status}`);
-      }
-      clearMissionInputDraft(missionId);
-      if (!contentOverride) {
-        clearUnifiedIntentDraft(missionId);
-      }
-      if (payload.mission) {
-        setSelectedMission(payload.mission);
-      }
-      if (payload.translation) {
-        setTranslatorPreviewByMission((prev) => ({ ...prev, [missionId]: payload.translation ?? null }));
-        setDismissedTranslationByMission((prev) => ({ ...prev, [missionId]: null }));
-      }
-      setUiNotice({
-        tone: "good",
-        title: "Mission updated",
-        detail: "The confirmed action landed once in the workbench intake folder as mission input.",
-      });
-      await load();
-    } catch (error) {
-      setErrorText(error instanceof Error ? error.message : "Mission input failed");
-    } finally {
-      missionInputInFlightRef.current = null;
-      setMissionSaving(false);
-      setMissionActionLabel("");
-    }
-  };
-
-  const translateMissionPrompt = async (contentOverride?: string, missionIdOverride?: string, silent = false) => {
-    const missionId = missionIdOverride || selectedMissionId;
-    if (!missionId) {
-      setErrorText("Select an expedition first");
-      return;
-    }
-    const content = (contentOverride ?? translatorDraftText).trim();
-    if (!content) {
-      setErrorText("Prompt translator input cannot be empty");
-      return;
-    }
-    try {
-      setTranslatorSaving(true);
-      const res = await fetch(`${API_BASE}/expeditions/${missionId}/translate-prompt`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
-      });
-      const payload = (await res.json()) as {
-        ok?: boolean;
-        translation?: PromptTranslation;
-        mission?: ExpeditionDetail;
-        error?: string;
-      };
-      if (!res.ok || !payload.ok || !payload.translation) {
-        throw new Error(payload.error || `HTTP ${res.status}`);
-      }
-      if (payload.mission) {
-        setSelectedMission(payload.mission);
-      }
-      setTranslatorPreviewByMission((prev) => ({ ...prev, [missionId]: payload.translation ?? null }));
-      setDismissedTranslationByMission((prev) => ({ ...prev, [missionId]: null }));
-      if (!silent) {
-        setUiNotice({
-          tone: "info",
-          title: "Prompt translated",
-          detail: "Proposal saved for review only. Nothing was executed.",
-        });
-      }
-      await load();
-    } catch (error) {
-      setErrorText(error instanceof Error ? error.message : "Prompt translation failed");
-    } finally {
-      setTranslatorSaving(false);
-    }
-  };
+  const {
+    refreshAssumptions,
+    reviewAssumption,
+    syncRunnerReturns,
+    openReviewPreview,
+    translateMissionPrompt,
+    sendMissionChat,
+    runMissionQuickReply,
+    setMissionParking,
+    runLoggedControlTowerIntervention,
+    dismissMissionGroup,
+    collapseDuplicateGroups,
+    markArchiveCandidates,
+    parkBlockedMissions,
+    runControlTowerAction,
+    submitMissionComposer,
+    runReturnToBaseOption,
+  } = useMissionActions({
+    apiBase: API_BASE,
+    load,
+    selectedMissionId,
+    setSelectedMissionId,
+    selectedMission,
+    setSelectedMission,
+    selectedMissionSummary,
+    setViewMode,
+    setSelectedDraftPath,
+    workbenchFolder,
+    setWorkbenchFolder,
+    newMissionObjective,
+    setNewMissionObjective,
+    unifiedIntentText,
+    selectedMissionIsParked,
+    composerEligibleMissionId,
+    activeTranslationPreview,
+    missionInputText,
+    translatorDraftText,
+    missionSummaryOperatorReason,
+    missionSummaryBlockedReason,
+    missionSummaryNextAnswer,
+    missionSummaryQuestion,
+    controlTowerSummary,
+    selectedQueueHygiene,
+    latestDraftPreviewPath,
+    promptTranslationPreview,
+    duplicateFeedGroups,
+    archiveFeedGroups,
+    blockedQueueItems,
+    dominantAction,
+    blockerType,
+    missionSaving,
+    setMissionSaving,
+    setTranslatorSaving,
+    setMissionActionLabel,
+    setUiNotice,
+    setErrorText,
+    clearUnifiedIntentDraft,
+    clearMissionInputDraft,
+    clearMissionChatDraft,
+    clearTranslatorDraft,
+    setMissionInputDrafts,
+    setMissionChatDrafts,
+    setTranslatorPreviewByMission,
+    setDismissedTranslationByMission,
+    rememberDismissedMission,
+    setTriageMode,
+    setShowArchiveCandidates,
+    setShowParkedMissions,
+    setShowDuplicateMissions,
+    missionInputInFlightRef,
+    missionChatInFlightRef,
+    missionChatComposerRef,
+  });
 
   const copyTranslatedInstruction = async () => {
     const translation = promptTranslationPreview;
@@ -3017,426 +2328,6 @@ export default function Dashboard() {
     });
   };
 
-  const sendMissionChat = async (content: string, quickReply?: string, missionIdOverride?: string | null) => {
-    const missionId = missionIdOverride || selectedMissionId;
-    if (!missionId) {
-      setErrorText("Select an expedition first");
-      return;
-    }
-    const message = content.trim();
-    if (!message) {
-      setErrorText("Chat message cannot be empty");
-      return;
-    }
-    const submissionKey = `${missionId}:${quickReply || ""}:${message}`;
-    if (missionChatInFlightRef.current === submissionKey) {
-      return;
-    }
-    try {
-      missionChatInFlightRef.current = submissionKey;
-      setMissionSaving(true);
-      setMissionActionLabel("Sending mission chat");
-      const res = await fetch(`${API_BASE}/expeditions/${missionId}/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: message, quick_reply: quickReply || undefined }),
-      });
-      const payload = (await res.json()) as {
-        ok?: boolean;
-        item?: ExpeditionDetail;
-        messages?: MissionChatMessage[];
-        exchange?: Record<string, unknown>;
-        error?: string;
-      };
-      if (!res.ok || !payload.ok) {
-        throw new Error(payload.error || `HTTP ${res.status}`);
-      }
-      clearMissionChatDraft(missionId);
-      if (payload.item) {
-        setSelectedMission(payload.item);
-      }
-      setUiNotice({
-        tone: "good",
-        title: "Mission chat updated",
-        detail: quickReply ? `Quick reply sent once: ${quickReply}` : "Your message was accepted and added once to the mission chat.",
-      });
-      await load();
-    } catch (error) {
-      setErrorText(error instanceof Error ? error.message : "Mission chat failed");
-    } finally {
-      missionChatInFlightRef.current = null;
-      setMissionSaving(false);
-      setMissionActionLabel("");
-    }
-  };
-
-  const runMissionQuickReply = async (reply: { label: string; value: string }) => {
-    if (reply.value === "Open review preview") {
-      openReviewPreview(latestDraftPreviewPath);
-      return;
-    }
-    await sendMissionChat(reply.value, reply.value);
-  };
-
-  const setMissionParking = async (status: "parked" | "active", missionIdOverride?: string) => {
-    const missionId = missionIdOverride || selectedMissionId;
-    if (!missionId) {
-      setErrorText("Select an expedition first");
-      return;
-    }
-    try {
-      setMissionSaving(true);
-      setMissionActionLabel(status === "parked" ? "Parking mission" : "Resuming mission");
-      const reason =
-        status === "parked"
-          ? missionSummaryOperatorReason || missionSummaryBlockedReason || "Parked from the mission console."
-          : "Resumed from the mission console.";
-      const resumeHint = status === "parked" ? missionSummaryNextAnswer || missionSummaryQuestion : "";
-      const res = await fetch(`${API_BASE}/expeditions/${missionId}/parking`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status, reason, resume_hint: resumeHint || undefined }),
-      });
-      const payload = (await res.json()) as { ok?: boolean; item?: ExpeditionDetail; error?: string };
-      if (!res.ok || !payload.ok || !payload.item) {
-        throw new Error(payload.error || `HTTP ${res.status}`);
-      }
-      if (selectedMissionId === missionId) {
-        setSelectedMission(payload.item);
-      }
-      setUiNotice({
-        tone: "good",
-        title: status === "parked" ? "Mission parked" : "Mission resumed",
-        detail:
-          status === "parked"
-            ? "The mission left the main feed and stays retrievable in parked missions."
-            : "The mission is active again in the main feed.",
-      });
-      await load();
-    } catch (error) {
-      setErrorText(error instanceof Error ? error.message : "Mission parking failed");
-    } finally {
-      setMissionSaving(false);
-      setMissionActionLabel("");
-    }
-  };
-
-  const runLoggedControlTowerIntervention = async (
-    action: string,
-    options?: { label?: string; reason?: string },
-    missionIdOverride?: string
-  ) => {
-    const missionId = missionIdOverride || selectedMissionId;
-    if (!missionId) {
-      setErrorText("Select an expedition first");
-      return false;
-    }
-    const label = options?.label || titleCaseLabel(action.replace(/_/g, " "));
-    try {
-      setMissionSaving(true);
-      setMissionActionLabel(label);
-      const res = await fetch(`${API_BASE}/expeditions/${missionId}/interventions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, reason: options?.reason || undefined }),
-      });
-      const payload = (await res.json()) as {
-        ok?: boolean;
-        blocked?: boolean;
-        error?: string;
-        item?: ExpeditionDetail;
-        intervention?: ControlTowerIntervention;
-      };
-      if (payload.item && selectedMissionId === missionId) {
-        setSelectedMission(payload.item);
-      }
-      if (res.status === 409 || payload.blocked) {
-        const blockedTitle =
-          action === "mark_archive_candidate"
-            ? "Archive candidate rejected"
-            : action === "retry_bounded_action"
-              ? "Bounded retry unavailable"
-              : `${label} unavailable`;
-        setUiNotice({
-          tone: "watch",
-          title: blockedTitle,
-          detail: payload.error || payload.intervention?.blocked_reason || "This intervention is not currently safe to apply.",
-        });
-        return false;
-      }
-      if (!res.ok || !payload.ok || !payload.item) {
-        throw new Error(payload.error || `HTTP ${res.status}`);
-      }
-      const successTitle =
-        action === "mark_archive_candidate"
-          ? "Archive candidate marked"
-          : action === "retry_bounded_action"
-            ? "Bounded retry requested"
-            : action === "refresh_assumptions"
-              ? "Assumptions refreshed"
-              : action === "sync_helper_returns"
-                ? "Helper return sync requested"
-                : action === "resume_mission"
-                  ? "Mission resumed"
-                  : `${label} complete`;
-      setUiNotice({
-        tone: "good",
-        title: successTitle,
-        detail: payload.intervention?.reason || "The mission state was updated without changing system rules.",
-      });
-      await load();
-      return true;
-    } catch (error) {
-      setErrorText(error instanceof Error ? error.message : `${label} failed`);
-      return false;
-    } finally {
-      setMissionSaving(false);
-      setMissionActionLabel("");
-    }
-  };
-
-  const dismissMissionGroup = async (group: ExpeditionGroup) => {
-    const expedition = group.primary;
-    const bucket = dismissBucketForGroup(group);
-    if (bucket === "duplicates") {
-      rememberDismissedMission(expedition.mission_id, "duplicates");
-      setUiNotice({
-        tone: "good",
-        title: `${group.hidden_duplicate_count || 1} duplicate${(group.hidden_duplicate_count || 1) === 1 ? "" : "s"} collapsed`,
-        detail: `${expedition.objective || expedition.mission_id} stays available in duplicates.`,
-      });
-      return;
-    }
-    if (bucket === "archive") {
-      const ok = await runLoggedControlTowerIntervention(
-        "mark_archive_candidate",
-        {
-          label: "Marking archive candidate",
-          reason: expedition.queue_action_reason || "Operator dismissed the mission from the feed into archive candidates.",
-        },
-        expedition.mission_id
-      );
-      if (ok) {
-        rememberDismissedMission(expedition.mission_id, "archive");
-        setUiNotice({
-          tone: "good",
-          title: "Archive candidate marked",
-          detail: `${expedition.objective || expedition.mission_id} left the main feed and stays retrievable in archive candidates.`,
-        });
-      }
-      return;
-    }
-    await setMissionParking("parked", expedition.mission_id);
-    rememberDismissedMission(expedition.mission_id, "parked");
-    setUiNotice({
-      tone: "good",
-      title: "Mission parked",
-      detail: `${expedition.objective || expedition.mission_id} left the main feed and stays retrievable in parked missions.`,
-    });
-  };
-
-  const collapseDuplicateGroups = async () => {
-    duplicateFeedGroups.forEach((group) => rememberDismissedMission(group.primary.mission_id, "duplicates"));
-    setShowDuplicateMissions(true);
-    const collapsedCount = duplicateFeedGroups.reduce((sum, group) => sum + Math.max(1, group.hidden_duplicate_count || 0), 0);
-    setUiNotice({
-      tone: "good",
-      title: `${collapsedCount} duplicate${collapsedCount === 1 ? "" : "s"} collapsed`,
-      detail: `${duplicateFeedGroups.length} duplicate group${duplicateFeedGroups.length === 1 ? "" : "s"} moved out of the main feed.`,
-    });
-  };
-
-  const markArchiveCandidates = async () => {
-    let markedCount = 0;
-    for (const group of archiveFeedGroups) {
-      if (!group.primary.queue_hygiene?.archive_candidate) continue;
-      const ok = await runLoggedControlTowerIntervention(
-        "mark_archive_candidate",
-        {
-          label: "Marking archive candidate",
-          reason: group.primary.queue_action_reason || "Operator batched archive-candidate cleanup from the feed.",
-        },
-        group.primary.mission_id
-      );
-      if (ok) {
-        rememberDismissedMission(group.primary.mission_id, "archive");
-        markedCount += 1;
-      }
-    }
-    setShowArchiveCandidates(true);
-    if (markedCount) {
-      setUiNotice({
-        tone: "good",
-        title: `${markedCount} archive candidate${markedCount === 1 ? "" : "s"} marked`,
-        detail: "Marked missions left the main feed and stay retrievable in archive candidates.",
-      });
-    }
-  };
-
-  const parkBlockedMissions = async () => {
-    let parkedCount = 0;
-    for (const expedition of blockedQueueItems) {
-      await setMissionParking("parked", expedition.mission_id);
-      rememberDismissedMission(expedition.mission_id, "parked");
-      parkedCount += 1;
-    }
-    setShowParkedMissions(true);
-    if (parkedCount) {
-      setUiNotice({
-        tone: "good",
-        title: `${parkedCount} blocked mission${parkedCount === 1 ? "" : "s"} parked`,
-        detail: "Parked missions left the main feed and stay retrievable below.",
-      });
-    }
-  };
-
-  const answerBlocker = () => {
-    missionChatComposerRef.current?.focus();
-    setUiNotice({
-      tone: "info",
-      title: "Answer blocker in mission chat",
-      detail: missionSummaryQuestion || missionSummaryNextAnswer || "Use the mission chat composer below to send the missing detail.",
-    });
-  };
-
-  const runControlTowerAction = async (action: string) => {
-    const normalized = action.trim().toLowerCase();
-    if (normalized === "resume mission") {
-      await runLoggedControlTowerIntervention("resume_mission", {
-        label: "Resuming mission",
-        reason: "operator explicitly resumed the parked mission from control tower",
-      });
-      return;
-    }
-    if (normalized === "park mission") {
-      await setMissionParking("parked");
-      return;
-    }
-    if (normalized === "retry bounded action") {
-      await runLoggedControlTowerIntervention("retry_bounded_action", {
-        label: "Requesting bounded retry",
-        reason:
-          controlTowerSummary?.operator_attention_reason ||
-          controlTowerSummary?.last_retry_reason ||
-          controlTowerSummary?.last_blocked_reason ||
-          "Operator requested one bounded retry from the control tower.",
-      });
-      return;
-    }
-    if (normalized === "refresh assumptions") {
-      await runLoggedControlTowerIntervention("refresh_assumptions", {
-        label: "Refreshing assumptions",
-      });
-      return;
-    }
-    if (normalized === "sync helper returns") {
-      await runLoggedControlTowerIntervention("sync_helper_returns", {
-        label: "Syncing helper returns",
-      });
-      return;
-    }
-    if (normalized === "clear stale pending handoff") {
-      await runLoggedControlTowerIntervention("clear_stale_pending_handoff", {
-        label: "Clearing stale handoff",
-      });
-      return;
-    }
-    if (normalized === "mark archive candidate") {
-      await runLoggedControlTowerIntervention("mark_archive_candidate", {
-        label: "Marking archive candidate",
-        reason:
-          selectedQueueHygiene?.recommendation_reason ||
-          "Operator explicitly marked this mission as an archive-review candidate.",
-      });
-      return;
-    }
-    if (normalized === "answer blocker") {
-      answerBlocker();
-    }
-  };
-
-  const commitUnifiedIntent = async (mode?: "chat" | "input" | "create", missionIdOverride?: string | null) => {
-    const text = unifiedIntentText.trim();
-    if (!text) {
-      setUiNotice({
-        tone: "watch",
-        title: "No intent to confirm",
-        detail: "Add intent in the top field before running an explicit action.",
-      });
-      return;
-    }
-    const targetMissionId = missionIdOverride ?? composerEligibleMissionId ?? selectedMissionId;
-    const hasExistingTarget = !!targetMissionId && activeTranslationPreview?.target_type !== "new_mission";
-    const safeAction = (activeTranslationPreview?.recommended_safe_action || "").toLowerCase();
-    const resolvedMode =
-      mode ||
-      (!hasExistingTarget
-        ? "create"
-        : /chat|answer|reply/.test(safeAction)
-          ? "chat"
-          : "input");
-
-    if (resolvedMode === "create") {
-      await createMission(text);
-      return;
-    }
-    if (resolvedMode === "chat") {
-      await sendMissionChat(text, undefined, targetMissionId);
-      clearUnifiedIntentDraft(selectedMissionId || "__new__");
-      return;
-    }
-    if (targetMissionId) {
-      setMissionInputDrafts((prev) => ({ ...prev, [targetMissionId]: text }));
-    }
-    await sendMissionInput(text, targetMissionId || undefined);
-    clearUnifiedIntentDraft(selectedMissionId || "__new__");
-  };
-
-  const submitMissionComposer = async () => {
-    if (composerWantsQueueCleanup) {
-      await collapseDuplicateGroups();
-      await markArchiveCandidates();
-      await parkBlockedMissions();
-      setTriageMode(true);
-      setShowArchiveCandidates(true);
-      setShowParkedMissions(true);
-      setShowDuplicateMissions(true);
-      setUiNotice({
-        tone: "good",
-        title: "Queue cleaned",
-        detail: "Duplicates collapsed, blocked missions parked, and archive candidates marked without deleting anything.",
-      });
-      return;
-    }
-
-    if (composerWantsNewMission || (!selectedMissionId && unifiedIntentText.trim())) {
-      await commitUnifiedIntent("create");
-      return;
-    }
-
-    await runDominantAction();
-  };
-
-  const runReturnToBaseOption = async (optionKey: "retry" | "narrow" | "alternate", autoTriggered = false) => {
-    if (optionKey === "retry") {
-      await runLoggedControlTowerIntervention(
-        "retry_bounded_action",
-        {
-          label: autoTriggered ? "Auto retrying safe assumptions" : "Retrying safe assumptions",
-          reason: autoTriggered
-            ? "return-to-base default option 1 applied after visible delay"
-            : "operator selected retry with safe assumptions from return-to-base",
-        }
-      );
-      return;
-    }
-    if (optionKey === "narrow") {
-      await sendMissionChat("Narrow scope and continue with a safe partial result.", "Narrow scope / partial result");
-      return;
-    }
-    await sendMissionChat("Try an alternate safe approach and continue.", "Alternate approach");
-  };
-
   useEffect(() => {
     if (!shouldShowReturnToBase || !selectedMissionId) {
       setReturnToBaseCountdown(null);
@@ -3463,53 +2354,6 @@ export default function Dashboard() {
       window.clearTimeout(timeout);
     };
   }, [shouldShowReturnToBase, selectedMissionId, missionStateGauge, missionSummaryBlockedReason, missionSummaryQuestion]);
-
-  const runDominantAction = async () => {
-    if (dominantAction.action === "clean_queue") {
-      setTriageMode(true);
-      setShowArchiveCandidates(true);
-      setShowParkedMissions(true);
-      setShowDuplicateMissions(true);
-      await collapseDuplicateGroups();
-      await markArchiveCandidates();
-      await parkBlockedMissions();
-      setUiNotice({
-        tone: "good",
-        title: "Queue cleaned",
-        detail: "Duplicates collapsed, blocked missions parked, and archive candidates marked without deleting anything.",
-      });
-      return;
-    }
-    if (dominantAction.action === "resume") {
-      await setMissionParking("active");
-      return;
-    }
-    if (dominantAction.action === "resolve_blocker") {
-      if (blockerType === "JUNK") {
-        await runLoggedControlTowerIntervention("mark_archive_candidate", {
-          label: "Ignoring junk blocker",
-          reason: "operator classified the blocker as junk during mission resolution",
-        });
-        return;
-      }
-      if (blockerType === "SYSTEM") {
-        await runReturnToBaseOption("retry");
-        return;
-      }
-      if (unifiedIntentText.trim()) {
-        await sendMissionChat(unifiedIntentText, "Resolve blocker");
-        clearUnifiedIntentDraft(selectedMissionId);
-        return;
-      }
-      answerBlocker();
-      return;
-    }
-    if (dominantAction.action === "review") {
-      openReviewPreview(latestDraftPreviewPath);
-      return;
-    }
-    await commitUnifiedIntent(dominantAction.action === "start" ? "create" : undefined);
-  };
 
   const renderMissionFeed = () => (
     <div id="expeditions" style={styles.panel}>
@@ -3554,15 +2398,44 @@ export default function Dashboard() {
       <div style={styles.expeditionList}>
         {mainFeedGroups.length ? mainFeedGroups.map((group) => {
           const expedition = group.primary;
-          const isExpanded = selectedMissionId === expedition.mission_id;
+          const isExpanded = !!expandedMissionIds[expedition.mission_id];
+          const isFocused = selectedMissionId === expedition.mission_id;
           const feedState = missionFeedState(expedition);
           const confidence = missionConfidenceLabel(expedition);
-          const expandedMission = isExpanded && selectedMission?.mission_id === expedition.mission_id ? selectedMission : null;
+          const expandedMission =
+            missionDetailsById[expedition.mission_id] ??
+            (selectedMission?.mission_id === expedition.mission_id ? selectedMission : null);
+          const expandedMissionSummary = expandedMission?.mission_summary ?? expedition.mission_summary ?? null;
+          const expandedControlTowerSummary = expandedMission?.control_tower_summary ?? expedition.control_tower_summary ?? null;
+          const expandedRunnerReturn = expandedMission?.latest_runner_return ?? null;
+          const expandedLatestAgentRun = expandedMission?.latest_agent_run ?? null;
+          const expandedLatestRoleActivity = expandedControlTowerSummary?.latest_role_activity ?? null;
+          const expandedMissionSummaryReason =
+            expandedControlTowerSummary?.operator_attention_reason ||
+            expandedMissionSummary?.operator_posture_reason ||
+            expandedMission?.operator_posture_reason ||
+            expandedMissionSummary?.clarification_reason ||
+            expandedMissionSummary?.blocked_reason ||
+            expedition.operator_posture_reason ||
+            expedition.summary ||
+            "No control tower summary yet.";
+          const expandedControlTowerAutonomyState =
+            expandedControlTowerSummary?.autonomy_state || expandedMission?.autonomy_status?.autonomy_status || "ready";
+          const expandedRetryRemaining = Math.max(
+            0,
+            (expandedControlTowerSummary?.retry_budget ?? 0) - (expandedControlTowerSummary?.retry_used ?? 0)
+          );
+          const expandedAssumptions = expandedMission?.assumptions ?? [];
+          const expandedAssumptionCount = expandedMission?.assumption_count ?? expandedAssumptions.length;
+          const expandedActiveAssumptionCount =
+            expandedMission?.active_assumption_count ??
+            expandedAssumptions.filter((item) => ["active", "accepted"].includes(item.status || "")).length;
+          const expandedVisibleAssumptions = showAllAssumptions ? expandedAssumptions : expandedAssumptions.slice(0, 3);
           const dismissLabel = dismissLabelForBucket(dismissBucketForGroup(group));
           return (
             <motion.div
               key={group.group_key}
-              style={{ ...styles.feedCard, borderColor: isExpanded ? "rgba(251,191,36,0.42)" : "rgba(192,132,252,0.18)" }}
+              style={{ ...styles.feedCard, borderColor: isFocused ? "rgba(251,191,36,0.42)" : isExpanded ? "rgba(244,114,182,0.38)" : "rgba(192,132,252,0.18)" }}
               drag="x"
               dragElastic={0.12}
               dragSnapToOrigin
@@ -3582,8 +2455,9 @@ export default function Dashboard() {
                     <div style={{ marginTop: 10, fontSize: 13, color: "#cbd5f5", lineHeight: 1.5 }}>{missionFeedSummary(expedition)}</div>
                   </div>
                   <div style={{ display: "flex", flexDirection: "column" as const, gap: 8, alignItems: "flex-end", flexShrink: 0 }}>
-                    <button type="button" onClick={(event) => { event.stopPropagation(); toggleMissionExpansion(expedition.mission_id, missionFeedSummary(expedition)); }} style={styles.feedActionButton}>{missionPrimaryActionLabel(expedition)}</button>
+                    <button type="button" onClick={(event) => { event.stopPropagation(); toggleMissionExpansion(expedition.mission_id, missionFeedSummary(expedition)); }} style={styles.feedActionButton}>{isExpanded ? "Collapse" : "Expand"}</button>
                     <div style={styles.feedSecondaryActionRow}>
+                      <button type="button" onClick={(event) => { event.stopPropagation(); focusMission(expedition.mission_id, missionFeedSummary(expedition)); }} style={styles.dismissButton}>{isFocused ? "Focused" : "Focus"}</button>
                       <button type="button" onClick={(event) => { event.stopPropagation(); void dismissMissionGroup(group); }} style={styles.dismissButton}>{dismissLabel}</button>
                     </div>
                   </div>
@@ -3597,32 +2471,38 @@ export default function Dashboard() {
                       <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
                         <div style={styles.previewBox}>
                           <div style={styles.subtleText}>Control Tower details</div>
-                          <div style={{ marginTop: 6, fontSize: 13, color: "#cbd5f5", lineHeight: 1.55 }}>{controlTowerSummary?.operator_attention_reason || missionSummaryReason || "No control tower summary yet."}</div>
-                          <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" as const }}><span style={styles.badge}>{controlTowerAutonomyState}</span><span style={styles.badge}>{controlTowerRetryRemaining} retry left</span></div>
+                          <div style={{ marginTop: 6, fontSize: 13, color: "#cbd5f5", lineHeight: 1.55 }}>{expandedMissionSummaryReason}</div>
+                          <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" as const }}><span style={styles.badge}>{expandedControlTowerAutonomyState}</span><span style={styles.badge}>{expandedRetryRemaining} retry left</span></div>
                         </div>
                         <div style={styles.previewBox}>
                           <div style={styles.subtleText}>Assumptions</div>
-                          <div style={{ marginTop: 6, fontSize: 13, color: "#cbd5f5", lineHeight: 1.55 }}>{missionActiveAssumptionCount} active of {missionAssumptionCount} total. Derived only and mission-local.</div>
-                          <div style={{ marginTop: 8, display: "grid", gap: 6 }}>{visibleMissionAssumptions.length ? visibleMissionAssumptions.map((assumption) => <div key={assumption.assumption_id} style={{ fontSize: 12, color: "#e2e8f0" }}>{assumption.text}</div>) : <div style={styles.subtleText}>No assumptions are visible yet.</div>}</div>
+                          <div style={{ marginTop: 6, fontSize: 13, color: "#cbd5f5", lineHeight: 1.55 }}>{expandedActiveAssumptionCount} active of {expandedAssumptionCount} total. Derived only and mission-local.</div>
+                          <div style={{ marginTop: 8, display: "grid", gap: 6 }}>{expandedVisibleAssumptions.length ? expandedVisibleAssumptions.map((assumption) => <div key={assumption.assumption_id} style={{ fontSize: 12, color: "#e2e8f0" }}>{assumption.text}</div>) : <div style={styles.subtleText}>No assumptions are visible yet.</div>}</div>
                         </div>
                         <div style={styles.previewBox}>
                           <div style={styles.subtleText}>Mirror / runner</div>
-                          <div style={{ marginTop: 6, fontSize: 13, color: "#cbd5f5", lineHeight: 1.55 }}>{getRecordString(latestRunnerReturn, "summary") || "No helper return is linked to this mission yet."}</div>
+                          <div style={{ marginTop: 6, fontSize: 13, color: "#cbd5f5", lineHeight: 1.55 }}>{getRecordString(expandedRunnerReturn, "summary") || "No helper return is linked to this mission yet."}</div>
                           <div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8" }}>{mirrorDoorTest.available ? `${mirrorDoorBlocked} blocked, ${mirrorDoorAccepted} accepted, ${mirrorDoorUnexpected} unexpected mirror-door cases` : "Mirror-door summary not available."}</div>
                         </div>
                         <div style={styles.previewBox}>
                           <div style={styles.subtleText}>Latest role activity</div>
                           <div style={{ marginTop: 6, fontSize: 13, color: "#cbd5f5", lineHeight: 1.55 }}>
-                            {latestRoleActivity?.role && latestRoleActivity?.summary
-                              ? `${latestRoleActivity.role} -> ${latestRoleActivity.summary}`
-                              : getRecordString(latestAgentRun, "summary") || "No explicit role invocation has been recorded yet."}
+                            {expandedLatestRoleActivity?.role && expandedLatestRoleActivity?.summary
+                              ? `${expandedLatestRoleActivity.role} -> ${expandedLatestRoleActivity.summary}`
+                              : getRecordString(expandedLatestAgentRun, "summary") || "No explicit role invocation has been recorded yet."}
                           </div>
                           <div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8" }}>
-                            {latestRoleActivity?.created_at || getRecordString(latestAgentRun, "created_at") || "Awaiting explicit invocation"}
+                            {expandedLatestRoleActivity?.created_at || getRecordString(expandedLatestAgentRun, "created_at") || "Awaiting explicit invocation"}
                           </div>
                         </div>
                       </div>
-                      {shouldShowReturnToBase ? (
+                      {!isFocused ? (
+                        <div style={{ ...styles.previewBox, marginTop: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>Focused mission tools stay separate</div>
+                          <div style={{ marginTop: 6, ...styles.subtleText }}>This card can stay expanded without changing the focused mission. Use Focus if you want the main mission console to follow this card.</div>
+                        </div>
+                      ) : null}
+                      {isFocused && shouldShowReturnToBase ? (
                         <div style={{ ...styles.previewBox, borderColor: "rgba(251,191,36,0.35)", background: "rgba(120,53,15,0.16)", marginTop: 0 }}>
                           <div style={{ fontSize: 14, fontWeight: 800, color: "#fde68a" }}>Returned to base options</div>
                           <div style={{ marginTop: 8, display: "grid", gap: 8 }}>{returnToBaseOptions.map((option) => <button key={option.key} type="button" onClick={() => void runReturnToBaseOption(option.key)} style={{ ...styles.secondaryButton, textAlign: "left" }}>{option.label}</button>)}</div>

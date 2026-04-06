@@ -1,5 +1,5 @@
 ﻿{
-    "updated_at":  "2026-04-05T22:59:00.3194129-07:00",
+    "updated_at":  "2026-04-06T16:36:17.9073296-07:00",
     "repo_root":  "D:\\spine_desk\\Spinetop",
     "ui_root":  "D:\\spine_desk\\Spinetop\\ui",
     "wsl_distro":  "Ubuntu-24.04",
@@ -15,27 +15,15 @@
                      "frontend_bind_address":  "0.0.0.0",
                      "lan_ui_reachable":  true,
                      "lan_firewall_state":  {
-                                                "is_admin":  true,
-                                                "ensured":  true,
-                                                "listen_address":  "192.168.0.150",
-                                                "rules":  [
-                                                              {
-                                                                  "port":  5173,
-                                                                  "rule_name":  "Spinetop Launcher LAN 5173",
-                                                                  "state":  "enabled"
-                                                              },
-                                                              {
-                                                                  "port":  5051,
-                                                                  "rule_name":  "Spinetop Launcher LAN 5051",
-                                                                  "state":  "enabled"
-                                                              }
-                                                          ]
+                                                "is_admin":  false,
+                                                "ensured":  false,
+                                                "message":  "Launcher is not elevated, so Windows firewall rules were not modified."
                                             }
                  },
     "lan_proxy":  {
                       "name":  "frontend-lan-proxy",
                       "pid_file":  "D:\\spine_desk\\Spinetop\\services\\launcher\\state\\frontend-lan-proxy.pid",
-                      "pid":  140368,
+                      "pid":  20352,
                       "platform":  "windows",
                       "port":  5173,
                       "port_open":  true,
@@ -49,7 +37,7 @@
     "backend":  {
                     "name":  "backend",
                     "pid_file":  "D:\\spine_desk\\Spinetop\\services\\launcher\\state\\backend.pid",
-                    "pid":  796,
+                    "pid":  1684,
                     "platform":  "wsl",
                     "port":  5051,
                     "port_open":  true,
@@ -59,7 +47,7 @@
     "frontend":  {
                      "name":  "frontend",
                      "pid_file":  "D:\\spine_desk\\Spinetop\\services\\launcher\\state\\frontend.pid",
-                     "pid":  899,
+                     "pid":  1771,
                      "platform":  "wsl",
                      "port":  5173,
                      "port_open":  false,
