@@ -1,0 +1,11 @@
+{
+  "profile_name": "spinetop-mirror",
+  "display_name": "Spinetop-Mirror",
+  "role_purpose": "Read-only memory interpretation role for Honcho-backed inspection and mission-local reflection.",
+  "role_config_ref": "config/mirror_role.json",
+  "memory_ref": "config/mirror_role.json#memory_refs",
+  "soul_path": "services/hermes/roles/spinetop-mirror/SOUL.md",
+  "activation_control_ref": "config/helper_model_registry.json#roles.spinetop-mirror.active",
+  "model_provider_slot_ref": "config/helper_model_registry.json#roles.spinetop-mirror.default_model_key",
+  "shared_identity_allowed": false
+}

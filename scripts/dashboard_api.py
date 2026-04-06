@@ -47,6 +47,9 @@ EXPEDITIONS_ACTIVE_DIR = ROOT / "expeditions" / "active"
 WORKBENCH_MISSIONS_DIR = ROOT / "workbench" / "missions"
 MISSION_CHAT_FILENAME = "chat.jsonl"
 MISSION_PARKING_FILENAME = "parking_status.json"
+MISSION_AGENT_DIRNAME = "agent"
+MISSION_AGENT_PROFILE_FILENAME = "profile.json"
+MISSION_AGENT_SOUL_FILENAME = "SOUL.md"
 TRIGGERS_DIRNAME = "triggers"
 TRIGGER_HANDOFF_FILENAME = "pending_handoff.json"
 RUNNER_RETURNS_DIRNAME = "runner_returns"
@@ -368,6 +371,21 @@ def _mission_chat_path(mission_id: str, *, ensure: bool = False) -> Path:
     return _workbench_notes_root(mission_id, ensure=ensure) / MISSION_CHAT_FILENAME
 
 
+def _mission_agent_root(mission_id: str, *, ensure: bool = False) -> Path:
+    root = _mission_root(mission_id)
+    if ensure:
+        (root / MISSION_AGENT_DIRNAME).mkdir(parents=True, exist_ok=True)
+    return root / MISSION_AGENT_DIRNAME
+
+
+def _mission_agent_profile_path(mission_id: str, *, ensure: bool = False) -> Path:
+    return _mission_agent_root(mission_id, ensure=ensure) / MISSION_AGENT_PROFILE_FILENAME
+
+
+def _mission_agent_soul_path(mission_id: str, *, ensure: bool = False) -> Path:
+    return _mission_agent_root(mission_id, ensure=ensure) / MISSION_AGENT_SOUL_FILENAME
+
+
 def _mission_parking_path(mission_id: str, *, ensure: bool = False) -> Path:
     return _workbench_notes_root(mission_id, ensure=ensure) / MISSION_PARKING_FILENAME
 
@@ -406,6 +424,18 @@ def _interventions_dir(mission_id: str, *, ensure: bool = False) -> Path:
 
 def _intervention_log_path(mission_id: str, *, ensure: bool = False) -> Path:
     return _interventions_dir(mission_id, ensure=ensure) / INTERVENTION_LOG_FILENAME
+
+
+def _archive_candidate_marker_path(mission_id: str, *, ensure: bool = False) -> Path:
+    return _interventions_dir(mission_id, ensure=ensure) / "archive_candidate.json"
+
+
+def _read_archive_candidate_marker(mission_id: str) -> dict[str, Any]:
+    path = _archive_candidate_marker_path(mission_id)
+    if not path.exists():
+        return {}
+    marker = _load_json(path)
+    return marker if isinstance(marker, dict) else {}
 
 
 def _mission_manifest_payload(mission_id: str) -> dict[str, Any] | None:
@@ -3606,6 +3636,7 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
     brief = read_mission_brief(mission) or {}
     state = read_state(mission)
     manifest = _mission_manifest_payload(mission)
+    mission_agent = _read_mission_agent_profile(mission)
     artifact_index = read_artifact_index(mission)
     artifact_items = list(artifact_index.get("items") or [])
     latest_run_id = str(brief.get("latest_run_id") or (manifest or {}).get("run_id") or "").strip()
@@ -3743,6 +3774,7 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
         "mission_brief": brief,
         "state": state,
         "manifest": manifest,
+        "mission_agent": mission_agent,
         "artifact_index": artifact_index,
         "artifact_refs": (manifest or {}).get("artifact_refs") if isinstance(manifest, dict) else [],
         "latest_hermes_run": latest_run,
@@ -3941,23 +3973,21 @@ def _apply_control_tower_intervention(
             outcome = {"handoff": cleared}
     elif action_key == "mark_archive_candidate":
         hygiene = detail.get("queue_hygiene") if isinstance(detail.get("queue_hygiene"), dict) else {}
-        if not bool(hygiene.get("archive_candidate")):
-            blocked_reason = "mission does not currently meet archive-candidate heuristics"
-        else:
-            marker_path = _interventions_dir(mission, ensure=True) / "archive_candidate.json"
-            marker = {
-                "mission_id": mission,
-                "status": "archive_candidate",
-                "marked_at": iso_now(),
-                "marked_by": "operator",
-                "reason": effective_reason,
-                "recommended_action": str(hygiene.get("recommended_action") or ""),
-                "signals": [str(item).strip() for item in hygiene.get("signals", []) if str(item).strip()][:6],
-                "derived_only": True,
-            }
-            _write_json(marker_path, marker)
-            changed_paths.append(marker_path.relative_to(ROOT).as_posix())
-            outcome = {"archive_candidate": marker}
+        marker_path = _archive_candidate_marker_path(mission, ensure=True)
+        marker = {
+            "mission_id": mission,
+            "status": "archive_candidate",
+            "marked_at": iso_now(),
+            "marked_by": "operator",
+            "reason": effective_reason,
+            "recommended_action": str(hygiene.get("recommended_action") or "archive candidate"),
+            "signals": [str(item).strip() for item in hygiene.get("signals", []) if str(item).strip()][:6],
+            "heuristic_match": bool(hygiene.get("archive_candidate")),
+            "derived_only": True,
+        }
+        _write_json(marker_path, marker)
+        changed_paths.append(marker_path.relative_to(ROOT).as_posix())
+        outcome = {"archive_candidate": marker}
 
     status = "blocked" if blocked_reason else "applied"
     intervention = _append_operator_intervention(
@@ -4121,6 +4151,108 @@ def _create_mission_brief(mission_id: str, objective: str) -> Path:
     return brief_path
 
 
+def _mission_agent_name(mission_id: str) -> str:
+    mission = normalize_mission_id(mission_id)
+    return normalize_mission_id(f"mission_agent_{mission}_expeditioner")
+
+
+def _mission_agent_soul_text(mission_id: str, objective: str, agent_id: str) -> str:
+    mission = normalize_mission_id(mission_id)
+    expedition_ref = _mission_root(mission).relative_to(ROOT).as_posix()
+    workbench_ref = _workbench_root(mission).relative_to(ROOT).as_posix()
+    return (
+        f"# SOUL: {agent_id}\n\n"
+        "## Identity\n"
+        f"- Mission agent id: `{agent_id}`\n"
+        f"- Mission id: `{mission}`\n"
+        "- Runtime role: `spinetop_expeditioner`\n"
+        f"- Objective: {objective}\n\n"
+        "## Bounded Scope\n"
+        f"- You operate only for mission `{mission}`.\n"
+        f"- Read scope is limited to mission-local expedition context under `{expedition_ref}` and mission-local workbench context under `{workbench_ref}`.\n"
+        "- Do not widen scope to other missions, collective memory, dispatch-approved state, governance state, or Honcho.\n"
+        "- Do not self-start loops, schedules, retries, or follow-on autonomy beyond the explicit mission trigger already granted.\n\n"
+        "## Return Discipline\n"
+        "- Produce derived mission-local outputs only.\n"
+        "- Return work through existing bounded lanes: mission-local workbench artifacts, runner-return-compatible notes, assumption lanes, and control-tower-compatible review lanes.\n"
+        "- Keep outputs inspectable, structured, and reviewable by the spine.\n"
+        "- If a result could affect truth, approval, promotion, dispatch, or bridge state, stop and return a bounded review artifact instead.\n\n"
+        "## Hard Prohibitions\n"
+        "- No truth writes.\n"
+        "- No governance bypass.\n"
+        "- No direct writes to `memory/collective`.\n"
+        "- No direct writes to `memory/dispatch/approved`.\n"
+        "- No writes to Honcho or bridge submission paths.\n"
+        "- No mutation of canonical mission state beyond allowed mission-local derived artifacts.\n"
+        "- No fake completion claims, fabricated evidence, or silent guessing.\n\n"
+        "## Blocked / Uncertain Behavior\n"
+        "- If blocked, return to base with bounded options, blockers, and the smallest safe next actions.\n"
+        "- If uncertain, prefer an inspectable partial return with explicit assumptions over an ungrounded answer.\n"
+        "- If evidence is missing, say what is missing and where the bounded return should be reviewed.\n"
+    )
+
+
+def _create_mission_agent_identity(mission_id: str, objective: str) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    created_at = iso_now()
+    agent_id = _mission_agent_name(mission)
+    config_root = _mission_agent_root(mission, ensure=True)
+    soul_path = _mission_agent_soul_path(mission, ensure=True)
+    profile_path = _mission_agent_profile_path(mission, ensure=True)
+    soul_path.write_text(_mission_agent_soul_text(mission, objective, agent_id), encoding="utf-8")
+    profile = {
+        "agent_id": agent_id,
+        "mission_id": mission,
+        "role_id": EXPEDITIONER_ROLE_ID,
+        "status": "bounded_active",
+        "created_at": created_at,
+        "config_root": config_root.relative_to(ROOT).as_posix(),
+        "mission_root": _mission_root(mission).relative_to(ROOT).as_posix(),
+        "workbench_root": _workbench_root(mission).relative_to(ROOT).as_posix(),
+        "soul_ref": soul_path.relative_to(ROOT).as_posix(),
+        "operator_chat_required": False,
+        "scope": {
+            "mission_local_only": True,
+            "expedition_root_ref": _mission_root(mission).relative_to(ROOT).as_posix(),
+            "workbench_root_ref": _workbench_root(mission).relative_to(ROOT).as_posix(),
+        },
+        "return_path_policy": {
+            "allowed_lanes": [
+                "workbench/missions/<mission_id>/notes/",
+                "workbench/missions/<mission_id>/outputs/",
+                "workbench/missions/<mission_id>/notes/runner_returns/",
+                "workbench/missions/<mission_id>/notes/assumptions/",
+                "control-tower-compatible mission detail and review lanes",
+            ],
+            "must_use_existing_governed_paths": True,
+            "parallel_truth_path_forbidden": True,
+        },
+        "forbidden_writes": [
+            "memory/collective/",
+            "memory/dispatch/approved/",
+            "logs/governance/",
+            "services/honcho/",
+            "Honcho",
+        ],
+        "constraints": {
+            "no_autonomy_loops": True,
+            "no_truth_writes": True,
+            "no_governance_bypass": True,
+            "mission_local_only": True,
+            "fake_completion_forbidden": True,
+        },
+    }
+    _write_json(profile_path, profile)
+    upsert_artifact_index_entry(mission, "mission_agent_profile", profile_path, created_at=created_at)
+    upsert_artifact_index_entry(mission, "mission_agent_soul", soul_path, created_at=created_at)
+    return profile
+
+
+def _read_mission_agent_profile(mission_id: str) -> dict[str, Any] | None:
+    profile = _load_json(_mission_agent_profile_path(mission_id))
+    return profile if isinstance(profile, dict) else None
+
+
 def read_return_all_state() -> dict[str, Any]:
     path = GOVERNANCE_DIR / "return_all.json"
     if path.exists():
@@ -4202,6 +4334,7 @@ def _queue_hygiene_flags(
     mission_summary = detail.get("mission_summary") if isinstance(detail.get("mission_summary"), dict) else {}
     parking_status = detail.get("parking_status") if isinstance(detail.get("parking_status"), dict) else {}
     control_tower_summary = detail.get("control_tower_summary") if isinstance(detail.get("control_tower_summary"), dict) else {}
+    archive_marker = _read_archive_candidate_marker(str(detail.get("mission_id") or ""))
     current_state = str(detail.get("current_state") or "").strip()
     operator_posture = str(detail.get("operator_posture") or mission_summary.get("operator_posture") or "").strip()
     triage_bucket = str(detail.get("triage_bucket") or mission_summary.get("triage_bucket") or "").strip()
@@ -4238,6 +4371,7 @@ def _queue_hygiene_flags(
         or superseded_by_newer_similar
         or (junk_pattern and stale_candidate)
         or (current_state in {"MISSION_CLOSED", "ARCHIVE_REVIEW"} and stale_candidate)
+        or archive_marker
     )
 
     signals: list[str] = []
@@ -4253,6 +4387,8 @@ def _queue_hygiene_flags(
         signals.append(f"A newer similar mission ({primary_mission_id}) looks like the active primary.")
     if junk_pattern:
         signals.append("Objective matches a safely identifiable test-like or throwaway pattern.")
+    if archive_marker:
+        signals.append("Operator explicitly marked this mission as an archive candidate in mission-local notes.")
     if review_ready:
         signals.append("Mission already has a review-ready posture.")
 
@@ -4284,6 +4420,7 @@ def _queue_hygiene_flags(
         "parked_candidate": parked,
         "review_ready": review_ready,
         "archive_candidate": archive_candidate,
+        "archive_candidate_marked": bool(archive_marker),
         "superseded_by_newer_similar": superseded_by_newer_similar,
         "junk_pattern": junk_pattern,
         "signals": signals[:6],
@@ -4465,7 +4602,18 @@ def read_item_world_status() -> dict[str, Any]:
     status_path = ROOT / "logs" / "nanny" / "item_world_status.json"
     if status_path.exists():
         try:
-            return json.loads(status_path.read_text(encoding="utf-8"))
+            payload = json.loads(status_path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                payload.setdefault("system_signals", [])
+                payload.setdefault("signal_count", len(payload.get("system_signals") or []))
+                payload.setdefault("learning_summary", {
+                    "stored_path": "workbench/system/operator_learning/nanny_pattern_memory.json",
+                    "updated_at": "",
+                    "counts": {},
+                    "weak_question_count": 0,
+                })
+                payload.setdefault("derived_counts", {})
+                return payload
         except Exception:
             pass
     return {
@@ -4476,6 +4624,15 @@ def read_item_world_status() -> dict[str, Any]:
         "active_agent_warnings": [],
         "recommended_actions": [],
         "global_cooldown_seconds": 0,
+        "system_signals": [],
+        "signal_count": 0,
+        "learning_summary": {
+            "stored_path": "workbench/system/operator_learning/nanny_pattern_memory.json",
+            "updated_at": "",
+            "counts": {},
+            "weak_question_count": 0,
+        },
+        "derived_counts": {},
     }
 
 
@@ -5463,6 +5620,7 @@ def api_expeditions_create():
     _ensure_workbench_structure(mission_id)
     write_state(mission_id, "MISSION_DEFINED")
     _create_mission_brief(mission_id, objective)
+    _create_mission_agent_identity(mission_id, objective)
     _refresh_working_memory(mission_id)
 
     detail = _build_expedition_detail(mission_id)

@@ -1,0 +1,11 @@
+{
+  "profile_name": "spinetop-helper-2b",
+  "display_name": "Spinetop-helper_2b",
+  "role_purpose": "Field-side tactical helper for short-horizon support and runner-return preparation.",
+  "role_config_ref": "config/helper_role.json",
+  "memory_ref": "config/helper_role.json#memory_refs",
+  "soul_path": "services/hermes/roles/spinetop-helper-2b/SOUL.md",
+  "activation_control_ref": "config/helper_model_registry.json#roles.spinetop-helper_2b.active",
+  "model_provider_slot_ref": "config/helper_model_registry.json#roles.spinetop-helper_2b.default_model_key",
+  "shared_identity_allowed": false
+}

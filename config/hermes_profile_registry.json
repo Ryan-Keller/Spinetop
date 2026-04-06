@@ -1,0 +1,135 @@
+{
+  "schema_version": "1.0",
+  "notes": [
+    "Repo-local mapping between Spinetop roles and Hermes Agent profile homes.",
+    "This registry does not change governance behavior or start Hermes by itself.",
+    "Activation controls point back to the existing runtime files so the repo keeps one source of truth."
+  ],
+  "bootstrap": {
+    "runtime_root": "services/hermes/runtime/profiles",
+    "template_root": "services/hermes/roles",
+    "recommended_environment": "WSL2 or Linux",
+    "install_script": "scripts/install_hermes_agent.sh",
+    "management_script": "scripts/bootstrap_hermes_profiles.py"
+  },
+  "profiles": [
+    {
+      "profile_name": "spinetop-sentinel",
+      "display_name": "Spinetop-Sentinel",
+      "role_purpose": "Internal reviewer/watch/anomaly role for bounded operational review.",
+      "role_config_ref": "config/sentinel_role.json",
+      "template_root": "services/hermes/roles/spinetop-sentinel",
+      "runtime_home": "services/hermes/runtime/profiles/spinetop-sentinel/home",
+      "config_root": "services/hermes/runtime/profiles/spinetop-sentinel/home",
+      "memory_root": "services/hermes/runtime/profiles/spinetop-sentinel/home/memories",
+      "memory_ref": "config/sentinel_role.json#memory_refs",
+      "soul_path": "services/hermes/roles/spinetop-sentinel/SOUL.md",
+      "activation": {
+        "default_state": "active",
+        "control_ref": "config/hermes_runtime.json#runtime_state.active",
+        "inactive_mode_ref": "config/hermes_runtime.json#runtime_state.inactive_mode",
+        "disabled_safe_contract_ref": "config/sentinel_role.json#runtime_behavior.inactive_behavior"
+      },
+      "model_provider_slot": {
+        "provider_ref": "config/hermes_runtime.json#provider_profiles.ollama",
+        "model_key_ref": "config/hermes_runtime.json#default_model_key",
+        "provider_requirement": "local_only"
+      },
+      "separation": {
+        "shared_identity_allowed": false,
+        "shared_memory_allowed": false,
+        "shared_runtime_home_allowed": false
+      }
+    },
+    {
+      "profile_name": "spinetop-expeditioner",
+      "display_name": "Spinetop-Expeditioner",
+      "role_purpose": "Mission-doing first-pass worker inside mission-local and workbench lanes.",
+      "role_config_ref": "config/expeditioner_role.json",
+      "template_root": "services/hermes/roles/spinetop-expeditioner",
+      "runtime_home": "services/hermes/runtime/profiles/spinetop-expeditioner/home",
+      "config_root": "services/hermes/runtime/profiles/spinetop-expeditioner/home",
+      "memory_root": "services/hermes/runtime/profiles/spinetop-expeditioner/home/memories",
+      "memory_ref": "config/expeditioner_role.json#memory_refs",
+      "soul_path": "services/hermes/roles/spinetop-expeditioner/SOUL.md",
+      "activation": {
+        "default_state": "inactive",
+        "control_ref": "config/helper_model_registry.json#roles.spinetop_expeditioner.active",
+        "inactive_mode_ref": "config/expeditioner_role.json#runtime_behavior.inactive_mode",
+        "disabled_safe_contract_ref": "config/expeditioner_role.json#runtime_behavior.inactive_behavior"
+      },
+      "model_provider_slot": {
+        "provider_ref": "config/model_registry.json",
+        "model_key_ref": "config/helper_model_registry.json#roles.spinetop_expeditioner.default_model_key",
+        "provider_requirement": "local_only"
+      },
+      "separation": {
+        "shared_identity_allowed": false,
+        "shared_memory_allowed": false,
+        "shared_runtime_home_allowed": false
+      }
+    },
+    {
+      "profile_name": "spinetop-helper-2b",
+      "display_name": "Spinetop-helper_2b",
+      "role_purpose": "Field-side tactical helper for short-horizon support and runner-return preparation.",
+      "role_config_ref": "config/helper_role.json",
+      "template_root": "services/hermes/roles/spinetop-helper-2b",
+      "runtime_home": "services/hermes/runtime/profiles/spinetop-helper-2b/home",
+      "config_root": "services/hermes/runtime/profiles/spinetop-helper-2b/home",
+      "memory_root": "services/hermes/runtime/profiles/spinetop-helper-2b/home/memories",
+      "memory_ref": "config/helper_role.json#memory_refs",
+      "soul_path": "services/hermes/roles/spinetop-helper-2b/SOUL.md",
+      "activation": {
+        "default_state": "inactive",
+        "control_ref": "config/helper_model_registry.json#roles.spinetop-helper_2b.active",
+        "inactive_mode_ref": "config/helper_role.json#runtime_behavior.inactive_mode",
+        "disabled_safe_contract_ref": "config/helper_role.json#runtime_behavior.inactive_behavior"
+      },
+      "model_provider_slot": {
+        "provider_ref": "config/model_registry.json",
+        "model_key_ref": "config/helper_model_registry.json#roles.spinetop-helper_2b.default_model_key",
+        "provider_requirement": "local_only"
+      },
+      "separation": {
+        "shared_identity_allowed": false,
+        "shared_memory_allowed": false,
+        "shared_runtime_home_allowed": false
+      }
+    },
+    {
+      "profile_name": "spinetop-mirror",
+      "display_name": "Spinetop-Mirror",
+      "role_purpose": "Read-only memory interpretation role for Honcho-backed inspection and mission-local reflection.",
+      "role_config_ref": "config/mirror_role.json",
+      "template_root": "services/hermes/roles/spinetop-mirror",
+      "runtime_home": "services/hermes/runtime/profiles/spinetop-mirror/home",
+      "config_root": "services/hermes/runtime/profiles/spinetop-mirror/home",
+      "memory_root": "services/hermes/runtime/profiles/spinetop-mirror/home/memories",
+      "memory_ref": "config/mirror_role.json#memory_refs",
+      "soul_path": "services/hermes/roles/spinetop-mirror/SOUL.md",
+      "activation": {
+        "default_state": "inactive",
+        "control_ref": "config/helper_model_registry.json#roles.spinetop-mirror.active",
+        "inactive_mode_ref": "config/mirror_role.json#runtime_behavior.inactive_mode",
+        "disabled_safe_contract_ref": "config/mirror_role.json#runtime_behavior.inactive_behavior"
+      },
+      "model_provider_slot": {
+        "provider_ref": "config/model_registry.json",
+        "model_key_ref": "config/helper_model_registry.json#roles.spinetop-mirror.default_model_key",
+        "provider_requirement": "local_only"
+      },
+      "separation": {
+        "shared_identity_allowed": false,
+        "shared_memory_allowed": false,
+        "shared_runtime_home_allowed": false
+      }
+    }
+  ],
+  "deferred_profiles": [
+    {
+      "profile_name": "spinetop-nanny",
+      "reason": "Deferred on purpose until a bounded external Hermes role is requested for nanny behavior."
+    }
+  ]
+}

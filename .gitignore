@@ -29,6 +29,11 @@ services/launcher/state/*.pid
 services/launcher/state/launcher.json
 services/launcher/state/logs/
 
+# Hermes repo-local runtime homes
+services/hermes/runtime/**
+!services/hermes/**/README.md
+!services/hermes/**/.gitkeep
+
 # OS
 .DS_Store
 Thumbs.db

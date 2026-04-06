@@ -13,6 +13,7 @@ ROOT = repo_root()
 REGISTRY = ROOT / "config" / "model_registry.json"
 POLICY = ROOT / "config" / "expert_model_policy.json"
 HELPER_REGISTRY = ROOT / "config" / "helper_model_registry.json"
+HERMES_PROFILE_REGISTRY = ROOT / "config" / "hermes_profile_registry.json"
 EXPERTS_DIR = ROOT / "experts"
 SPINELAB_EXPERTS_DIR = ROOT.parent / "Spinelab" / "experts"
 RETURN_ALL_PATH = ROOT / "logs" / "governance" / "return_all.json"
@@ -263,6 +264,83 @@ def validate_helper_models(models: set[str]) -> list[str]:
     return issues
 
 
+def validate_hermes_profiles() -> list[str]:
+    payload, error = try_load_json(HERMES_PROFILE_REGISTRY)
+    if error:
+        return [f"hermes_profile_registry.json {error}"]
+
+    assert payload is not None
+    profiles = payload.get("profiles")
+    if not isinstance(profiles, list):
+        return ["hermes_profile_registry.json profiles must be an array"]
+
+    issues: list[str] = []
+    seen_names: set[str] = set()
+    seen_homes: set[str] = set()
+    seen_memories: set[str] = set()
+    required_profiles = {
+        "spinetop-sentinel",
+        "spinetop-expeditioner",
+        "spinetop-helper-2b",
+        "spinetop-mirror",
+    }
+
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            issues.append("hermes_profile_registry.json profile entries must be objects")
+            continue
+        name = str(profile.get("profile_name") or "").strip()
+        if not name:
+            issues.append("hermes_profile_registry.json profile_name must be non-empty")
+            continue
+        if name in seen_names:
+            issues.append(f"hermes_profile_registry.json duplicate profile_name: {name}")
+        seen_names.add(name)
+
+        for field in ("template_root", "runtime_home", "memory_root", "soul_path"):
+            value = str(profile.get(field) or "").strip()
+            if not value:
+                issues.append(f"hermes profile {name} missing {field}")
+                continue
+            if field == "template_root" and not (ROOT / value).exists():
+                issues.append(f"hermes profile {name} template_root missing: {value}")
+            if field == "soul_path" and not (ROOT / value).exists():
+                issues.append(f"hermes profile {name} soul_path missing: {value}")
+            if field == "runtime_home":
+                if value in seen_homes:
+                    issues.append(f"hermes profile {name} reuses runtime_home: {value}")
+                seen_homes.add(value)
+            if field == "memory_root":
+                if value in seen_memories:
+                    issues.append(f"hermes profile {name} reuses memory_root: {value}")
+                seen_memories.add(value)
+
+        activation = profile.get("activation")
+        if not isinstance(activation, dict):
+            issues.append(f"hermes profile {name} activation must be an object")
+        else:
+            default_state = str(activation.get("default_state") or "").strip()
+            if default_state not in {"active", "inactive"}:
+                issues.append(f"hermes profile {name} activation.default_state must be active or inactive")
+            control_ref = str(activation.get("control_ref") or "").strip()
+            if not control_ref:
+                issues.append(f"hermes profile {name} activation.control_ref missing")
+
+        separation = profile.get("separation")
+        if not isinstance(separation, dict):
+            issues.append(f"hermes profile {name} separation must be an object")
+        else:
+            for field in ("shared_identity_allowed", "shared_memory_allowed", "shared_runtime_home_allowed"):
+                if separation.get(field) is not False:
+                    issues.append(f"hermes profile {name} separation.{field} must be false")
+
+    missing = sorted(required_profiles - seen_names)
+    if missing:
+        issues.append(f"hermes_profile_registry.json missing required profiles: {missing}")
+
+    return issues
+
+
 def main() -> int:
     failures = 0
     sections: list[tuple[str, list[str]]] = []
@@ -284,6 +362,7 @@ def main() -> int:
             expert_issues.append(f"{payload.get('expert_id', path.stem)}: " + "; ".join(issues))
     sections.append(("Expert / model", expert_issues))
     sections.append(("Helper models", validate_helper_models(models)))
+    sections.append(("Hermes profiles", validate_hermes_profiles()))
     sections.append(("Governance", validate_governance()))
     sections.append(("Dispatch", validate_dispatch()))
     sections.append(("Custodial", validate_custodial_files()))

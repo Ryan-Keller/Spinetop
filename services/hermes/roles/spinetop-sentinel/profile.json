@@ -1,0 +1,11 @@
+{
+  "profile_name": "spinetop-sentinel",
+  "display_name": "Spinetop-Sentinel",
+  "role_purpose": "Internal reviewer/watch/anomaly role for bounded operational review.",
+  "role_config_ref": "config/sentinel_role.json",
+  "memory_ref": "config/sentinel_role.json#memory_refs",
+  "soul_path": "services/hermes/roles/spinetop-sentinel/SOUL.md",
+  "activation_control_ref": "config/hermes_runtime.json#runtime_state.active",
+  "model_provider_slot_ref": "config/hermes_runtime.json#default_model_key",
+  "shared_identity_allowed": false
+}

@@ -1,0 +1,11 @@
+{
+  "profile_name": "spinetop-expeditioner",
+  "display_name": "Spinetop-Expeditioner",
+  "role_purpose": "Mission-doing first-pass worker inside mission-local and workbench lanes.",
+  "role_config_ref": "config/expeditioner_role.json",
+  "memory_ref": "config/expeditioner_role.json#memory_refs",
+  "soul_path": "services/hermes/roles/spinetop-expeditioner/SOUL.md",
+  "activation_control_ref": "config/helper_model_registry.json#roles.spinetop_expeditioner.active",
+  "model_provider_slot_ref": "config/helper_model_registry.json#roles.spinetop_expeditioner.default_model_key",
+  "shared_identity_allowed": false
+}

@@ -50,14 +50,37 @@ type ReturnAllState = {
   allow_custodial_bypass: boolean;
 };
 
+type NannySignal = {
+  id: string;
+  level: "signal" | "issue" | string;
+  title: string;
+  cause: string;
+  action_label: string;
+  action_kind: string;
+  severity?: "watch" | "bad" | string;
+};
+
+type NannyLearningSummary = {
+  stored_path?: string;
+  updated_at?: string;
+  counts?: Record<string, number>;
+  weak_question_count?: number;
+};
+
+type NannyWarning = string | { agent_id?: string; reason?: string };
+
 type NannyState = {
   ok: boolean;
   temperature: string;
   burst_score: number;
   error_score: number;
-  active_agent_warnings: string[];
+  active_agent_warnings: NannyWarning[];
   recommended_actions: string[];
   global_cooldown_seconds: number;
+  system_signals?: NannySignal[];
+  signal_count?: number;
+  learning_summary?: NannyLearningSummary;
+  derived_counts?: Record<string, number>;
 };
 
 type DispatchCounts = {
@@ -304,6 +327,9 @@ type ExpeditionSummary = {
   operator_posture?: string;
   operator_posture_reason?: string;
   triage_bucket?: string;
+  mission_summary?: ExpeditionDetail["mission_summary"];
+  parking_status?: ExpeditionDetail["parking_status"];
+  control_tower_summary?: ControlTowerSummary;
   queue_hygiene?: {
     last_activity_at?: string;
     last_activity_age_days?: number | null;
@@ -332,6 +358,10 @@ type ExpeditionGroup = {
   duplicate_count: number;
   hidden_duplicate_count: number;
 };
+
+type FeedState = "ACTIVE" | "BLOCKED" | "RETURNED" | "PARKED";
+
+type DismissBucket = "archive" | "parked" | "duplicates";
 
 type ExpeditionGroupedCounts = {
   total_missions?: number;
@@ -737,6 +767,15 @@ const fallbackData: StatusResponse = {
     active_agent_warnings: [],
     recommended_actions: [],
     global_cooldown_seconds: 0,
+    system_signals: [],
+    signal_count: 0,
+    learning_summary: {
+      stored_path: "workbench/system/operator_learning/nanny_pattern_memory.json",
+      updated_at: "",
+      counts: {},
+      weak_question_count: 0,
+    },
+    derived_counts: {},
   },
   dispatch_counts: {
     pending: 0,
@@ -1007,6 +1046,44 @@ const styles = {
     background: "rgba(15,23,42,0.9)",
     padding: 20,
   } as const,
+  composerCard: {
+    position: "sticky" as const,
+    top: 76,
+    zIndex: 20,
+    borderRadius: 24,
+    border: "1px solid rgba(251,191,36,0.28)",
+    background: "linear-gradient(180deg, rgba(30,41,59,0.98), rgba(15,23,42,0.96))",
+    boxShadow: "0 20px 48px rgba(2, 6, 23, 0.32)",
+    padding: 20,
+  } as const,
+  composerTextarea: {
+    width: "100%",
+    minHeight: 118,
+    maxHeight: 280,
+    borderRadius: 18,
+    border: "1px solid rgba(251,191,36,0.2)",
+    background: "rgba(2,6,23,0.72)",
+    color: "#f8fafc",
+    padding: "14px 16px",
+    fontSize: 16,
+    lineHeight: 1.55,
+    outline: "none",
+    resize: "vertical" as const,
+    boxSizing: "border-box" as const,
+    fontFamily: "inherit",
+  } as const,
+  composerResultGood: {
+    color: "#bbf7d0",
+  } as const,
+  composerResultInfo: {
+    color: "#e2e8f0",
+  } as const,
+  composerResultWarn: {
+    color: "#fde68a",
+  } as const,
+  composerResultBad: {
+    color: "#fecaca",
+  } as const,
   sectionGrid: {
     display: "grid",
     gap: 24,
@@ -1120,9 +1197,66 @@ const styles = {
     display: "flex",
     flexDirection: "column" as const,
     gap: 10,
-    maxHeight: 420,
-    overflowY: "auto" as const,
     paddingRight: 2,
+  } as const,
+  feedCard: {
+    borderRadius: 20,
+    border: "1px solid rgba(192,132,252,0.18)",
+    background: "linear-gradient(180deg, rgba(15,23,42,0.98), rgba(2,6,23,0.92))",
+    padding: 16,
+    overflow: "hidden" as const,
+    touchAction: "pan-y",
+  } as const,
+  feedHeaderButton: {
+    width: "100%",
+    border: "none",
+    background: "transparent",
+    padding: 0,
+    textAlign: "left" as const,
+    cursor: "pointer",
+    color: "inherit",
+  } as const,
+  feedMetaRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    alignItems: "flex-start",
+  } as const,
+  feedActionButton: {
+    borderRadius: 12,
+    border: "1px solid rgba(251,191,36,0.26)",
+    background: "rgba(120,53,15,0.22)",
+    color: "#fde68a",
+    padding: "11px 16px",
+    fontSize: 14,
+    fontWeight: 800,
+    cursor: "pointer",
+  } as const,
+  feedSecondaryActionRow: {
+    display: "flex",
+    gap: 8,
+    flexWrap: "wrap" as const,
+    justifyContent: "flex-end",
+  } as const,
+  dismissButton: {
+    borderRadius: 12,
+    border: "1px solid rgba(248,113,113,0.14)",
+    background: "rgba(30,41,59,0.48)",
+    color: "#fca5a5",
+    padding: "7px 10px",
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: "pointer",
+  } as const,
+  trayToggle: {
+    borderRadius: 999,
+    border: "1px solid rgba(148,163,184,0.24)",
+    background: "rgba(15,23,42,0.85)",
+    color: "#cbd5f5",
+    padding: "8px 12px",
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: "pointer",
   } as const,
   tabRow: {
     display: "flex",
@@ -1332,10 +1466,66 @@ function groupExpeditions(expeditions: ExpeditionSummary[], selectedMissionId?: 
 
   return {
     groups: visibleGroups,
+    allGroups: groups,
     hiddenParkedCount,
     hiddenDuplicateCount,
     totalGroups: groups.length,
   };
+}
+
+function missionFeedState(expedition: ExpeditionSummary): FeedState {
+  if (expedition.parking_status?.status === "parked" || expedition.triage_bucket === "parked") return "PARKED";
+  if (expedition.queue_hygiene?.review_ready || expedition.triage_bucket === "review") return "RETURNED";
+  if (
+    expedition.queue_hygiene?.blocked_candidate ||
+    expedition.operator_posture === "needs_operator_answer" ||
+    expedition.triage_bucket === "waiting" ||
+    expedition.status_badge === "waiting_for_user"
+  ) {
+    return "BLOCKED";
+  }
+  return "ACTIVE";
+}
+
+function missionConfidenceLabel(expedition: ExpeditionSummary): "LOW" | "MEDIUM" | "HIGH" {
+  const label = expedition.mission_summary?.confidence_label;
+  if (label === "high") return "HIGH";
+  if (label === "low") return "LOW";
+  return "MEDIUM";
+}
+
+function missionFeedSummary(expedition: ExpeditionSummary): string {
+  return (
+    expedition.mission_summary?.latest_summary ||
+    expedition.mission_summary?.summary ||
+    expedition.summary ||
+    expedition.operator_posture_reason ||
+    expedition.queue_action_reason ||
+    "No compressed mission summary yet."
+  );
+}
+
+function missionPrimaryActionLabel(expedition: ExpeditionSummary): string {
+  const state = missionFeedState(expedition);
+  if (state === "BLOCKED") return "Resolve";
+  if (state === "RETURNED") return "Review";
+  if (state === "PARKED") return "Resume";
+  return "Continue";
+}
+
+function dismissLabelForBucket(bucket: DismissBucket): string {
+  if (bucket === "duplicates") return "Hide duplicate";
+  if (bucket === "archive") return "Mark archive candidate";
+  return "Park mission";
+}
+
+function dismissBucketForGroup(group: ExpeditionGroup): DismissBucket {
+  const expedition = group.primary;
+  if (group.duplicate_count > 1) return "duplicates";
+  if (missionFeedState(expedition) === "BLOCKED") return "parked";
+  if (missionFeedState(expedition) === "PARKED") return "parked";
+  if (missionFeedState(expedition) === "RETURNED" || expedition.queue_hygiene?.archive_candidate) return "archive";
+  return "parked";
 }
 
 function getRecordString(record: unknown, key: string): string {
@@ -1362,12 +1552,65 @@ function formatConfidence(value: number | null | undefined, fallback = "unknown"
   return value.toFixed(2);
 }
 
+void getRecordNumber;
+void formatConfidence;
+
 function titleCaseLabel(value: string): string {
   return value
     .split(/[\s_]+/)
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function compactLabel(value: string | null | undefined, fallback: string): string {
+  const text = String(value || "").trim();
+  return text ? titleCaseLabel(text) : fallback;
+}
+
+function missionStateGaugeLabel(args: {
+  parked: boolean;
+  blocked: boolean;
+  caution: boolean;
+}): "ACTIVE" | "CAUTION" | "BLOCKED" | "PARKED" {
+  if (args.parked) return "PARKED";
+  if (args.blocked) return "BLOCKED";
+  if (args.caution) return "CAUTION";
+  return "ACTIVE";
+}
+
+function queuePressureLabel(queueSummary: QueueSummary, totalExpeditions: number): "LIGHT" | "MODERATE" | "OVERLOADED" {
+  const totalQueued = queueSummary.total_queued ?? totalExpeditions;
+  const blocked = queueSummary.blocked ?? 0;
+  const duplicates = queueSummary.duplicate_candidates ?? 0;
+  if (totalQueued >= 8 || blocked >= 3 || duplicates >= 3) return "OVERLOADED";
+  if (totalQueued >= 4 || blocked >= 1 || duplicates >= 1) return "MODERATE";
+  return "LIGHT";
+}
+
+function blockerTypeLabel(args: {
+  canContinue: boolean;
+  operatorPosture: string;
+  blockingQuestions: string[];
+  queueHygiene?: ExpeditionSummary["queue_hygiene"];
+  blockedReason: string;
+}): "HUMAN" | "SYSTEM" | "JUNK" {
+  if (args.queueHygiene?.junk_pattern || args.queueHygiene?.duplicate_candidate || args.queueHygiene?.archive_candidate) {
+    return "JUNK";
+  }
+  if (!args.canContinue || args.operatorPosture === "needs_operator_answer" || args.blockingQuestions.length > 0) {
+    return "HUMAN";
+  }
+  if (/(retry|budget|handoff|system|refresh|pending|guard|blocked)/i.test(args.blockedReason || "")) {
+    return "SYSTEM";
+  }
+  return "SYSTEM";
+}
+
+function toneForGauge(value: string): StripTone {
+  if (["ACTIVE", "READY", "HIGH", "LIGHT"].includes(value)) return "good";
+  if (["CAUTION", "GUARDED", "MEDIUM", "MODERATE", "PARKED", "IDLE"].includes(value)) return "watch";
+  return "watch";
 }
 
 function assumptionStatusBadgeStyle(status: string): React.CSSProperties {
@@ -1383,6 +1626,22 @@ function assumptionOperatorBadgeStyle(operatorStatus: string): React.CSSProperti
   return { ...styles.badge, ...styles.badgeWarn };
 }
 
+function titleCaseSentence(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+}
+
+function compactIntentLabel(value: string, fallback: string): string {
+  const trimmed = value
+    .replace(/\s+/g, " ")
+    .replace(/^(please|can you|could you|i want to|i need to|let's|lets)\s+/i, "")
+    .trim();
+  if (!trimmed) return fallback;
+  const clipped = trimmed.length > 88 ? `${trimmed.slice(0, 85).trimEnd()}...` : trimmed;
+  return titleCaseSentence(clipped);
+}
+
 export default function Dashboard() {
   const [viewMode, setViewMode] = useState<"missions" | "diagnostics">("missions");
   const [data, setData] = useState<StatusResponse>(fallbackData);
@@ -1393,16 +1652,22 @@ export default function Dashboard() {
   const [selectedMissionId, setSelectedMissionId] = useState<string | null>(null);
   const [selectedMission, setSelectedMission] = useState<ExpeditionDetail | null>(null);
   const [newMissionObjective, setNewMissionObjective] = useState("");
+  const [unifiedIntentDrafts, setUnifiedIntentDrafts] = useState<Record<string, string>>({});
   const [missionInputDrafts, setMissionInputDrafts] = useState<Record<string, string>>({});
   const [missionChatDrafts, setMissionChatDrafts] = useState<Record<string, string>>({});
   const [translatorDrafts, setTranslatorDrafts] = useState<Record<string, string>>({});
   const [translatorPreviewByMission, setTranslatorPreviewByMission] = useState<Record<string, PromptTranslation | null>>({});
   const [dismissedTranslationByMission, setDismissedTranslationByMission] = useState<Record<string, string | null>>({});
+  const [dismissedMissionBuckets, setDismissedMissionBuckets] = useState<Record<string, DismissBucket>>({});
   const [showDuplicateMissions, setShowDuplicateMissions] = useState(false);
+  const [showArchiveCandidates, setShowArchiveCandidates] = useState(false);
+  const [showParkedMissions, setShowParkedMissions] = useState(false);
+  const [triageMode, setTriageMode] = useState(false);
   const [workbenchFolder, setWorkbenchFolder] = useState("intake");
   const [selectedDraftPath, setSelectedDraftPath] = useState<string | null>(null);
   const [showAllAssumptions, setShowAllAssumptions] = useState(false);
   const [uiNotice, setUiNotice] = useState<UiNotice | null>(null);
+  const [returnToBaseCountdown, setReturnToBaseCountdown] = useState<number | null>(null);
   const [missionLoading, setMissionLoading] = useState(false);
   const [missionSaving, setMissionSaving] = useState(false);
   const [translatorSaving, setTranslatorSaving] = useState(false);
@@ -1422,6 +1687,10 @@ export default function Dashboard() {
   const [selectedRecord, setSelectedRecord] = useState<string | null>(null);
   const missionInputInFlightRef = useRef<string | null>(null);
   const missionChatInFlightRef = useRef<string | null>(null);
+  const autoTranslatedDraftRef = useRef<Record<string, string>>({});
+  const autoReturnToBaseKeyRef = useRef<string | null>(null);
+  const unifiedDraftKey = selectedMissionId || "__new__";
+  const unifiedIntentText = unifiedIntentDrafts[unifiedDraftKey] || "";
 
   const loadJson = async <T,>(url: string): Promise<T> => {
     const res = await fetch(url);
@@ -1548,6 +1817,24 @@ export default function Dashboard() {
     };
   }, [selectedMissionId, lastRefresh]);
 
+  useEffect(() => {
+    if (!selectedMissionId) return;
+    const content = unifiedIntentText.trim();
+    if (!content) {
+      autoTranslatedDraftRef.current[selectedMissionId] = "";
+      return;
+    }
+    if (autoTranslatedDraftRef.current[selectedMissionId] === content) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setTranslatorDrafts((prev) => ({ ...prev, [selectedMissionId]: content }));
+      autoTranslatedDraftRef.current[selectedMissionId] = content;
+      void translateMissionPrompt(content, selectedMissionId, true);
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [selectedMissionId, unifiedIntentText]);
+
   const packets = useMemo(() => groupPackets(data.events_recent || []), [data.events_recent]);
 
   useEffect(() => {
@@ -1560,6 +1847,15 @@ export default function Dashboard() {
   const missionInputText = selectedMissionId ? missionInputDrafts[selectedMissionId] || "" : "";
   const missionChatText = selectedMissionId ? missionChatDrafts[selectedMissionId] || "" : "";
   const translatorDraftText = selectedMissionId ? translatorDrafts[selectedMissionId] || "" : "";
+
+  const setUnifiedIntentDraft = (value: string) => {
+    setUnifiedIntentDrafts((prev) => ({ ...prev, [unifiedDraftKey]: value }));
+  };
+
+  const clearUnifiedIntentDraft = (draftKey?: string | null) => {
+    const key = draftKey || unifiedDraftKey;
+    setUnifiedIntentDrafts((prev) => ({ ...prev, [key]: "" }));
+  };
 
   const setMissionInputDraft = (value: string) => {
     if (!selectedMissionId) return;
@@ -1612,6 +1908,9 @@ export default function Dashboard() {
 
   const returnAll = data.return_all ?? fallbackData.return_all;
   const nanny = data.nanny ?? fallbackData.nanny;
+  const systemSignals = (nanny.system_signals ?? []).filter(
+    (item): item is NannySignal => !!item && typeof item.title === "string" && typeof item.action_label === "string"
+  );
   const dispatchCounts = data.dispatch_counts ?? fallbackData.dispatch_counts;
   const supportActivity: SupportHelperActivity = data.support_helper_activity ?? fallbackData.support_helper_activity ?? {
     available: false,
@@ -1900,6 +2199,240 @@ export default function Dashboard() {
     getRecordString(selectedMission?.manifest, "summary") ||
     selectedMission?.objective ||
     "No summary recorded yet.";
+  const localNewMissionTranslation: PromptTranslation | null = !selectedMissionId && unifiedIntentText.trim()
+    ? {
+        translation_id: "local-new-mission",
+        created_at: new Date().toISOString(),
+        source_text: unifiedIntentText,
+        target_type: "new_mission",
+        target_mission_id: null,
+        recommended_role: "expeditioner",
+        recommended_mode: "first_pass",
+        scope: "mission_local",
+        sufficiency: {
+          can_proceed: true,
+          missing_requirements: [],
+        },
+        recommended_safe_action: "create new mission from explicit operator intent",
+        requires_operator_confirmation: true,
+        translated_instruction: unifiedIntentText.trim(),
+        notes: ["No existing mission is focused, so this stays as a local start-mission draft until you confirm."],
+        derived_only: true,
+      }
+    : null;
+  const activeTranslationPreview =
+    (selectedMissionId ? promptTranslationPreview : null) ||
+    localNewMissionTranslation;
+  const unifiedIntentLower = unifiedIntentText.trim().toLowerCase();
+  const composerWantsQueueCleanup =
+    !!unifiedIntentLower &&
+    /(clean|clear|fix|tidy|sort|collapse|dedupe|de-dupe|archive|park).*(queue|feed|missions|duplicates)|queue cleanup|clean the queue/i.test(
+      unifiedIntentLower
+    );
+  const composerWantsNewMission =
+    (!selectedMissionId && !!unifiedIntentText.trim()) ||
+    /(new mission|start (a )?mission|create (a )?mission|fresh mission|separate mission)/i.test(unifiedIntentLower);
+  const composerWantsReview = /(review|inspect|check|audit|look over|look at)/i.test(unifiedIntentLower);
+  const composerWantsFix = /(fix|retry|repair|clean|clear|resume|unblock|resolve)/i.test(unifiedIntentLower);
+  const composerTargetLabel = composerWantsQueueCleanup
+    ? "Existing mission"
+    : composerWantsNewMission || activeTranslationPreview?.target_type === "new_mission"
+      ? "New mission"
+      : "Existing mission";
+  const composerModeLabel = composerWantsQueueCleanup
+    ? "Fix"
+    : composerWantsNewMission || activeTranslationPreview?.target_type === "new_mission"
+      ? "Create"
+      : composerWantsReview || activeTranslationPreview?.recommended_mode === "review"
+        ? "Review"
+        : composerWantsFix || ["retry", "resume"].includes(activeTranslationPreview?.recommended_mode || "")
+          ? "Fix"
+          : "Continue";
+  const composerInterpretation = (() => {
+    if (!unifiedIntentText.trim()) return "Add an idea, blocker, or command.";
+    if (composerWantsQueueCleanup) return "Clean the queue";
+    if (composerWantsNewMission) return compactIntentLabel(unifiedIntentText, "Start a new mission");
+    if (composerWantsReview) return compactIntentLabel(unifiedIntentText, "Review the mission");
+    if (composerModeLabel === "Fix") return compactIntentLabel(unifiedIntentText, "Fix the mission flow");
+    return compactIntentLabel(
+      activeTranslationPreview?.recommended_safe_action || unifiedIntentText,
+      selectedMissionId ? "Continue the selected mission" : "Start a mission"
+    );
+  })();
+  const composerRole = activeTranslationPreview?.recommended_role || (composerModeLabel === "Review" ? "sentinel" : "expeditioner");
+  const composerScope = activeTranslationPreview?.scope || "mission_local_only";
+  const composerNotes = composerWantsQueueCleanup
+    ? ["Queue cleanup stays inside the current mission feed and does not delete anything."]
+    : activeTranslationPreview?.notes?.length
+      ? activeTranslationPreview.notes
+      : ["The composer is using the current mission focus and bounded local heuristics."];
+  const composerInstruction = composerWantsQueueCleanup
+    ? "Apply safe feed cleanup: collapse duplicates, park blocked missions, and mark archive candidates without changing backend triggers."
+    : activeTranslationPreview?.translated_instruction || unifiedIntentText.trim();
+  const composerPrimaryLabel =
+    composerWantsNewMission || (!selectedMissionId && !!unifiedIntentText.trim()) ? "Start mission" : "Do this";
+  const composerNeedsText =
+    !composerWantsQueueCleanup &&
+    !composerWantsNewMission &&
+    missionParkingStatus?.status !== "parked" &&
+    selectedMission?.status_badge !== "ready_for_review" &&
+    !latestDraftReviewPreview;
+  const composerCanSubmit =
+    !missionSaving &&
+    !translatorSaving &&
+    !missionLoading &&
+    !loading &&
+    (!composerNeedsText || !!unifiedIntentText.trim());
+  const composerResultToneStyle =
+    errorText
+      ? styles.composerResultBad
+      : uiNotice?.tone === "good"
+        ? styles.composerResultGood
+        : uiNotice?.tone === "watch"
+          ? styles.composerResultWarn
+          : styles.composerResultInfo;
+  const confidenceGauge = missionSummary?.confidence_label === "high"
+    ? "HIGH"
+    : missionSummary?.confidence_label === "low"
+      ? "LOW"
+      : "MEDIUM";
+  const confidenceTrend =
+    (missionSummary?.confidence_reduction ?? 0) > 0.15 ? "falling" : (missionSummary?.confidence_reduction ?? 0) > 0 ? "softening" : "steady";
+  const queuePressure = queuePressureLabel(queueSummary, expeditions.length);
+  const systemSignalsVisible = systemSignals.length > 0;
+  const blockerType = blockerTypeLabel({
+    canContinue: missionSummaryCanContinue,
+    operatorPosture: missionSummaryOperatorPosture,
+    blockingQuestions: missionSummaryBlockingQuestions,
+    queueHygiene: selectedQueueHygiene,
+    blockedReason: missionSummaryBlockedReason || missionSummaryReason,
+  });
+  const missionStateGauge = missionStateGaugeLabel({
+    parked: missionParkingStatus?.status === "parked",
+    blocked: !missionSummaryCanContinue || blockerType === "HUMAN",
+    caution:
+      !!missionAssumptionReviewNeeded ||
+      !!selectedQueueSignals.length ||
+      selectedMission?.status_badge === "ready_for_review" ||
+      (missionSummary?.confidence_label || "") === "moderate",
+  });
+  const autonomyGauge =
+    controlTowerAutonomyState === "blocked"
+      ? "BLOCKED"
+      : controlTowerAutonomyState === "guarded"
+        ? "GUARDED"
+        : selectedMission
+          ? "READY"
+          : "IDLE";
+  const shouldShowReturnToBase = !!selectedMission && (missionStateGauge === "BLOCKED" || missionStateGauge === "PARKED");
+  const returnToBaseOptions = [
+    {
+      key: "retry",
+      label: "Retry with safe assumptions",
+      confidence: "HIGH",
+      detail: "Refresh the mission through the bounded retry lane.",
+    },
+    {
+      key: "narrow",
+      label: "Narrow scope / partial result",
+      confidence: "MEDIUM",
+      detail: "Ask the mission to finish with a narrower safe slice.",
+    },
+    {
+      key: "alternate",
+      label: "Alternate approach",
+      confidence: "LOW",
+      detail: "Request a different safe route without broadening authority.",
+    },
+  ] as const;
+  const duplicateTriageGroups = visibleExpeditions.groups.filter((group) => group.duplicate_count > 1);
+  const archiveCandidates = expeditions.filter((expedition) => expedition.queue_hygiene?.archive_candidate);
+  const blockedQueueItems = expeditions.filter(
+    (expedition) =>
+      expedition.operator_posture === "needs_operator_answer" ||
+      expedition.triage_bucket === "waiting" ||
+      expedition.status_badge === "waiting_for_user"
+  );
+  const activeQueueItems = expeditions.filter(
+    (expedition) =>
+      expedition.triage_bucket !== "parked" &&
+      expedition.triage_bucket !== "waiting" &&
+      !expedition.queue_hygiene?.archive_candidate &&
+      !expedition.queue_hygiene?.duplicate_candidate
+  );
+  const allExpeditionGroups = visibleExpeditions.allGroups;
+  const mainFeedGroups = allExpeditionGroups.filter((group) => {
+    const missionId = group.primary.mission_id;
+    if (dismissedMissionBuckets[missionId]) return false;
+    const state = missionFeedState(group.primary);
+    if (group.primary.queue_hygiene?.archive_candidate) return false;
+    if (state === "PARKED") return false;
+    return true;
+  });
+  const parkedFeedGroups = allExpeditionGroups.filter((group) => {
+    const missionId = group.primary.mission_id;
+    return dismissedMissionBuckets[missionId] === "parked" || missionFeedState(group.primary) === "PARKED";
+  });
+  const archiveFeedGroups = allExpeditionGroups.filter((group) => {
+    const missionId = group.primary.mission_id;
+    return dismissedMissionBuckets[missionId] === "archive" || !!group.primary.queue_hygiene?.archive_candidate;
+  });
+  const duplicateFeedGroups = allExpeditionGroups.filter((group) => {
+    const missionId = group.primary.mission_id;
+    return dismissedMissionBuckets[missionId] === "duplicates" || group.duplicate_count > 1;
+  });
+  const dominantAction = (() => {
+    if (queuePressure === "OVERLOADED") {
+      return {
+        label: "Clean Queue",
+        detail: "Group duplicates, park blocked missions, and mark archive candidates without deleting anything.",
+        action: "clean_queue" as const,
+      };
+    }
+    if (missionStateGauge === "PARKED") {
+      return {
+        label: "Resume mission",
+        detail: "Bring the parked mission back into the active lane.",
+        action: "resume" as const,
+      };
+    }
+    if (missionStateGauge === "BLOCKED") {
+      return {
+        label: "Resolve blocker",
+        detail: `Current blocker type: ${blockerType}.`,
+        action: "resolve_blocker" as const,
+      };
+    }
+    if (selectedMission?.status_badge === "ready_for_review" || !!latestDraftReviewPreview) {
+      return {
+        label: "Review mission",
+        detail: "Open the latest review-ready material without changing backend behavior.",
+        action: "review" as const,
+      };
+    }
+    if (!selectedMission || activeTranslationPreview?.target_type === "new_mission") {
+      return {
+        label: "Start mission",
+        detail: "Create a new mission from the confirmed intent in the top input.",
+        action: "start" as const,
+      };
+    }
+    return {
+      label: "Continue mission",
+      detail: "Commit the confirmed intent to the focused mission through an explicit safe action.",
+      action: "continue" as const,
+    };
+  })();
+  const shellResultLine = errorText
+    ? errorText
+    : uiNotice
+      ? `${uiNotice.title}. ${uiNotice.detail}`
+      : activeTranslationPreview
+        ? `${activeTranslationPreview.target_type === "new_mission"
+            ? "New mission"
+            : `Mission ${activeTranslationPreview.target_mission_id || selectedMissionId || "selected"}`
+          }: ${activeTranslationPreview.recommended_safe_action || dominantAction.detail}`
+        : dominantAction.detail;
 
   const expeditionStatusTone: Record<ExpeditionStatusBadge, StripTone> = {
     waiting_for_user: "watch",
@@ -1926,6 +2459,32 @@ export default function Dashboard() {
     });
   };
 
+  const toggleMissionExpansion = (missionId: string, detail?: string) => {
+    if (selectedMissionId === missionId) {
+      setSelectedMissionId(null);
+      setSelectedMission(null);
+      return;
+    }
+    focusMission(missionId, detail);
+  };
+
+  const rememberDismissedMission = (missionId: string, bucket: DismissBucket) => {
+    setDismissedMissionBuckets((prev) => ({ ...prev, [missionId]: bucket }));
+    if (selectedMissionId === missionId) {
+      setSelectedMissionId(null);
+      setSelectedMission(null);
+    }
+  };
+
+  const restoreDismissedMission = (missionId: string) => {
+    setDismissedMissionBuckets((prev) => {
+      const next = { ...prev };
+      delete next[missionId];
+      return next;
+    });
+    focusMission(missionId, `Returned ${missionId} to the visible mission feed.`);
+  };
+
   const focusMission = (missionId: string, detail?: string) => {
     setSelectedMissionId(missionId);
     setViewMode("missions");
@@ -1936,19 +2495,76 @@ export default function Dashboard() {
     });
   };
 
-  const refreshMissionDetail = async () => {
-    if (!selectedMissionId) {
-      setErrorText("Select an expedition first");
+  const handleSystemSignalAction = (signal: NannySignal) => {
+    const actionKind = signal.action_kind || "";
+    if (actionKind === "clean_queue") {
+      setViewMode("missions");
+      setShowArchiveCandidates(true);
+      setShowParkedMissions(true);
+      setShowDuplicateMissions(true);
+      setUiNotice({
+        tone: "watch",
+        title: signal.title,
+        detail: "Opened archive, parked, and duplicate trays for operator review. No cleanup was executed.",
+      });
       return;
     }
-    setMissionActionLabel("Refreshing mission detail");
-    await load();
+    if (actionKind === "review_system_fix") {
+      setViewMode("diagnostics");
+      setUiNotice({
+        tone: "watch",
+        title: signal.title,
+        detail: "Switched to diagnostics so you can inspect the system issue without changing state.",
+      });
+      return;
+    }
+    if (actionKind === "review_blocked_missions") {
+      const blockedMission = expeditions.find((item) =>
+        item.queue_hygiene?.blocked_candidate || item.status_badge === "waiting_for_user" || item.triage_bucket === "waiting"
+      );
+      if (blockedMission) {
+        focusMission(blockedMission.mission_id, blockedMission.summary || blockedMission.objective || blockedMission.mission_id);
+      } else {
+        setViewMode("missions");
+      }
+      setUiNotice({
+        tone: "watch",
+        title: signal.title,
+        detail: "Focused the blocked queue for review. No retry or mission mutation was triggered.",
+      });
+      return;
+    }
+    if (actionKind === "revive_eligible_missions") {
+      setViewMode("missions");
+      setShowParkedMissions(true);
+      const reviveMission = expeditions.find((item) =>
+        item.queue_hygiene?.parked_candidate && !item.queue_hygiene?.archive_candidate && !item.queue_hygiene?.junk_pattern
+      );
+      if (reviveMission) {
+        focusMission(reviveMission.mission_id, reviveMission.summary || reviveMission.objective || reviveMission.mission_id);
+      }
+      setUiNotice({
+        tone: "watch",
+        title: signal.title,
+        detail: "Opened parked missions for review. Nothing was resumed automatically.",
+      });
+      return;
+    }
+    if (actionKind === "collapse_duplicates") {
+      setViewMode("missions");
+      setShowDuplicateMissions(true);
+      setUiNotice({
+        tone: "watch",
+        title: signal.title,
+        detail: "Opened duplicate groups for review. No missions were merged or archived.",
+      });
+      return;
+    }
     setUiNotice({
-      tone: "good",
-      title: "Mission detail refreshed",
-      detail: `Latest files and state were reloaded for ${selectedMissionId}.`,
+      tone: "watch",
+      title: signal.title,
+      detail: "This is a recommendation only. No action was executed.",
     });
-    setMissionActionLabel("");
   };
 
   const refreshAssumptions = async () => {
@@ -2070,8 +2686,8 @@ export default function Dashboard() {
     });
   };
 
-  const createMission = async () => {
-    const objective = newMissionObjective.trim();
+  const createMission = async (objectiveOverride?: string) => {
+    const objective = (objectiveOverride ?? newMissionObjective).trim();
     if (!objective) {
       setErrorText("Objective is required to create an expedition");
       return;
@@ -2089,6 +2705,7 @@ export default function Dashboard() {
         throw new Error(payload.error || `HTTP ${res.status}`);
       }
       setNewMissionObjective("");
+      clearUnifiedIntentDraft("__new__");
       setSelectedMissionId(payload.item.mission_id);
       setSelectedMission(payload.item);
       setWorkbenchFolder(payload.item.workbench.folders[0]?.name || "intake");
@@ -2096,7 +2713,7 @@ export default function Dashboard() {
       clearMissionChatDraft(payload.item.mission_id);
       setUiNotice({
         tone: "good",
-        title: "Expedition created",
+        title: "Mission created",
         detail: `${payload.item.mission_id} is active and ready for operator input.`,
       });
       setViewMode("missions");
@@ -2109,13 +2726,13 @@ export default function Dashboard() {
     }
   };
 
-  const sendMissionInput = async () => {
-    const missionId = selectedMissionId;
+  const sendMissionInput = async (contentOverride?: string, missionIdOverride?: string) => {
+    const missionId = missionIdOverride || selectedMissionId;
     if (!missionId) {
       setErrorText("Select an expedition first");
       return;
     }
-    const content = missionInputText.trim();
+    const content = (contentOverride ?? missionInputText).trim();
     if (!content) {
       setErrorText("Mission input cannot be empty");
       return;
@@ -2144,6 +2761,9 @@ export default function Dashboard() {
         throw new Error(payload.error || `HTTP ${res.status}`);
       }
       clearMissionInputDraft(missionId);
+      if (!contentOverride) {
+        clearUnifiedIntentDraft(missionId);
+      }
       if (payload.mission) {
         setSelectedMission(payload.mission);
       }
@@ -2153,8 +2773,8 @@ export default function Dashboard() {
       }
       setUiNotice({
         tone: "good",
-        title: "Mission intake saved",
-        detail: "The input landed once in the workbench intake folder as unreviewed mission input.",
+        title: "Mission updated",
+        detail: "The confirmed action landed once in the workbench intake folder as mission input.",
       });
       await load();
     } catch (error) {
@@ -2166,13 +2786,13 @@ export default function Dashboard() {
     }
   };
 
-  const translateMissionPrompt = async () => {
-    const missionId = selectedMissionId;
+  const translateMissionPrompt = async (contentOverride?: string, missionIdOverride?: string, silent = false) => {
+    const missionId = missionIdOverride || selectedMissionId;
     if (!missionId) {
       setErrorText("Select an expedition first");
       return;
     }
-    const content = translatorDraftText.trim();
+    const content = (contentOverride ?? translatorDraftText).trim();
     if (!content) {
       setErrorText("Prompt translator input cannot be empty");
       return;
@@ -2198,11 +2818,13 @@ export default function Dashboard() {
       }
       setTranslatorPreviewByMission((prev) => ({ ...prev, [missionId]: payload.translation ?? null }));
       setDismissedTranslationByMission((prev) => ({ ...prev, [missionId]: null }));
-      setUiNotice({
-        tone: "info",
-        title: "Prompt translated",
-        detail: "Proposal saved for review only. Nothing was executed.",
-      });
+      if (!silent) {
+        setUiNotice({
+          tone: "info",
+          title: "Prompt translated",
+          detail: "Proposal saved for review only. Nothing was executed.",
+        });
+      }
       await load();
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : "Prompt translation failed");
@@ -2347,8 +2969,9 @@ export default function Dashboard() {
     await sendMissionChat(reply.value, reply.value);
   };
 
-  const setMissionParking = async (status: "parked" | "active") => {
-    if (!selectedMissionId) {
+  const setMissionParking = async (status: "parked" | "active", missionIdOverride?: string) => {
+    const missionId = missionIdOverride || selectedMissionId;
+    if (!missionId) {
       setErrorText("Select an expedition first");
       return;
     }
@@ -2360,7 +2983,7 @@ export default function Dashboard() {
           ? missionSummaryOperatorReason || missionSummaryBlockedReason || "Parked from the mission console."
           : "Resumed from the mission console.";
       const resumeHint = status === "parked" ? missionSummaryNextAnswer || missionSummaryQuestion : "";
-      const res = await fetch(`${API_BASE}/expeditions/${selectedMissionId}/parking`, {
+      const res = await fetch(`${API_BASE}/expeditions/${missionId}/parking`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status, reason, resume_hint: resumeHint || undefined }),
@@ -2369,14 +2992,16 @@ export default function Dashboard() {
       if (!res.ok || !payload.ok || !payload.item) {
         throw new Error(payload.error || `HTTP ${res.status}`);
       }
-      setSelectedMission(payload.item);
+      if (selectedMissionId === missionId) {
+        setSelectedMission(payload.item);
+      }
       setUiNotice({
         tone: "good",
         title: status === "parked" ? "Mission parked" : "Mission resumed",
         detail:
           status === "parked"
-            ? "The mission is now quiet in the console until you resume it or send new input."
-            : "The mission is active again in the console view.",
+            ? "The mission left the main feed and stays retrievable in parked missions."
+            : "The mission is active again in the main feed.",
       });
       await load();
     } catch (error) {
@@ -2387,8 +3012,13 @@ export default function Dashboard() {
     }
   };
 
-  const runLoggedControlTowerIntervention = async (action: string, options?: { label?: string; reason?: string }) => {
-    if (!selectedMissionId) {
+  const runLoggedControlTowerIntervention = async (
+    action: string,
+    options?: { label?: string; reason?: string },
+    missionIdOverride?: string
+  ) => {
+    const missionId = missionIdOverride || selectedMissionId;
+    if (!missionId) {
       setErrorText("Select an expedition first");
       return false;
     }
@@ -2396,7 +3026,7 @@ export default function Dashboard() {
     try {
       setMissionSaving(true);
       setMissionActionLabel(label);
-      const res = await fetch(`${API_BASE}/expeditions/${selectedMissionId}/interventions`, {
+      const res = await fetch(`${API_BASE}/expeditions/${missionId}/interventions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action, reason: options?.reason || undefined }),
@@ -2408,13 +3038,19 @@ export default function Dashboard() {
         item?: ExpeditionDetail;
         intervention?: ControlTowerIntervention;
       };
-      if (payload.item) {
+      if (payload.item && selectedMissionId === missionId) {
         setSelectedMission(payload.item);
       }
       if (res.status === 409 || payload.blocked) {
+        const blockedTitle =
+          action === "mark_archive_candidate"
+            ? "Archive candidate rejected"
+            : action === "retry_bounded_action"
+              ? "Bounded retry unavailable"
+              : `${label} unavailable`;
         setUiNotice({
           tone: "watch",
-          title: `${label} blocked`,
+          title: blockedTitle,
           detail: payload.error || payload.intervention?.blocked_reason || "This intervention is not currently safe to apply.",
         });
         return false;
@@ -2422,10 +3058,22 @@ export default function Dashboard() {
       if (!res.ok || !payload.ok || !payload.item) {
         throw new Error(payload.error || `HTTP ${res.status}`);
       }
+      const successTitle =
+        action === "mark_archive_candidate"
+          ? "Archive candidate marked"
+          : action === "retry_bounded_action"
+            ? "Bounded retry requested"
+            : action === "refresh_assumptions"
+              ? "Assumptions refreshed"
+              : action === "sync_helper_returns"
+                ? "Helper return sync requested"
+                : action === "resume_mission"
+                  ? "Mission resumed"
+                  : `${label} complete`;
       setUiNotice({
         tone: "good",
-        title: `${label} logged`,
-        detail: payload.intervention?.reason || "The operator intervention was recorded explicitly in the mission-local control tower log.",
+        title: successTitle,
+        detail: payload.intervention?.reason || "The mission state was updated without changing system rules.",
       });
       await load();
       return true;
@@ -2435,6 +3083,101 @@ export default function Dashboard() {
     } finally {
       setMissionSaving(false);
       setMissionActionLabel("");
+    }
+  };
+
+  const dismissMissionGroup = async (group: ExpeditionGroup) => {
+    const expedition = group.primary;
+    const bucket = dismissBucketForGroup(group);
+    if (bucket === "duplicates") {
+      rememberDismissedMission(expedition.mission_id, "duplicates");
+      setUiNotice({
+        tone: "good",
+        title: `${group.hidden_duplicate_count || 1} duplicate${(group.hidden_duplicate_count || 1) === 1 ? "" : "s"} collapsed`,
+        detail: `${expedition.objective || expedition.mission_id} stays available in duplicates.`,
+      });
+      return;
+    }
+    if (bucket === "archive") {
+      const ok = await runLoggedControlTowerIntervention(
+        "mark_archive_candidate",
+        {
+          label: "Marking archive candidate",
+          reason: expedition.queue_action_reason || "Operator dismissed the mission from the feed into archive candidates.",
+        },
+        expedition.mission_id
+      );
+      if (ok) {
+        rememberDismissedMission(expedition.mission_id, "archive");
+        setUiNotice({
+          tone: "good",
+          title: "Archive candidate marked",
+          detail: `${expedition.objective || expedition.mission_id} left the main feed and stays retrievable in archive candidates.`,
+        });
+      }
+      return;
+    }
+    await setMissionParking("parked", expedition.mission_id);
+    rememberDismissedMission(expedition.mission_id, "parked");
+    setUiNotice({
+      tone: "good",
+      title: "Mission parked",
+      detail: `${expedition.objective || expedition.mission_id} left the main feed and stays retrievable in parked missions.`,
+    });
+  };
+
+  const collapseDuplicateGroups = async () => {
+    duplicateFeedGroups.forEach((group) => rememberDismissedMission(group.primary.mission_id, "duplicates"));
+    setShowDuplicateMissions(true);
+    const collapsedCount = duplicateFeedGroups.reduce((sum, group) => sum + Math.max(1, group.hidden_duplicate_count || 0), 0);
+    setUiNotice({
+      tone: "good",
+      title: `${collapsedCount} duplicate${collapsedCount === 1 ? "" : "s"} collapsed`,
+      detail: `${duplicateFeedGroups.length} duplicate group${duplicateFeedGroups.length === 1 ? "" : "s"} moved out of the main feed.`,
+    });
+  };
+
+  const markArchiveCandidates = async () => {
+    let markedCount = 0;
+    for (const group of archiveFeedGroups) {
+      if (!group.primary.queue_hygiene?.archive_candidate) continue;
+      const ok = await runLoggedControlTowerIntervention(
+        "mark_archive_candidate",
+        {
+          label: "Marking archive candidate",
+          reason: group.primary.queue_action_reason || "Operator batched archive-candidate cleanup from the feed.",
+        },
+        group.primary.mission_id
+      );
+      if (ok) {
+        rememberDismissedMission(group.primary.mission_id, "archive");
+        markedCount += 1;
+      }
+    }
+    setShowArchiveCandidates(true);
+    if (markedCount) {
+      setUiNotice({
+        tone: "good",
+        title: `${markedCount} archive candidate${markedCount === 1 ? "" : "s"} marked`,
+        detail: "Marked missions left the main feed and stay retrievable in archive candidates.",
+      });
+    }
+  };
+
+  const parkBlockedMissions = async () => {
+    let parkedCount = 0;
+    for (const expedition of blockedQueueItems) {
+      await setMissionParking("parked", expedition.mission_id);
+      rememberDismissedMission(expedition.mission_id, "parked");
+      parkedCount += 1;
+    }
+    setShowParkedMissions(true);
+    if (parkedCount) {
+      setUiNotice({
+        tone: "good",
+        title: `${parkedCount} blocked mission${parkedCount === 1 ? "" : "s"} parked`,
+        detail: "Parked missions left the main feed and stay retrievable below.",
+      });
     }
   };
 
@@ -2503,6 +3246,596 @@ export default function Dashboard() {
     }
   };
 
+  const commitUnifiedIntent = async (mode?: "chat" | "input" | "create") => {
+    const text = unifiedIntentText.trim();
+    if (!text) {
+      setUiNotice({
+        tone: "watch",
+        title: "No intent to confirm",
+        detail: "Add intent in the top field before running an explicit action.",
+      });
+      return;
+    }
+    const safeAction = (activeTranslationPreview?.recommended_safe_action || "").toLowerCase();
+    const resolvedMode =
+      mode ||
+      (!selectedMission || activeTranslationPreview?.target_type === "new_mission"
+        ? "create"
+        : /chat|answer|reply/.test(safeAction)
+          ? "chat"
+          : "input");
+
+    if (resolvedMode === "create") {
+      await createMission(text);
+      return;
+    }
+    if (resolvedMode === "chat") {
+      await sendMissionChat(text);
+      clearUnifiedIntentDraft(selectedMissionId);
+      return;
+    }
+    if (selectedMissionId) {
+      setMissionInputDrafts((prev) => ({ ...prev, [selectedMissionId]: text }));
+    }
+    await sendMissionInput(text);
+  };
+
+  const submitMissionComposer = async () => {
+    if (composerWantsQueueCleanup) {
+      await collapseDuplicateGroups();
+      await markArchiveCandidates();
+      await parkBlockedMissions();
+      setTriageMode(true);
+      setShowArchiveCandidates(true);
+      setShowParkedMissions(true);
+      setShowDuplicateMissions(true);
+      setUiNotice({
+        tone: "good",
+        title: "Queue cleaned",
+        detail: "Duplicates collapsed, blocked missions parked, and archive candidates marked without deleting anything.",
+      });
+      return;
+    }
+
+    if (composerWantsNewMission || (!selectedMissionId && unifiedIntentText.trim())) {
+      await commitUnifiedIntent("create");
+      return;
+    }
+
+    await runDominantAction();
+  };
+
+  const runReturnToBaseOption = async (optionKey: "retry" | "narrow" | "alternate", autoTriggered = false) => {
+    if (optionKey === "retry") {
+      await runLoggedControlTowerIntervention(
+        "retry_bounded_action",
+        {
+          label: autoTriggered ? "Auto retrying safe assumptions" : "Retrying safe assumptions",
+          reason: autoTriggered
+            ? "return-to-base default option 1 applied after visible delay"
+            : "operator selected retry with safe assumptions from return-to-base",
+        }
+      );
+      return;
+    }
+    if (optionKey === "narrow") {
+      await sendMissionChat("Narrow scope and continue with a safe partial result.", "Narrow scope / partial result");
+      return;
+    }
+    await sendMissionChat("Try an alternate safe approach and continue.", "Alternate approach");
+  };
+
+  useEffect(() => {
+    if (!shouldShowReturnToBase || !selectedMissionId) {
+      setReturnToBaseCountdown(null);
+      autoReturnToBaseKeyRef.current = null;
+      return;
+    }
+    const autoKey = `${selectedMissionId}:${missionStateGauge}:${missionSummaryBlockedReason}:${missionSummaryQuestion}`;
+    if (autoReturnToBaseKeyRef.current === autoKey) {
+      return;
+    }
+    autoReturnToBaseKeyRef.current = autoKey;
+    setReturnToBaseCountdown(8);
+    const interval = window.setInterval(() => {
+      setReturnToBaseCountdown((value) => {
+        if (value == null) return null;
+        return value > 0 ? value - 1 : 0;
+      });
+    }, 1000);
+    const timeout = window.setTimeout(() => {
+      void runReturnToBaseOption("retry", true);
+    }, 8000);
+    return () => {
+      window.clearInterval(interval);
+      window.clearTimeout(timeout);
+    };
+  }, [shouldShowReturnToBase, selectedMissionId, missionStateGauge, missionSummaryBlockedReason, missionSummaryQuestion]);
+
+  const runDominantAction = async () => {
+    if (dominantAction.action === "clean_queue") {
+      setTriageMode(true);
+      setShowArchiveCandidates(true);
+      setShowParkedMissions(true);
+      setShowDuplicateMissions(true);
+      await collapseDuplicateGroups();
+      await markArchiveCandidates();
+      await parkBlockedMissions();
+      setUiNotice({
+        tone: "good",
+        title: "Queue cleaned",
+        detail: "Duplicates collapsed, blocked missions parked, and archive candidates marked without deleting anything.",
+      });
+      return;
+    }
+    if (dominantAction.action === "resume") {
+      await setMissionParking("active");
+      return;
+    }
+    if (dominantAction.action === "resolve_blocker") {
+      if (blockerType === "JUNK") {
+        await runLoggedControlTowerIntervention("mark_archive_candidate", {
+          label: "Ignoring junk blocker",
+          reason: "operator classified the blocker as junk during mission resolution",
+        });
+        return;
+      }
+      if (blockerType === "SYSTEM") {
+        await runReturnToBaseOption("retry");
+        return;
+      }
+      if (unifiedIntentText.trim()) {
+        await sendMissionChat(unifiedIntentText, "Resolve blocker");
+        clearUnifiedIntentDraft(selectedMissionId);
+        return;
+      }
+      answerBlocker();
+      return;
+    }
+    if (dominantAction.action === "review") {
+      openReviewPreview(latestDraftPreviewPath);
+      return;
+    }
+    await commitUnifiedIntent(dominantAction.action === "start" ? "create" : undefined);
+  };
+
+  const renderMissionFeed = () => (
+    <div id="expeditions" style={styles.panel}>
+      <div style={styles.sectionTitleRow}>
+        <div>
+          <h2 style={styles.sectionTitle}>Mission Feed</h2>
+          <div style={styles.sectionSubtitle}>Collapsed by default, expanded inline, swipe-or-tap dismiss, and less visual noise.</div>
+        </div>
+        <div style={styles.pillRow}>
+          <span style={{ ...styles.badge, ...styles.badgeGood }}>{mainFeedGroups.length} in feed</span>
+          <span style={styles.badge}>{queuePressure}</span>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", marginBottom: 16 }}>
+        <div style={styles.previewBox}><div style={styles.subtleText}>Active</div><div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#f8fafc" }}>{mainFeedGroups.filter((group) => missionFeedState(group.primary) === "ACTIVE").length}</div></div>
+        <div style={styles.previewBox}><div style={styles.subtleText}>Blocked</div><div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#f8fafc" }}>{mainFeedGroups.filter((group) => missionFeedState(group.primary) === "BLOCKED").length}</div></div>
+        <div style={styles.previewBox}><div style={styles.subtleText}>Returned</div><div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#f8fafc" }}>{mainFeedGroups.filter((group) => missionFeedState(group.primary) === "RETURNED").length}</div></div>
+        <div style={styles.previewBox}><div style={styles.subtleText}>Hidden by default</div><div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#f8fafc" }}>{archiveFeedGroups.length + parkedFeedGroups.length + duplicateFeedGroups.length}</div></div>
+      </div>
+
+      <div style={{ ...styles.recordCard, marginBottom: 16 }}>
+        <div style={styles.recordMetaRow}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Queue actions in feed</div>
+            <div style={styles.subtleText}>No deletion. No truth-lane writes. Mission-local notes only when needed.</div>
+          </div>
+        </div>
+        <div style={{ marginTop: 12, display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+          <div style={styles.previewBox}><div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>Duplicates</div><div style={{ marginTop: 6, ...styles.subtleText }}>{duplicateFeedGroups.length} duplicate group{duplicateFeedGroups.length === 1 ? "" : "s"} ready to collapse.</div><button type="button" onClick={() => void collapseDuplicateGroups()} disabled={!duplicateFeedGroups.length} style={{ ...styles.secondaryButton, marginTop: 10 }}>Collapse duplicates</button></div>
+          <div style={styles.previewBox}><div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>Archive</div><div style={{ marginTop: 6, ...styles.subtleText }}>{archiveFeedGroups.length} mission{archiveFeedGroups.length === 1 ? "" : "s"} can be moved out of the main feed.</div><button type="button" onClick={() => void markArchiveCandidates()} disabled={!archiveFeedGroups.length} style={{ ...styles.secondaryButton, marginTop: 10 }}>Mark archive candidates</button></div>
+          <div style={styles.previewBox}><div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>Blocked</div><div style={{ marginTop: 6, ...styles.subtleText }}>{blockedQueueItems.length} blocked mission{blockedQueueItems.length === 1 ? "" : "s"} can be parked.</div><button type="button" onClick={() => void parkBlockedMissions()} disabled={!blockedQueueItems.length} style={{ ...styles.secondaryButton, marginTop: 10 }}>Park blocked</button></div>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+        <button type="button" onClick={() => setShowArchiveCandidates((prev) => !prev)} style={styles.trayToggle}>{showArchiveCandidates ? "Hide archive candidates" : `Archive candidates (${archiveFeedGroups.length})`}</button>
+        <button type="button" onClick={() => setShowParkedMissions((prev) => !prev)} style={styles.trayToggle}>{showParkedMissions ? "Hide parked" : `Parked (${parkedFeedGroups.length})`}</button>
+        <button type="button" onClick={() => setShowDuplicateMissions((prev) => !prev)} style={styles.trayToggle}>{showDuplicateMissions ? "Hide duplicates" : `Duplicates (${duplicateFeedGroups.length})`}</button>
+      </div>
+
+      <div style={styles.expeditionList}>
+        {mainFeedGroups.length ? mainFeedGroups.map((group) => {
+          const expedition = group.primary;
+          const isExpanded = selectedMissionId === expedition.mission_id;
+          const feedState = missionFeedState(expedition);
+          const confidence = missionConfidenceLabel(expedition);
+          const expandedMission = isExpanded && selectedMission?.mission_id === expedition.mission_id ? selectedMission : null;
+          const dismissLabel = dismissLabelForBucket(dismissBucketForGroup(group));
+          return (
+            <motion.div
+              key={group.group_key}
+              style={{ ...styles.feedCard, borderColor: isExpanded ? "rgba(251,191,36,0.42)" : "rgba(192,132,252,0.18)" }}
+              drag="x"
+              dragElastic={0.12}
+              dragSnapToOrigin
+              onDragEnd={(_, info) => {
+                if (Math.abs(info.offset.x) >= 120) void dismissMissionGroup(group);
+              }}
+            >
+              <button type="button" onClick={() => toggleMissionExpansion(expedition.mission_id, missionFeedSummary(expedition))} style={styles.feedHeaderButton}>
+                <div style={styles.feedMetaRow}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 17, fontWeight: 800, color: "#f8fafc" }}>{expedition.objective || expedition.mission_id}</div>
+                    <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" as const }}>
+                      <span style={{ ...styles.badge, ...(feedState === "ACTIVE" ? styles.badgeGood : feedState === "BLOCKED" || feedState === "RETURNED" ? styles.badgeWarn : styles.badgeOutline) }}>{feedState}</span>
+                      <span style={styles.badge}>{confidence}</span>
+                      {group.duplicate_count > 1 ? <span style={{ ...styles.badge, ...styles.badgeOutline }}>{group.duplicate_count} similar</span> : null}
+                    </div>
+                    <div style={{ marginTop: 10, fontSize: 13, color: "#cbd5f5", lineHeight: 1.5 }}>{missionFeedSummary(expedition)}</div>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column" as const, gap: 8, alignItems: "flex-end", flexShrink: 0 }}>
+                    <button type="button" onClick={(event) => { event.stopPropagation(); toggleMissionExpansion(expedition.mission_id, missionFeedSummary(expedition)); }} style={styles.feedActionButton}>{missionPrimaryActionLabel(expedition)}</button>
+                    <div style={styles.feedSecondaryActionRow}>
+                      <button type="button" onClick={(event) => { event.stopPropagation(); void dismissMissionGroup(group); }} style={styles.dismissButton}>{dismissLabel}</button>
+                    </div>
+                  </div>
+                </div>
+              </button>
+
+              {isExpanded ? (
+                <div style={{ marginTop: 14, display: "grid", gap: 12 }}>
+                  {expandedMission ? (
+                    <>
+                      <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+                        <div style={styles.previewBox}>
+                          <div style={styles.subtleText}>Control Tower details</div>
+                          <div style={{ marginTop: 6, fontSize: 13, color: "#cbd5f5", lineHeight: 1.55 }}>{controlTowerSummary?.operator_attention_reason || missionSummaryReason || "No control tower summary yet."}</div>
+                          <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" as const }}><span style={styles.badge}>{controlTowerAutonomyState}</span><span style={styles.badge}>{controlTowerRetryRemaining} retry left</span></div>
+                        </div>
+                        <div style={styles.previewBox}>
+                          <div style={styles.subtleText}>Assumptions</div>
+                          <div style={{ marginTop: 6, fontSize: 13, color: "#cbd5f5", lineHeight: 1.55 }}>{missionActiveAssumptionCount} active of {missionAssumptionCount} total. Derived only and mission-local.</div>
+                          <div style={{ marginTop: 8, display: "grid", gap: 6 }}>{visibleMissionAssumptions.length ? visibleMissionAssumptions.map((assumption) => <div key={assumption.assumption_id} style={{ fontSize: 12, color: "#e2e8f0" }}>{assumption.text}</div>) : <div style={styles.subtleText}>No assumptions are visible yet.</div>}</div>
+                        </div>
+                        <div style={styles.previewBox}>
+                          <div style={styles.subtleText}>Mirror / runner</div>
+                          <div style={{ marginTop: 6, fontSize: 13, color: "#cbd5f5", lineHeight: 1.55 }}>{getRecordString(latestRunnerReturn, "summary") || "No helper return is linked to this mission yet."}</div>
+                          <div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8" }}>{mirrorDoorTest.available ? `${mirrorDoorBlocked} blocked, ${mirrorDoorAccepted} accepted, ${mirrorDoorUnexpected} unexpected mirror-door cases` : "Mirror-door summary not available."}</div>
+                        </div>
+                      </div>
+                      {shouldShowReturnToBase ? (
+                        <div style={{ ...styles.previewBox, borderColor: "rgba(251,191,36,0.35)", background: "rgba(120,53,15,0.16)", marginTop: 0 }}>
+                          <div style={{ fontSize: 14, fontWeight: 800, color: "#fde68a" }}>Returned to base options</div>
+                          <div style={{ marginTop: 8, display: "grid", gap: 8 }}>{returnToBaseOptions.map((option) => <button key={option.key} type="button" onClick={() => void runReturnToBaseOption(option.key)} style={{ ...styles.secondaryButton, textAlign: "left" }}>{option.label}</button>)}</div>
+                          {returnToBaseCountdown != null ? <div style={{ marginTop: 8, ...styles.subtleText }}>Option 1 auto-runs in {returnToBaseCountdown}s.</div> : null}
+                        </div>
+                      ) : null}
+                    </>
+                  ) : <div style={styles.previewBox}>Loading mission details...</div>}
+                </div>
+              ) : null}
+            </motion.div>
+          );
+        }) : <div style={styles.recordCard}>No missions are in the main feed right now. Hidden items remain retrievable below.</div>}
+      </div>
+
+      {showArchiveCandidates ? <div style={{ ...styles.recordCard, marginTop: 16 }}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Archive candidates</div><div style={styles.subtleText}>Dismissed or quiet missions stay here with their data intact.</div></div></div><div style={{ marginTop: 12, display: "grid", gap: 8 }}>{archiveFeedGroups.length ? archiveFeedGroups.map((group) => <div key={`archive-${group.group_key}`} style={styles.previewBox}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>{group.primary.objective || group.primary.mission_id}</div><div style={styles.subtleText}>{missionFeedSummary(group.primary)}</div></div><button type="button" onClick={() => restoreDismissedMission(group.primary.mission_id)} style={styles.secondaryButton}>View</button></div></div>) : <div style={styles.subtleText}>No archive candidates are hidden.</div>}</div></div> : null}
+      {showParkedMissions ? <div style={{ ...styles.recordCard, marginTop: 16 }}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Parked missions</div><div style={styles.subtleText}>Parked missions are quiet, retrievable, and never deleted.</div></div></div><div style={{ marginTop: 12, display: "grid", gap: 8 }}>{parkedFeedGroups.length ? parkedFeedGroups.map((group) => <div key={`parked-${group.group_key}`} style={styles.previewBox}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>{group.primary.objective || group.primary.mission_id}</div><div style={styles.subtleText}>{group.primary.operator_posture_reason || missionFeedSummary(group.primary)}</div></div><button type="button" onClick={() => restoreDismissedMission(group.primary.mission_id)} style={styles.secondaryButton}>View</button></div></div>) : <div style={styles.subtleText}>No parked missions are hidden.</div>}</div></div> : null}
+      {showDuplicateMissions ? <div style={{ ...styles.recordCard, marginTop: 16 }}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Duplicates</div><div style={styles.subtleText}>Collapsed duplicates stay grouped here so the main feed stays quiet.</div></div></div><div style={{ marginTop: 12, display: "grid", gap: 8 }}>{duplicateFeedGroups.length ? duplicateFeedGroups.map((group) => <div key={`duplicate-${group.group_key}`} style={styles.previewBox}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>{group.primary.objective || group.primary.mission_id}</div><div style={styles.subtleText}>{group.duplicate_count} related mission{group.duplicate_count === 1 ? "" : "s"}</div></div><button type="button" onClick={() => restoreDismissedMission(group.primary.mission_id)} style={styles.secondaryButton}>View</button></div></div>) : <div style={styles.subtleText}>No duplicate groups are hidden.</div>}</div></div> : null}
+    </div>
+  );
+
+  const renderMissionShell = () => (
+    <>
+      <div style={styles.panel}>
+        <div style={styles.sectionTitleRow}>
+          <div>
+            <h2 style={styles.sectionTitle}>Operator Shell</h2>
+            <div style={styles.sectionSubtitle}>One input, four gauges, one result line, one next step.</div>
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))" }}>
+          {[
+            ["Mission State", missionStateGauge, selectedMission?.objective || "No focused mission yet."],
+            ["Autonomy State", autonomyGauge, selectedMission ? compactLabel(controlTowerAutonomyState, "Ready") : "Awaiting mission focus."],
+            ["Confidence", confidenceGauge, `${missionSummaryConfidence} · ${confidenceTrend}`],
+            ["Queue Pressure", queuePressure, `${queueSummary.total_queued ?? expeditions.length} queued across ${expeditions.length} missions`],
+          ].map(([label, value, detail]) => (
+            <div key={label} style={{ ...styles.statusCard, ...statusStripToneStyles[toneForGauge(String(value))] }}>
+              <div style={styles.statusLabel}>{label}</div>
+              <div style={styles.statusValue}>{value}</div>
+              <div style={styles.statusDetail}>{detail}</div>
+            </div>
+          ))}
+        </div>
+
+        {systemSignalsVisible ? (
+          <div style={{ ...styles.recordCard, marginTop: 16, borderColor: "rgba(251,191,36,0.32)", background: "rgba(15,23,42,0.82)" }}>
+            <div style={styles.recordMetaRow}>
+              <div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: "#f8fafc" }}>System Signals</div>
+                <div style={styles.subtleText}>Compact nanny recommendations. Visible only when the system needs attention.</div>
+              </div>
+              <span style={{ ...styles.badge, ...styles.badgeWarn }}>{systemSignals.length} active</span>
+            </div>
+
+            <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+              {systemSignals.map((signal) => (
+                <div key={signal.id} style={{ ...styles.previewBox, borderColor: signal.severity === "bad" ? "rgba(251,113,133,0.28)" : "rgba(251,191,36,0.28)" }}>
+                  <div style={styles.recordMetaRow}>
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: signal.severity === "bad" ? "#fecdd3" : "#fde68a" }}>
+                        {signal.level === "issue" ? "SYSTEM ISSUE" : "SYSTEM SIGNAL"}
+                      </div>
+                      <div style={{ marginTop: 4, fontSize: 16, fontWeight: 700, color: "#f8fafc" }}>{signal.title}</div>
+                    </div>
+                    <span style={{ ...styles.badge, ...(signal.severity === "bad" ? styles.badgeBad : styles.badgeWarn) }}>recommend</span>
+                  </div>
+                  <div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8" }}>Cause</div>
+                  <div style={{ marginTop: 4, fontSize: 13, color: "#cbd5f5", lineHeight: 1.5 }}>{signal.cause}</div>
+                  <div style={{ marginTop: 10 }}>
+                    <button type="button" onClick={() => handleSystemSignalAction(signal)} style={styles.secondaryButton}>
+                      {signal.action_label}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        <div style={{ ...styles.composerCard, marginTop: 16 }}>
+          <div style={styles.recordMetaRow}>
+            <div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: "#fef3c7" }}>Mission Composer</div>
+              <div style={styles.subtleText}>
+                {selectedMissionId ? `Focused mission: ${selectedMissionId}` : "No mission selected. New mission drafts start here."}
+              </div>
+            </div>
+            <span style={{ ...styles.badge, ...styles.badgeOutline }}>{composerPrimaryLabel}</span>
+          </div>
+
+          <textarea
+            id="operator-intent"
+            value={unifiedIntentText}
+            onChange={(event) => setUnifiedIntentDraft(event.target.value)}
+            placeholder="What do you want to try?"
+            autoComplete="off"
+            style={{ ...styles.composerTextarea, marginTop: 14 }}
+          />
+
+          <div style={{ ...styles.previewBox, marginTop: 14 }}>
+            <div style={styles.subtleText}>I think you want to:</div>
+            <div style={{ marginTop: 6, fontSize: 18, fontWeight: 800, color: "#f8fafc", lineHeight: 1.35 }}>
+              {composerInterpretation}
+            </div>
+
+            <div style={{ marginTop: 12, display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
+              <div>
+                <div style={styles.subtleText}>Target</div>
+                <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#fde68a" }}>{composerTargetLabel}</div>
+              </div>
+              <div>
+                <div style={styles.subtleText}>Mode</div>
+                <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#fde68a" }}>{composerModeLabel}</div>
+              </div>
+            </div>
+
+            <details style={{ ...styles.recordCard, marginTop: 12, padding: 12 }}>
+              <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>Details</summary>
+              <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+                <div style={styles.subtleText}>role: {composerRole}</div>
+                <div style={styles.subtleText}>mode: {activeTranslationPreview?.recommended_mode || composerModeLabel.toLowerCase()}</div>
+                <div style={styles.subtleText}>scope: {composerScope}</div>
+                <div style={{ ...styles.subtleText, whiteSpace: "pre-wrap" as const }}>
+                  notes: {composerNotes.join(" ")}
+                </div>
+                <div style={{ fontSize: 12, color: "#cbd5f5", lineHeight: 1.55, whiteSpace: "pre-wrap" as const }}>
+                  {composerInstruction || "No translated instruction yet."}
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <div style={{ ...styles.previewBox, marginTop: 14 }}>
+            <div style={styles.subtleText}>Result</div>
+            <div style={{ ...composerResultToneStyle, marginTop: 6, fontSize: 14, fontWeight: 700, lineHeight: 1.45 }}>
+              {shellResultLine}
+            </div>
+          </div>
+
+          <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-start" }}>
+            <motion.button
+              type="button"
+              onClick={() => void submitMissionComposer()}
+              disabled={!composerCanSubmit}
+              style={{ ...styles.refreshButton, padding: "12px 18px", fontSize: 14, opacity: composerCanSubmit ? 1 : 0.6 }}
+              whileHover={{ scale: composerCanSubmit ? 1.02 : 1 }}
+              whileTap={{ scale: composerCanSubmit ? 0.98 : 1 }}
+            >
+              {missionSaving ? missionActionLabel || `${composerPrimaryLabel}...` : composerPrimaryLabel}
+            </motion.button>
+          </div>
+        </div>
+      </div>
+      {renderMissionFeed()}
+      {false ? <div id="expeditions" style={styles.gridSplit}>
+        <div style={styles.panel}>
+          <div style={styles.sectionTitleRow}>
+            <div>
+              <h2 style={styles.sectionTitle}>Mission Queue</h2>
+              <div style={styles.sectionSubtitle}>Compact queue view tuned for rapid mission triage and focus selection.</div>
+            </div>
+            <div style={styles.pillRow}>
+              <span style={{ ...styles.badge, ...styles.badgeGood }}>{visibleExpeditions.groups.length} groups</span>
+              <button type="button" onClick={() => setShowDuplicateMissions((prev) => !prev)} style={{ ...styles.badge, border: "1px solid rgba(192,132,252,0.25)", background: showDuplicateMissions ? "rgba(124,58,237,0.24)" : "rgba(15,23,42,0.9)", color: "#e2e8f0", cursor: "pointer" }}>
+                {showDuplicateMissions ? "Expanded duplicates" : "Collapse duplicates"}
+              </button>
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", marginBottom: 16 }}>
+            {[["Queued", queueSummary.total_queued ?? expeditions.length], ["Blocked", queueSummary.blocked ?? 0], ["Parked", queueSummary.parked ?? 0], ["Duplicates", queueSummary.duplicate_candidates ?? 0], ["Review", queueSummary.review_ready ?? 0], ["Archive", queueSummary.archive_close_candidates ?? 0]].map(([label, value]) => (
+              <div key={label} style={styles.previewBox}>
+                <div style={styles.subtleText}>{label}</div>
+                <div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#f8fafc" }}>{value as number}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={styles.expeditionList}>
+            {visibleExpeditions.groups.length ? visibleExpeditions.groups.map((group) => {
+              const expedition = group.primary;
+              const groupSelected = group.items.some((item) => item.mission_id === selectedMissionId);
+              return (
+                <div key={group.group_key} style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                  <button type="button" onClick={() => focusMission(expedition.mission_id, expedition.summary || expedition.objective || expedition.mission_id)} style={{ ...styles.recordCard, textAlign: "left", cursor: "pointer", borderColor: groupSelected ? "rgba(251,191,36,0.42)" : "rgba(192,132,252,0.2)", background: groupSelected ? "rgba(76,29,149,0.28)" : "rgba(2,6,23,0.55)" }}>
+                    <div style={styles.recordMetaRow}>
+                      <div>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>{expedition.objective || expedition.mission_id}</div>
+                        <div style={styles.subtleText}>{expedition.mission_id}</div>
+                      </div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const, justifyContent: "flex-end" }}>
+                        <span style={styles.badge}>{expedition.status_badge}</span>
+                        <span style={styles.badge}>{expedition.triage_bucket || "active"}</span>
+                        {group.duplicate_count > 1 ? <span style={{ ...styles.badge, ...styles.badgeOutline }}>{group.duplicate_count} similar</span> : null}
+                      </div>
+                    </div>
+                    <div style={{ marginTop: 8, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>{expedition.summary || expedition.operator_posture_reason || "No compressed mission summary yet."}</div>
+                  </button>
+                  {showDuplicateMissions && group.items.length > 1 ? (
+                    <div style={{ marginLeft: 14, paddingLeft: 12, borderLeft: "1px solid rgba(168,85,247,0.18)", display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                      {group.items.slice(1).map((item) => (
+                        <button key={item.mission_id} type="button" onClick={() => focusMission(item.mission_id, item.summary || item.objective || item.mission_id)} style={{ ...styles.recordCard, textAlign: "left", cursor: "pointer", padding: 12 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>{item.mission_id}</div>
+                          <div style={{ marginTop: 4, fontSize: 12, color: "#94a3b8" }}>{item.objective}</div>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            }) : <div style={styles.recordCard}>No expeditions exist yet. Use the top input and confirm `Start mission`.</div>}
+          </div>
+        </div>
+
+        <div style={styles.panel}>
+          {selectedMission ? (
+            <div style={styles.stack}>
+              <div style={styles.recordCard}>
+                <div style={styles.recordMetaRow}>
+                  <div>
+                    <div style={{ fontSize: 18, fontWeight: 700, color: "#f8fafc" }}>{selectedMission!.objective || selectedMission!.mission_id}</div>
+                    <div style={styles.subtleText}>{selectedMission!.mission_id} · {missionSummaryLifecycleState}</div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const }}>
+                    <span style={{ ...styles.badge, ...styles.badgeGood }}>{missionStateGauge}</span>
+                    <span style={styles.badge}>{autonomyGauge}</span>
+                    <span style={styles.badge}>{confidenceGauge}</span>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 12, display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+                  <div style={styles.previewBox}>
+                    <div style={styles.subtleText}>What the system thinks you mean</div>
+                    <div style={{ marginTop: 6, fontSize: 13, color: "#cbd5f5", lineHeight: 1.55 }}>{missionSummary?.latest_summary || missionSummary?.summary || latestMeaningfulSummary}</div>
+                  </div>
+                  <div style={styles.previewBox}>
+                    <div style={styles.subtleText}>One next action</div>
+                    <div style={{ marginTop: 6, fontSize: 13, color: "#f8fafc", lineHeight: 1.55 }}>{missionSummaryNextStep}</div>
+                  </div>
+                  <div style={styles.previewBox}>
+                    <div style={styles.subtleText}>Blocker classification</div>
+                    <div style={{ marginTop: 6, fontSize: 16, fontWeight: 700, color: blockerType === "HUMAN" ? "#fde68a" : blockerType === "SYSTEM" ? "#bfdbfe" : "#f9a8d4" }}>{blockerType}</div>
+                    <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>{missionSummaryReason}</div>
+                  </div>
+                </div>
+              </div>
+
+              <div style={styles.recordCard}>
+                <div style={styles.recordMetaRow}>
+                  <div>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: "#f8fafc" }}>Resolve Blocker</div>
+                    <div style={styles.subtleText}>Human asks for an answer, system asks for a safe retry, junk gets ignored without deletion.</div>
+                  </div>
+                  <span style={{ ...styles.badge, ...(blockerType === "HUMAN" ? styles.badgeWarn : blockerType === "JUNK" ? styles.badgeOutline : styles.badgeGood) }}>{blockerType}</span>
+                </div>
+                <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" as const }}>
+                  <motion.button type="button" onClick={() => void sendMissionChat(unifiedIntentText || missionSummaryNextAnswer, "Answer")} style={styles.secondaryButton} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>Answer</motion.button>
+                  <motion.button type="button" onClick={() => void runReturnToBaseOption("retry")} style={styles.secondaryButton} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>Assume and continue</motion.button>
+                  <motion.button type="button" onClick={() => void runLoggedControlTowerIntervention("mark_archive_candidate", { label: "Ignoring junk", reason: "operator classified blocker as junk" })} style={styles.secondaryButton} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>Ignore (junk)</motion.button>
+                </div>
+              </div>
+              {shouldShowReturnToBase ? (
+                <div style={{ ...styles.recordCard, borderColor: "rgba(251,191,36,0.4)", background: "rgba(120,53,15,0.16)" }}>
+                  <div style={{ fontSize: 18, fontWeight: 800, color: "#fde68a" }}>MISSION STATUS: RETURNED TO BASE</div>
+                  <div style={{ marginTop: 8, fontSize: 13, color: "#fde68a", lineHeight: 1.55 }}>We found 3 ways forward. Default action is Option 1 after a visible delay and an explicit log entry.</div>
+                  <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+                    {returnToBaseOptions.map((option) => (
+                      <button key={option.key} type="button" onClick={() => void runReturnToBaseOption(option.key)} style={{ ...styles.previewBox, textAlign: "left", cursor: "pointer" }}>
+                        <div style={styles.recordMetaRow}>
+                          <div style={{ fontSize: 14, fontWeight: 700, color: "#f8fafc" }}>{option.label}</div>
+                          <span style={{ ...styles.badge, ...(option.confidence === "HIGH" ? styles.badgeGood : option.confidence === "MEDIUM" ? styles.badgeWarn : styles.badgeOutline) }}>{option.confidence}</span>
+                        </div>
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5" }}>{option.detail}</div>
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" as const }}>
+                    <motion.button type="button" onClick={() => void runReturnToBaseOption("retry")} style={styles.secondaryButton} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>New solution refresh</motion.button>
+                    <motion.button type="button" onClick={() => void setMissionParking("parked")} style={styles.secondaryButton} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>Kill mission (park)</motion.button>
+                    <motion.button type="button" onClick={() => document.getElementById("operator-intent")?.focus()} style={styles.secondaryButton} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>Add input (optional)</motion.button>
+                    {returnToBaseCountdown != null ? <span style={{ ...styles.badge, ...styles.badgeWarn }}>Option 1 in {returnToBaseCountdown}s</span> : null}
+                  </div>
+                  <details style={{ marginTop: 12 }}>
+                    <summary style={{ cursor: "pointer", color: "#fde68a", fontSize: 13, fontWeight: 600 }}>Why these options</summary>
+                    <div style={{ ...styles.previewBox, marginTop: 10, fontSize: 12, color: "#fde68a", lineHeight: 1.55 }}>
+                      Missing artifact and blocker patterns pushed the mission back to a bounded retry posture. Assumptions allow a safe refresh, scope can narrow to partial output, and an alternate path is offered because the current route is not progressing.
+                    </div>
+                  </details>
+                </div>
+              ) : null}
+
+              {(triageMode || queuePressure === "OVERLOADED") ? (
+                <div style={styles.recordCard}>
+                  <div style={styles.recordMetaRow}>
+                    <div>
+                      <div style={{ fontSize: 16, fontWeight: 700, color: "#f8fafc" }}>Queue Triage</div>
+                      <div style={styles.subtleText}>No deletion. Collapse duplicates, mark archive candidates, park blocked work, and keep active missions visible.</div>
+                    </div>
+                    <span style={{ ...styles.badge, ...styles.badgeWarn }}>{queuePressure}</span>
+                  </div>
+                  <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
+                    <div style={styles.previewBox}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>Duplicates</div>
+                      {duplicateTriageGroups.length ? duplicateTriageGroups.slice(0, 3).map((group) => <div key={`dup-${group.group_key}`} style={{ ...styles.recordCard, marginTop: 8 }}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>{group.primary.objective || group.primary.mission_id}</div><div style={styles.subtleText}>{group.duplicate_count} related missions</div></div><button type="button" onClick={() => { setShowDuplicateMissions(false); focusMission(group.primary.mission_id); }} style={styles.secondaryButton}>Collapse duplicates</button></div></div>) : <div style={{ marginTop: 8, ...styles.subtleText }}>No duplicate groups need action.</div>}
+                    </div>
+                    <div style={styles.previewBox}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>Archive candidates</div>
+                      {archiveCandidates.length ? archiveCandidates.slice(0, 3).map((mission) => <div key={`archive-${mission.mission_id}`} style={{ ...styles.recordCard, marginTop: 8 }}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>{mission.objective || mission.mission_id}</div><div style={styles.subtleText}>{mission.queue_action_reason || mission.summary}</div></div><button type="button" onClick={() => void runLoggedControlTowerIntervention("mark_archive_candidate", { label: "Marking archive candidate", reason: mission.queue_action_reason || "queue triage archive candidate" }, mission.mission_id)} style={styles.secondaryButton}>Mark archive candidate</button></div></div>) : <div style={{ marginTop: 8, ...styles.subtleText }}>No archive candidates are waiting.</div>}
+                    </div>
+                    <div style={styles.previewBox}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>Blocked</div>
+                      {blockedQueueItems.length ? blockedQueueItems.slice(0, 3).map((mission) => <div key={`blocked-${mission.mission_id}`} style={{ ...styles.recordCard, marginTop: 8 }}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>{mission.objective || mission.mission_id}</div><div style={styles.subtleText}>{mission.operator_posture_reason || mission.summary}</div></div><button type="button" onClick={() => void setMissionParking("parked", mission.mission_id)} style={styles.secondaryButton}>Park blocked</button></div></div>) : <div style={{ marginTop: 8, ...styles.subtleText }}>No blocked missions need parking.</div>}
+                    </div>
+                    <div style={styles.previewBox}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>Active</div>
+                      {activeQueueItems.length ? activeQueueItems.slice(0, 3).map((mission) => <div key={`active-${mission.mission_id}`} style={{ ...styles.recordCard, marginTop: 8 }}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>{mission.objective || mission.mission_id}</div><div style={styles.subtleText}>{mission.summary}</div></div><button type="button" onClick={() => focusMission(mission.mission_id)} style={styles.secondaryButton}>Keep active</button></div></div>) : <div style={{ marginTop: 8, ...styles.subtleText }}>No active missions need attention.</div>}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              <details style={styles.recordCard}><summary style={{ cursor: "pointer", fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Control Tower details</summary><div style={{ marginTop: 12, display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}><div style={styles.previewBox}><div style={styles.subtleText}>Autonomy</div><div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f8fafc" }}>{controlTowerAutonomyState}</div></div><div style={styles.previewBox}><div style={styles.subtleText}>Retry budget</div><div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f8fafc" }}>{controlTowerRetryRemaining} remaining</div></div><div style={styles.previewBox}><div style={styles.subtleText}>Attention reason</div><div style={{ marginTop: 4, fontSize: 12, color: "#cbd5f5" }}>{controlTowerSummary?.operator_attention_reason || missionSummaryReason}</div></div></div></details>
+              <details style={styles.recordCard}><summary style={{ cursor: "pointer", fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Assumptions</summary><div style={{ marginTop: 12, display: "grid", gap: 8 }}><div style={{ ...styles.previewBox, fontSize: 12, color: "#cbd5f5" }}>{missionActiveAssumptionCount} active of {missionAssumptionCount} total. Derived only, mission-local only, never canonical truth.</div>{visibleMissionAssumptions.length ? visibleMissionAssumptions.map((assumption) => <div key={assumption.assumption_id} style={styles.recordCard}><div style={styles.recordMetaRow}><div style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>{assumption.text}</div><div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const }}><span style={assumptionStatusBadgeStyle(assumption.status)}>{assumption.status}</span><span style={assumptionOperatorBadgeStyle(assumption.confirmation?.operator_status || "unreviewed")}>{assumption.confirmation?.operator_status || "unreviewed"}</span></div></div><div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8" }}>{assumption.reason}</div><div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" as const }}><button type="button" onClick={() => void reviewAssumption(assumption.assumption_id, "confirm")} style={styles.secondaryButton}>Accept</button><button type="button" onClick={() => void reviewAssumption(assumption.assumption_id, "reject")} style={styles.secondaryButton}>Reject</button></div></div>) : <div style={styles.subtleText}>No assumptions are visible yet.</div>}</div></details>
+              <details style={styles.recordCard}><summary style={{ cursor: "pointer", fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Runner returns</summary><div style={{ marginTop: 12, display: "grid", gap: 10 }}><div style={styles.previewBox}><div style={styles.subtleText}>Latest helper return</div><div style={{ marginTop: 4, fontSize: 13, color: "#cbd5f5" }}>{getRecordString(latestRunnerReturn, "summary") || "No helper return is linked to this mission yet."}</div></div><button type="button" onClick={() => void syncRunnerReturns()} style={styles.secondaryButton}>Sync helper returns</button></div></details>
+              <details style={styles.recordCard}><summary style={{ cursor: "pointer", fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Mirror</summary><div style={styles.previewBox}><div style={styles.subtleText}>Mirror-door summary</div><div style={{ marginTop: 4, fontSize: 13, color: "#cbd5f5" }}>{mirrorDoorTest.available ? `${mirrorDoorBlocked} blocked correctly, ${mirrorDoorAccepted} accepted, ${mirrorDoorUnexpected} unexpected` : "Mirror-door summary not available."}</div></div></details>
+              <details style={styles.recordCard}><summary style={{ cursor: "pointer", fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Artifacts</summary><div style={{ marginTop: 12, display: "grid", gap: 8 }}>{selectedMissionArtifactRefs.length ? selectedMissionArtifactRefs.map((artifact, index) => <div key={`artifact-${index}`} style={styles.previewBox}><div style={{ fontSize: 12, color: "#cbd5f5", lineHeight: 1.5, whiteSpace: "pre-wrap" as const }}>{JSON.stringify(artifact, null, 2)}</div></div>) : <div style={styles.subtleText}>No mission artifacts have been indexed yet.</div>}</div></details>
+              <details style={styles.recordCard}><summary style={{ cursor: "pointer", fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Workbench</summary><div style={styles.tabRow}>{selectedMissionFolders.map((folder) => <button key={folder.name} type="button" onClick={() => setWorkbenchFolder(folder.name)} style={{ ...styles.tabButton, ...(workbenchFolder === folder.name ? styles.tabButtonActive : null) }}>{folder.name} ({folder.file_count})</button>)}</div><div style={styles.scrollArea}>{workbenchFilesForFolder.length ? workbenchFilesForFolder.map((file) => <div key={file.path} style={styles.previewBox}><div style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>{file.name}</div><div style={{ marginTop: 4, fontSize: 12, color: "#94a3b8" }}>{file.path}</div></div>) : <div style={styles.subtleText}>No files yet in {workbenchFolder}.</div>}</div></details>
+            </div>
+          ) : <div style={styles.recordCard}>Select a mission from the queue or use the top input to start a new one.</div>}
+        </div>
+      </div> : null}
+    </>
+  );
+
   void [
     Activity,
     Database,
@@ -2546,6 +3879,41 @@ export default function Dashboard() {
     blockedWaitingCount,
     hermesRuns,
     petitionDrafts,
+    missionChatText,
+    setMissionInputDraft,
+    setMissionChatDraft,
+    setTranslatorDraft,
+    selectedMissionInputs,
+    promptTranslationCount,
+    runnerReturnCount,
+    missionAssumptionChanges,
+    missionAssumptionsLastUpdated,
+    hiddenMissionAssumptions,
+    latestPacketSummary,
+    missionSummaryOperatingStatus,
+    missionSummaryTriageBucket,
+    missionSummaryCrewStatus,
+    missionSummaryExpeditionActivity,
+    missionSummaryParkedAt,
+    missionSummaryBeliefs,
+    missionSummaryConfirmedFacts,
+    missionSummaryAssumptions,
+    missionSummaryDeferredQuestions,
+    missionSummaryNeeds,
+    missionSummaryQuickReplies,
+    missionSummaryWakeHint,
+    controlTowerAutonomyTone,
+    recentControlInterventions,
+    unsupportedControlActions,
+    expeditionStatusTone,
+    refreshAssumptions,
+    copyTranslatedInstruction,
+    stageTranslatedInstructionForMissionInput,
+    stageTranslatedInstructionForChat,
+    stageProposedMissionDraft,
+    discardPromptTranslation,
+    runMissionQuickReply,
+    runControlTowerAction,
   ];
 
   return (
@@ -2577,8 +3945,8 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {errorText ? <div style={styles.alert}>{errorText}</div> : null}
-          {uiNotice ? (
+          {viewMode === "diagnostics" && errorText ? <div style={styles.alert}>{errorText}</div> : null}
+          {viewMode === "diagnostics" && uiNotice ? (
             <motion.div
               key={`${uiNotice.title}-${uiNotice.detail}`}
               initial={{ opacity: 0, y: -8 }}
@@ -2618,1580 +3986,9 @@ export default function Dashboard() {
           ) : null}
         </div>
 
-        <div style={styles.panel}>
-          <div style={styles.sectionTitleRow}>
-            <div>
-              <h2 style={styles.sectionTitle}>Mission at a glance</h2>
-              <div style={styles.sectionSubtitle}>
-                Only mission surfaces stay on screen: expeditions, the focused mission, and the workbench behind it.
-              </div>
-            </div>
-            <span style={{ ...styles.badge, ...styles.badgeGood }}>mission only</span>
-          </div>
-          <div style={styles.statusStrip}>
-            {statusStripCard(
-              "Active expeditions",
-              String(expeditions.length),
-              expeditions.length ? "Open one to inspect the mission." : "Create a mission to begin.",
-              expeditions.length ? "good" : "off"
-            )}
-            {statusStripCard(
-              "Focused mission",
-              selectedMission?.mission_id || "none",
-              selectedMission?.objective || "Select an expedition to inspect it.",
-              selectedMission ? "good" : "off"
-            )}
-            {statusStripCard(
-              "Current state",
-              selectedMission?.status_badge || "idle",
-              selectedMission?.current_state || "No mission focused yet.",
-              selectedMission ? expeditionStatusTone[selectedMission.status_badge] : "off"
-            )}
-          </div>
-        </div>
+        {renderMissionShell()}
 
-        <div id="expeditions" style={styles.panel}>
-          <div style={styles.sectionTitleRow}>
-            <div>
-              <h2 style={styles.sectionTitle}>Expeditions</h2>
-              <div style={styles.sectionSubtitle}>
-                Operator-managed mission containers with a focused readout, safe intake, and a workbench that stays outside governed memory.
-              </div>
-            </div>
-            <div style={styles.pillRow}>
-              <span style={{ ...styles.badge, ...styles.badgeGood }}>Workbench Only</span>
-              <span style={{ ...styles.badge, ...styles.badgeWarn }}>Unreviewed</span>
-              <span style={{ ...styles.badge, ...styles.badgeOutline }}>Preview Only</span>
-            </div>
-          </div>
-
-          <div style={styles.gridSplit}>
-            <div style={styles.stack}>
-              <div style={styles.recordCard}>
-                <div style={styles.recordMetaRow}>
-                  <div>
-                    <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Create Expedition</div>
-                    <div style={styles.subtleText}>
-                      Generates a new mission_id, creates the mission brief, and opens the focused view.
-                    </div>
-                  </div>
-                  <span style={{ ...styles.badge, ...styles.badgeGood }}>safe zone</span>
-                </div>
-                <div style={{ marginTop: 12, display: "flex", flexDirection: "column" as const, gap: 10 }}>
-                  <input
-                    type="text"
-                    value={newMissionObjective}
-                    onChange={(event) => setNewMissionObjective(event.target.value)}
-                    placeholder="Objective, for example: review recent anomalies and suggest action"
-                    style={styles.fieldInput}
-                  />
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const }}>
-                    <motion.button
-                      type="button"
-                      onClick={createMission}
-                      disabled={missionSaving}
-                      style={styles.refreshButton}
-                      whileHover={{ scale: 1.02 }}
-                      whileTap={{ scale: 0.98 }}
-                    >
-                      {missionSaving && missionActionLabel === "Creating expedition" ? "Creating..." : "Create Expedition"}
-                    </motion.button>
-                    <motion.button
-                      type="button"
-                      onClick={() => setNewMissionObjective("")}
-                      style={styles.secondaryButton}
-                      whileHover={{ scale: 1.02 }}
-                      whileTap={{ scale: 0.98 }}
-                    >
-                      Clear
-                    </motion.button>
-                  </div>
-                </div>
-              </div>
-
-              <div style={styles.recordCard}>
-                <div style={styles.recordMetaRow}>
-                  <div>
-                    <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Queue hygiene</div>
-                    <div style={styles.subtleText}>Read-only backlog classification so stale, duplicate, and review-ready work is visible before any action.</div>
-                  </div>
-                  <span style={{ ...styles.badge, ...styles.badgeOutline }}>recommendations only</span>
-                </div>
-                <div style={{ marginTop: 12, display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))" }}>
-                  <div style={styles.previewBox}>
-                    <div style={styles.subtleText}>Queued</div>
-                    <div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#f5d0fe" }}>{queueSummary.total_queued ?? expeditions.length}</div>
-                  </div>
-                  <div style={styles.previewBox}>
-                    <div style={styles.subtleText}>Active</div>
-                    <div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#86efac" }}>{queueSummary.active ?? 0}</div>
-                  </div>
-                  <div style={styles.previewBox}>
-                    <div style={styles.subtleText}>Blocked</div>
-                    <div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#fde68a" }}>{queueSummary.blocked ?? 0}</div>
-                  </div>
-                  <div style={styles.previewBox}>
-                    <div style={styles.subtleText}>Parked</div>
-                    <div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#cbd5f5" }}>{queueSummary.parked ?? 0}</div>
-                  </div>
-                  <div style={styles.previewBox}>
-                    <div style={styles.subtleText}>Duplicates</div>
-                    <div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#c4b5fd" }}>{queueSummary.duplicate_candidates ?? 0}</div>
-                  </div>
-                  <div style={styles.previewBox}>
-                    <div style={styles.subtleText}>Stale</div>
-                    <div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#fca5a5" }}>{queueSummary.stale_candidates ?? 0}</div>
-                  </div>
-                  <div style={styles.previewBox}>
-                    <div style={styles.subtleText}>Review ready</div>
-                    <div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#93c5fd" }}>{queueSummary.review_ready ?? 0}</div>
-                  </div>
-                  <div style={styles.previewBox}>
-                    <div style={styles.subtleText}>Archive candidates</div>
-                    <div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#f9a8d4" }}>{queueSummary.archive_close_candidates ?? 0}</div>
-                  </div>
-                </div>
-              </div>
-
-              <div style={styles.recordCard}>
-                <div style={styles.recordMetaRow}>
-                  <div>
-                    <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Expedition List</div>
-                    <div style={styles.subtleText}>
-                      Click one to focus the mission details. Duplicate objectives are grouped by normalized objective so the main list stays calm.
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 8, justifyContent: "flex-end" }}>
-                    <span style={{ ...styles.badge, ...styles.badgeGood }}>{visibleExpeditions.groups.length} groups shown</span>
-                    <button
-                      type="button"
-                      onClick={() => setShowDuplicateMissions((prev) => !prev)}
-                      style={{
-                        ...styles.badge,
-                        border: "1px solid rgba(192,132,252,0.25)",
-                        background: showDuplicateMissions ? "rgba(124,58,237,0.24)" : "rgba(15,23,42,0.9)",
-                        color: "#e2e8f0",
-                        cursor: "pointer",
-                      }}
-                    >
-                      {showDuplicateMissions ? "Hide duplicates" : "Show duplicates"}
-                    </button>
-                  </div>
-                </div>
-                {visibleExpeditions.hiddenParkedCount ? (
-                  <div style={{ marginTop: 10, ...styles.subtleText }}>
-                    {visibleExpeditions.hiddenParkedCount} parked mission{visibleExpeditions.hiddenParkedCount === 1 ? "" : "s"} hidden to keep the console focused.
-                  </div>
-                ) : null}
-                {visibleExpeditions.hiddenDuplicateCount ? (
-                  <div style={{ marginTop: 10, ...styles.subtleText }}>
-                    {visibleExpeditions.hiddenDuplicateCount} duplicate mission
-                    {visibleExpeditions.hiddenDuplicateCount === 1 ? "" : "s"} collapsed into their primary groups.
-                  </div>
-                ) : null}
-
-                <div style={styles.expeditionList}>
-                  {visibleExpeditions.groups.length ? (
-                    visibleExpeditions.groups.map((group) => {
-                      const expedition = group.primary;
-                      const isSelected = selectedMissionId === expedition.mission_id;
-                      const groupSelected = group.items.some((item) => item.mission_id === selectedMissionId);
-                      const tone =
-                        expedition.status_badge === "researching"
-                          ? styles.badgeGood
-                          : expedition.status_badge === "ready_for_review"
-                            ? styles.badgeOutline
-                            : expedition.status_badge === "waiting_for_user"
-                              ? styles.badgeWarn
-                              : styles.badge;
-
-                      return (
-                        <div key={group.group_key} style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
-                          <motion.button
-                            type="button"
-                            onClick={() => focusMission(expedition.mission_id, expedition.summary || expedition.objective || expedition.mission_id)}
-                            style={{
-                              ...styles.recordCard,
-                              cursor: "pointer",
-                              textAlign: "left" as const,
-                              borderColor: groupSelected ? "rgba(252,211,77,0.45)" : "rgba(192,132,252,0.2)",
-                              background: groupSelected ? "rgba(124,58,237,0.18)" : "rgba(2,6,23,0.55)",
-                            }}
-                            whileHover={{ scale: 1.01 }}
-                            whileTap={{ scale: 0.98 }}
-                          >
-                            <div style={styles.recordMetaRow}>
-                              <div>
-                                <div style={{ fontSize: 15, fontWeight: 600, color: "#e2e8f0" }}>{expedition.mission_id}</div>
-                                <div style={styles.subtleText}>{expedition.objective || "No objective recorded yet."}</div>
-                              </div>
-                              <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "flex-end", gap: 6 }}>
-                                <span style={{ ...styles.badge, ...tone }}>{expedition.status_badge}</span>
-                                {group.duplicate_count > 1 ? <span style={styles.badge}>{group.duplicate_count} similar</span> : null}
-                              </div>
-                            </div>
-                            <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
-                              <span style={styles.badge}>{expedition.current_state}</span>
-                              {expedition.operator_posture ? <span style={styles.badge}>{expedition.operator_posture}</span> : null}
-                              {expedition.triage_bucket ? <span style={styles.badge}>{expedition.triage_bucket}</span> : null}
-                              {expedition.recommended_queue_action ? <span style={{ ...styles.badge, ...styles.badgeOutline }}>{expedition.recommended_queue_action}</span> : null}
-                              <span style={styles.badge}>{expedition.latest_run_id || "no run yet"}</span>
-                              <span style={styles.badge}>{expedition.last_updated || "no updates"}</span>
-                            </div>
-                            {expedition.summary ? (
-                              <div style={{ marginTop: 10, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                                {expedition.summary}
-                              </div>
-                            ) : null}
-                            {expedition.operator_posture_reason ? (
-                              <div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8", lineHeight: 1.5 }}>
-                                {expedition.operator_posture_reason}
-                              </div>
-                            ) : null}
-                            {expedition.queue_action_reason ? (
-                              <div style={{ marginTop: 8, fontSize: 12, color: "#f5d0fe", lineHeight: 1.5 }}>
-                                Recommendation: {expedition.queue_action_reason}
-                              </div>
-                            ) : null}
-                            {expedition.queue_hygiene?.signals?.length ? (
-                              <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
-                                {expedition.queue_hygiene.signals.slice(0, 2).map((signal) => (
-                                  <span key={signal} style={styles.badge}>
-                                    {signal}
-                                  </span>
-                                ))}
-                              </div>
-                            ) : null}
-                            {group.hidden_duplicate_count ? (
-                              <div style={{ marginTop: 8, fontSize: 12, color: "#a78bfa", lineHeight: 1.5 }}>
-                                {group.hidden_duplicate_count} duplicate mission{group.hidden_duplicate_count === 1 ? "" : "s"} hidden by default.
-                              </div>
-                            ) : null}
-                            {groupSelected && !isSelected && group.hidden_duplicate_count ? (
-                              <div style={{ marginTop: 8, fontSize: 12, color: "#fcd34d", lineHeight: 1.5 }}>
-                                The focused mission is inside this collapsed duplicate group.
-                              </div>
-                            ) : null}
-                          </motion.button>
-                          {showDuplicateMissions && group.items.length > 1 ? (
-                            <div style={{ marginLeft: 18, paddingLeft: 14, borderLeft: "1px solid rgba(168,85,247,0.18)", display: "flex", flexDirection: "column" as const, gap: 8 }}>
-                              {group.items.slice(1).map((duplicateItem) => {
-                                const duplicateSelected = selectedMissionId === duplicateItem.mission_id;
-                                return (
-                                  <motion.button
-                                    key={duplicateItem.mission_id}
-                                    type="button"
-                                    onClick={() =>
-                                      focusMission(
-                                        duplicateItem.mission_id,
-                                        duplicateItem.summary || duplicateItem.objective || duplicateItem.mission_id
-                                      )
-                                    }
-                                    style={{
-                                      ...styles.recordCard,
-                                      cursor: "pointer",
-                                      textAlign: "left" as const,
-                                      borderColor: duplicateSelected ? "rgba(252,211,77,0.4)" : "rgba(148,163,184,0.16)",
-                                      background: "rgba(15,23,42,0.5)",
-                                      padding: 14,
-                                    }}
-                                    whileHover={{ scale: 1.005 }}
-                                    whileTap={{ scale: 0.99 }}
-                                  >
-                                    <div style={styles.recordMetaRow}>
-                                      <div>
-                                        <div style={{ fontSize: 14, fontWeight: 600, color: "#cbd5f5" }}>{duplicateItem.mission_id}</div>
-                                        <div style={styles.subtleText}>{duplicateItem.objective || "No objective recorded yet."}</div>
-                                      </div>
-                                      <span style={{ ...styles.badge, ...tone }}>{duplicateItem.status_badge}</span>
-                                    </div>
-                                    <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
-                                      <span style={styles.badge}>duplicate #{duplicateItem.duplicate_rank ?? 2}</span>
-                                      <span style={styles.badge}>same objective</span>
-                                      {duplicateItem.recommended_queue_action ? <span style={{ ...styles.badge, ...styles.badgeOutline }}>{duplicateItem.recommended_queue_action}</span> : null}
-                                      {duplicateItem.duplicate_of_mission_id ? (
-                                        <span style={styles.badge}>primary {duplicateItem.duplicate_of_mission_id}</span>
-                                      ) : null}
-                                      {duplicateItem.last_updated ? <span style={styles.badge}>{duplicateItem.last_updated}</span> : null}
-                                    </div>
-                                  </motion.button>
-                                );
-                              })}
-                            </div>
-                          ) : null}
-                        </div>
-                      );
-                    })
-                  ) : (
-                    <div style={styles.recordCard}>No expeditions exist yet. Create one above to open the focused view.</div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div style={styles.stack}>
-              {selectedMission ? (
-                <>
-                  <motion.div
-                    key={`${selectedMission.mission_id}-summary`}
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.22 }}
-                    style={styles.recordCard}
-                  >
-                    <div style={styles.recordMetaRow}>
-                      <div>
-                        <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Mission Summary</div>
-                        <div style={styles.subtleText}>Plain-language summary to keep the operator out of artifact archaeology.</div>
-                      </div>
-                      <span style={{ ...styles.badge, ...statusStripToneStyles[expeditionStatusTone[selectedMission.status_badge]] }}>
-                        {missionSummaryOperatingStatus}
-                      </span>
-                    </div>
-
-                    <div style={{ marginTop: 12, display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))" }}>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Status</div>
-                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f5d0fe" }}>{missionSummaryOperatingStatus}</div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5" }}>Lifecycle state: {missionSummaryLifecycleState}</div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5" }}>
-                          Operator posture: {missionSummaryOperatorPosture} · Triage: {missionSummaryTriageBucket}
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                          {missionSummary?.latest_summary || missionSummary?.summary || "No structured summary is available yet."}
-                        </div>
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Confidence</div>
-                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f5d0fe" }}>{missionSummaryConfidence}</div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5" }}>
-                          Derived from Hermes, drafts, clarification packets, manifest, mission inputs, and current assumptions.
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5" }}>
-                          Confidence reduction is explicit when assumptions are being carried forward.
-                        </div>
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Crew status</div>
-                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: missionSummaryCrewStatus === "recalled" ? "#fde68a" : "#bbf7d0" }}>
-                          {missionSummaryCrewStatus}
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                          Expedition activity is currently {missionSummaryExpeditionActivity}.
-                          {missionSummaryParkedAt ? ` Parked at ${missionSummaryParkedAt}.` : ""}
-                        </div>
-                        {missionParkingStatus?.status === "parked" ? (
-                          <div style={{ marginTop: 6, fontSize: 12, color: "#fde68a", lineHeight: 1.5 }}>
-                            Parked because: {missionParkingStatus.reason || missionSummaryReason}
-                          </div>
-                        ) : null}
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Can continue without input</div>
-                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: missionSummaryCanContinue ? "#bbf7d0" : "#fecaca" }}>
-                          {missionSummaryCanContinue ? "Yes" : "No"}
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                          {missionSummaryCanContinue
-                            ? "The mission can continue under explicit assumptions while the remaining question stays deferred."
-                            : "The mission is truly blocked because the missing answer changes the safe path or review path."}
-                        </div>
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Recommended next step</div>
-                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f5d0fe", lineHeight: 1.5 }}>
-                          {missionSummaryNextStep}
-                        </div>
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Queue recommendation</div>
-                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f5d0fe", lineHeight: 1.5 }}>
-                          {selectedQueueHygiene?.recommended_action || "inspect before action"}
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                          {selectedQueueHygiene?.recommendation_reason || "No queue-hygiene recommendation is available yet."}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div style={{ marginTop: 12, display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>{missionSummaryCanContinue ? "Why it is continuing" : "Why it is blocked"}</div>
-                        <div style={{ marginTop: 8, fontSize: 13, color: "#fde68a", lineHeight: 1.55 }}>
-                          {missionSummaryReason}
-                        </div>
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Next question</div>
-                        <div style={{ marginTop: 8, fontSize: 13, color: "#bbf7d0", lineHeight: 1.55 }}>
-                          {missionSummaryQuestion || "No clarification question is needed right now."}
-                        </div>
-                        <div style={{ marginTop: 8, fontSize: 12, color: "#cbd5f5", lineHeight: 1.55 }}>
-                          Next best operator answer: {missionSummaryNextAnswer}
-                        </div>
-                        {!missionSummaryCanContinue ? (
-                          <div style={{ marginTop: 8, fontSize: 12, color: "#fde68a", lineHeight: 1.55 }}>
-                            Waking input: {missionSummaryWakeHint || "Send the missing detail to resume expedition activity."}
-                          </div>
-                        ) : null}
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>What we believe</div>
-                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column" as const, gap: 8 }}>
-                          {missionSummaryBeliefs.map((belief, index) => (
-                            <div
-                              key={`${belief}-${index}`}
-                              style={{
-                                borderRadius: 12,
-                                border: "1px solid rgba(192,132,252,0.18)",
-                                background: "rgba(2,6,23,0.45)",
-                                padding: "8px 10px",
-                                fontSize: 12,
-                                color: "#cbd5f5",
-                                lineHeight: 1.45,
-                              }}
-                            >
-                              • {belief}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Confirmed facts</div>
-                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column" as const, gap: 8 }}>
-                          {missionSummaryConfirmedFacts.length ? (
-                            missionSummaryConfirmedFacts.map((fact, index) => (
-                              <div
-                                key={`${fact}-${index}`}
-                                style={{
-                                  borderRadius: 12,
-                                  border: "1px solid rgba(52,211,153,0.2)",
-                                  background: "rgba(6,78,59,0.16)",
-                                  padding: "8px 10px",
-                                  fontSize: 12,
-                                  color: "#bbf7d0",
-                                  lineHeight: 1.45,
-                                }}
-                              >
-                                • {fact}
-                              </div>
-                            ))
-                          ) : (
-                            <div style={styles.subtleText}>No operator-confirmed facts have been captured yet.</div>
-                          )}
-                        </div>
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Assumptions in use</div>
-                        <div style={{ marginTop: 8, fontSize: 12, color: "#cbd5f5", lineHeight: 1.55 }}>
-                          {missionActiveAssumptionCount
-                            ? `${missionActiveAssumptionCount} active derived assumption${missionActiveAssumptionCount === 1 ? "" : "s"} in the mission-local ledger.`
-                            : missionSummaryAssumptions.length
-                              ? `${missionSummaryAssumptions.length} assumption summary line${missionSummaryAssumptions.length === 1 ? "" : "s"} carried forward.`
-                              : "No active assumptions are needed right now."}
-                        </div>
-                        <div style={{ marginTop: 8, ...styles.subtleText }}>
-                          Derived and mission-local only. Not canonical truth, approval, or resolution. Review details stay in the Assumptions ledger below.
-                        </div>
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Open questions</div>
-                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column" as const, gap: 8 }}>
-                          {missionSummaryOpenQuestions.length ? (
-                            missionSummaryOpenQuestions.map((question, index) => (
-                              <div
-                                key={`${question}-${index}`}
-                                style={{
-                                  borderRadius: 12,
-                                  border: "1px solid rgba(251,191,36,0.2)",
-                                  background: "rgba(120,53,15,0.18)",
-                                  padding: "8px 10px",
-                                  fontSize: 12,
-                                  color: "#fde68a",
-                                  lineHeight: 1.45,
-                                }}
-                              >
-                                • {question}
-                              </div>
-                            ))
-                          ) : (
-                            <div style={styles.subtleText}>No unanswered questions are queued right now.</div>
-                          )}
-                        </div>
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Blocking questions</div>
-                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column" as const, gap: 8 }}>
-                          {missionSummaryBlockingQuestions.length ? (
-                            missionSummaryBlockingQuestions.map((question, index) => (
-                              <div
-                                key={`${question}-${index}`}
-                                style={{
-                                  borderRadius: 12,
-                                  border: "1px solid rgba(251,113,133,0.22)",
-                                  background: "rgba(127,29,29,0.2)",
-                                  padding: "8px 10px",
-                                  fontSize: 12,
-                                  color: "#fecaca",
-                                  lineHeight: 1.45,
-                                }}
-                              >
-                                • {question}
-                              </div>
-                            ))
-                          ) : (
-                            <div style={styles.subtleText}>No hard blockers are active right now.</div>
-                          )}
-                        </div>
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Deferred questions</div>
-                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column" as const, gap: 8 }}>
-                          {missionSummaryDeferredQuestions.length ? (
-                            missionSummaryDeferredQuestions.map((question, index) => (
-                              <div
-                                key={`${question}-${index}`}
-                                style={{
-                                  borderRadius: 12,
-                                  border: "1px solid rgba(148,163,184,0.2)",
-                                  background: "rgba(15,23,42,0.5)",
-                                  padding: "8px 10px",
-                                  fontSize: 12,
-                                  color: "#cbd5f5",
-                                  lineHeight: 1.45,
-                                }}
-                              >
-                                • {question}
-                              </div>
-                            ))
-                          ) : (
-                            <div style={styles.subtleText}>No deferred questions are queued right now.</div>
-                          )}
-                        </div>
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>What we need from you</div>
-                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column" as const, gap: 8 }}>
-                          {missionSummaryNeeds.length ? (
-                            missionSummaryNeeds.map((need, index) => (
-                              <div
-                                key={`${need}-${index}`}
-                                style={{
-                                  borderRadius: 12,
-                                  border: "1px solid rgba(251,191,36,0.2)",
-                                  background: "rgba(120,53,15,0.18)",
-                                  padding: "8px 10px",
-                                  fontSize: 12,
-                                  color: "#fde68a",
-                                  lineHeight: 1.45,
-                                }}
-                              >
-                                • {need}
-                              </div>
-                            ))
-                          ) : (
-                            <div style={styles.subtleText}>No missing inputs are currently flagged.</div>
-                          )}
-                        </div>
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Queue signals</div>
-                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column" as const, gap: 8 }}>
-                          {selectedQueueSignals.length ? (
-                            selectedQueueSignals.map((signal) => (
-                              <div
-                                key={signal}
-                                style={{
-                                  borderRadius: 12,
-                                  border: "1px solid rgba(192,132,252,0.18)",
-                                  background: "rgba(2,6,23,0.45)",
-                                  padding: "8px 10px",
-                                  fontSize: 12,
-                                  color: "#cbd5f5",
-                                  lineHeight: 1.45,
-                                }}
-                              >
-                                • {signal}
-                              </div>
-                            ))
-                          ) : (
-                            <div style={styles.subtleText}>No queue-hygiene signals are currently attached to this mission.</div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    {missionSummaryQuickReplies.length ? (
-                      <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
-                        {missionSummaryQuickReplies.map((reply) => (
-                          <motion.button
-                            key={reply.label}
-                            type="button"
-                            onClick={() => runMissionQuickReply(reply)}
-                            disabled={missionSaving}
-                            style={styles.secondaryButton}
-                            whileHover={{ scale: 1.02 }}
-                            whileTap={{ scale: 0.98 }}
-                          >
-                            {reply.label}
-                          </motion.button>
-                        ))}
-                      </div>
-                    ) : null}
-                  </motion.div>
-
-                  <div style={styles.recordCard}>
-                    <div style={styles.recordMetaRow}>
-                      <div>
-                        <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>{selectedMission.mission_id}</div>
-                        <div style={styles.subtleText}>{selectedMission.objective || "No objective recorded yet."}</div>
-                      </div>
-                      <span style={{ ...styles.badge, ...statusStripToneStyles[expeditionStatusTone[selectedMission.status_badge]] }}>
-                        {selectedMission.status_badge}
-                      </span>
-                    </div>
-                    <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
-                      <span style={styles.badge}>{selectedMission.current_state}</span>
-                      <span style={styles.badge}>{missionSummaryOperatorPosture}</span>
-                      <span style={styles.badge}>{missionSummaryTriageBucket}</span>
-                      <span style={styles.badge}>latest run {selectedMission.latest_run_id || "none"}</span>
-                      <span style={styles.badge}>updated {selectedMission.last_updated || "unknown"}</span>
-                      <span style={{ ...styles.badge, ...styles.badgeGood }}>Workbench Only</span>
-                      <span style={{ ...styles.badge, ...styles.badgeWarn }}>Unreviewed</span>
-                      <span style={{ ...styles.badge, ...styles.badgeOutline }}>Preview Only</span>
-                    </div>
-                    <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
-                      <motion.button
-                        type="button"
-                        onClick={() => refreshMissionDetail()}
-                        style={styles.refreshButton}
-                        disabled={missionLoading || missionSaving || loading}
-                        whileHover={{ scale: 1.02 }}
-                        whileTap={{ scale: 0.98 }}
-                      >
-                        {missionActionLabel === "Refreshing mission detail" ? "Refreshing..." : "Refresh mission detail"}
-                      </motion.button>
-                      <motion.button
-                        type="button"
-                        onClick={() => syncRunnerReturns()}
-                        style={styles.secondaryButton}
-                        disabled={missionLoading || missionSaving || loading}
-                        whileHover={{ scale: 1.02 }}
-                        whileTap={{ scale: 0.98 }}
-                      >
-                        {missionActionLabel === "Syncing helper returns" ? "Syncing..." : "Sync helper returns"}
-                      </motion.button>
-                      {latestDraftPreviewPath ? (
-                        <motion.button
-                          type="button"
-                          onClick={() => openReviewPreview(latestDraftPreviewPath)}
-                          style={styles.secondaryButton}
-                          whileHover={{ scale: 1.02 }}
-                          whileTap={{ scale: 0.98 }}
-                        >
-                          Open review preview
-                        </motion.button>
-                      ) : null}
-                    </div>
-                    <div style={styles.previewBox}>
-                      <div style={styles.subtleText}>Latest meaningful update</div>
-                      <div style={{ marginTop: 4, fontSize: 14, fontWeight: 600, color: "#f5d0fe" }}>{latestMeaningfulSummary}</div>
-                      <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                        {latestDraftPreviewPath
-                          ? `Latest review preview: ${latestDraftPreviewPath}`
-                          : latestPacketSummary
-                            ? `Clarification packet: ${latestPacketSummary}`
-                            : "No review preview has been opened yet."}
-                      </div>
-                      {missionLoading ? <div style={{ marginTop: 8, ...styles.subtleText }}>Loading mission detail...</div> : null}
-                    </div>
-                  </div>
-
-                  <div style={{ ...styles.recordCard, ...statusStripToneStyles[controlTowerAutonomyTone] }}>
-                    <div style={styles.recordMetaRow}>
-                      <div>
-                        <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Control Tower</div>
-                        <div style={styles.subtleText}>Operator control layer: what happened, what is blocked, who acted, and the safest next move.</div>
-                      </div>
-                      <span style={{ ...styles.badge, ...statusStripToneStyles[controlTowerAutonomyTone] }}>
-                        {controlTowerAutonomyState}
-                      </span>
-                    </div>
-
-                    <div style={{ marginTop: 12, display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Autonomy status</div>
-                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f5d0fe" }}>{controlTowerAutonomyState}</div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                          {missionAutonomyStatus?.kill_switch_active
-                            ? "Return-all or nanny cooling is stopping movement."
-                            : missionAutonomyStatus?.parked
-                              ? "Mission parking is stopping movement."
-                              : "Only explicit, logged movement is allowed."}
-                        </div>
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Latest trigger outcome</div>
-                        <div style={{ marginTop: 4, fontSize: 13, fontWeight: 700, color: "#f5d0fe", lineHeight: 1.5 }}>
-                          {controlTowerSummary?.last_trigger_outcome || missionAutonomyStatus?.last_trigger_outcome || "idle: none"}
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                          {controlTowerSummary?.last_trigger?.trigger_kind
-                            ? `${titleCaseLabel(controlTowerSummary.last_trigger.trigger_kind)} · ${controlTowerSummary.last_trigger.status || "logged"}`
-                            : `Pending action: ${missionAutonomyStatus?.pending_action || "none"} · ${missionAutonomyStatus?.pending_status || "idle"}`}
-                        </div>
-                        {controlTowerSummary?.last_trigger?.reason ? (
-                          <div style={{ marginTop: 6, fontSize: 12, color: "#94a3b8", lineHeight: 1.5 }}>
-                            Reason: {controlTowerSummary.last_trigger.reason}
-                          </div>
-                        ) : null}
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Retry budget</div>
-                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f5d0fe" }}>
-                          {controlTowerRetryUsed}/{controlTowerRetryBudget} used
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                          {controlTowerRetryRemaining} remaining. Bounded retry only.
-                          {controlTowerSummary?.last_retry_reason ? ` Last retry: ${controlTowerSummary.last_retry_reason}.` : ""}
-                        </div>
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Latest block reason</div>
-                        <div style={{ marginTop: 4, fontSize: 13, fontWeight: 700, color: "#fde68a", lineHeight: 1.5 }}>
-                          {controlTowerSummary?.last_blocked_reason || "No current autonomy block is recorded."}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div style={{ marginTop: 12, display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Active handoff</div>
-                        <div style={{ marginTop: 8, fontSize: 13, color: "#e2e8f0", lineHeight: 1.55 }}>
-                          {controlTowerSummary?.active_role_handoff?.target_role
-                            ? `${controlTowerSummary.active_role_handoff.target_role} is ${controlTowerSummary.active_role_handoff.status || "active"} on ${controlTowerSummary.active_role_handoff.allowed_action || "a logged action"}.`
-                            : "No active handoff is open right now."}
-                        </div>
-                        {controlTowerSummary?.active_role_handoff?.reason ? (
-                          <div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8", lineHeight: 1.5 }}>
-                            {controlTowerSummary.active_role_handoff.reason}
-                          </div>
-                        ) : null}
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Latest role activity</div>
-                        <div style={{ marginTop: 8, fontSize: 13, color: "#e2e8f0", lineHeight: 1.55 }}>
-                          {controlTowerSummary?.latest_role_activity?.role
-                            ? `${controlTowerSummary.latest_role_activity.role} last acted through ${titleCaseLabel(controlTowerSummary.latest_role_activity.kind || "activity")}.`
-                            : "No role activity has been summarized yet."}
-                        </div>
-                        <div style={{ marginTop: 8, fontSize: 12, color: "#cbd5f5", lineHeight: 1.55 }}>
-                          {controlTowerSummary?.latest_role_activity?.summary || "No recent role summary is available."}
-                        </div>
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Operator attention</div>
-                        <div style={{ marginTop: 8, fontSize: 13, color: "#fde68a", lineHeight: 1.55 }}>
-                          {controlTowerSummary?.operator_attention_reason || missionSummaryReason || "No immediate operator attention is required."}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div style={{ ...styles.previewBox, marginTop: 12 }}>
-                      <div style={styles.recordMetaRow}>
-                        <div>
-                          <div style={{ fontSize: 14, fontWeight: 700, color: "#f5d0fe" }}>Recent interventions</div>
-                          <div style={styles.subtleText}>Explicit operator actions recorded in the mission-local intervention log.</div>
-                        </div>
-                      </div>
-                      <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-                        {recentControlInterventions.length ? (
-                          recentControlInterventions.slice(0, 3).map((entry) => (
-                            <div key={entry.intervention_id || `${entry.action}:${entry.created_at}`} style={styles.previewBox}>
-                              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
-                                <div style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>
-                                  {titleCaseLabel((entry.action || "intervention").replace(/_/g, " "))}
-                                </div>
-                                <span style={entry.status === "blocked" ? { ...styles.badge, ...styles.badgeWarn } : { ...styles.badge, ...styles.badgeGood }}>
-                                  {entry.status || "logged"}
-                                </span>
-                              </div>
-                              <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.55 }}>
-                                {entry.blocked_reason || entry.reason || "No intervention detail recorded."}
-                              </div>
-                            </div>
-                          ))
-                        ) : (
-                          <span style={styles.subtleText}>No operator interventions have been logged for this mission yet.</span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div style={{ ...styles.previewBox, marginTop: 12 }}>
-                      <div style={styles.recordMetaRow}>
-                        <div>
-                          <div style={{ fontSize: 14, fontWeight: 700, color: "#f5d0fe" }}>Safe operator actions</div>
-                          <div style={styles.subtleText}>Explicit buttons only. No hidden execution.</div>
-                        </div>
-                        {unsupportedControlActions.length ? (
-                          <span style={styles.badge}>{unsupportedControlActions.length} additional recommendation{unsupportedControlActions.length === 1 ? "" : "s"}</span>
-                        ) : null}
-                      </div>
-                      <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
-                        {supportedControlActions.length ? (
-                          supportedControlActions.map((action) => (
-                            <motion.button
-                              key={action}
-                              type="button"
-                              onClick={() => runControlTowerAction(action)}
-                              disabled={missionLoading || missionSaving || loading}
-                              style={action.toLowerCase() === "answer blocker" ? styles.refreshButton : styles.secondaryButton}
-                              whileHover={{ scale: 1.02 }}
-                              whileTap={{ scale: 0.98 }}
-                            >
-                              {titleCaseLabel(action)}
-                            </motion.button>
-                          ))
-                        ) : (
-                          <span style={styles.subtleText}>No explicit operator action is recommended right now.</span>
-                        )}
-                      </div>
-                      {unsupportedControlActions.length ? (
-                        <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
-                          {unsupportedControlActions.map((action) => (
-                            <span key={action} style={styles.badge}>
-                              {titleCaseLabel(action)}
-                            </span>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div style={styles.recordCard}>
-                    <div style={styles.recordMetaRow}>
-                      <div>
-                        <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Assumptions</div>
-                        <div style={styles.subtleText}>
-                          Derived, mission-local working premises. Not canonical truth. Not approval. Not resolution.
-                        </div>
-                      </div>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                        <span style={{ ...styles.badge, ...styles.badgeWarn }}>{missionActiveAssumptionCount} active</span>
-                        <span style={styles.badge}>{missionAssumptionCount} total</span>
-                        <span style={{ ...styles.badge, ...(missionAssumptionReviewNeeded ? styles.badgeWarn : styles.badgeGood) }}>
-                          {missionAssumptionReviewNeeded ? "review needed" : "review current"}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
-                      <motion.button
-                        type="button"
-                        onClick={() => refreshAssumptions()}
-                        style={styles.secondaryButton}
-                        disabled={missionLoading || missionSaving || loading}
-                        whileHover={{ scale: 1.02 }}
-                        whileTap={{ scale: 0.98 }}
-                      >
-                        {missionActionLabel === "Refreshing assumptions" ? "Refreshing..." : "Refresh assumptions"}
-                      </motion.button>
-                      {missionAssumptionsLastUpdated ? <span style={styles.badge}>updated {missionAssumptionsLastUpdated}</span> : null}
-                    </div>
-
-                    <div
-                      style={{
-                        marginTop: 12,
-                        borderRadius: 14,
-                        border: "1px solid rgba(251,191,36,0.24)",
-                        background: "rgba(120,53,15,0.16)",
-                        padding: 12,
-                      }}
-                    >
-                      <div style={{ fontSize: 12, color: "#fde68a", lineHeight: 1.55 }}>
-                        Derived. Mission-local. Not canonical truth. Not approval. Not resolution.
-                      </div>
-                    </div>
-
-                    {missionAssumptionChanges.length ? (
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Latest ledger changes</div>
-                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column" as const, gap: 8 }}>
-                          {missionAssumptionChanges.map((change) => (
-                            <div key={`assumption-change-${change.assumption_id}`} style={{ fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                              {change.text}
-                              <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 8 }}>
-                                <span style={assumptionStatusBadgeStyle(change.status)}>{change.status}</span>
-                                <span style={assumptionOperatorBadgeStyle(change.operator_status)}>
-                                  {change.operator_status === "unreviewed" ? "review pending" : `operator ${change.operator_status}`}
-                                </span>
-                                {change.updated_at ? <span style={styles.badge}>{change.updated_at}</span> : null}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null}
-
-                    <div style={{ marginTop: 12, display: "flex", flexDirection: "column" as const, gap: 10 }}>
-                      {visibleMissionAssumptions.length ? (
-                        visibleMissionAssumptions.map((assumption) => {
-                          const operatorStatus = assumption.confirmation?.operator_status || "unreviewed";
-                          const inactive = ["rejected", "resolved", "invalidated"].includes(assumption.status || "");
-                          const reviewable = !["resolved", "invalidated"].includes(assumption.status || "");
-                          return (
-                            <div
-                              key={assumption.assumption_id}
-                              style={{
-                                borderRadius: 16,
-                                border: inactive ? "1px solid rgba(148,163,184,0.18)" : "1px solid rgba(251,191,36,0.24)",
-                                background: inactive ? "rgba(15,23,42,0.5)" : "rgba(120,53,15,0.14)",
-                                padding: 14,
-                                opacity: inactive ? 0.7 : 1,
-                              }}
-                            >
-                              <div style={styles.recordMetaRow}>
-                                <div style={{ fontSize: 14, fontWeight: 600, color: "#f8fafc", lineHeight: 1.45 }}>
-                                  {assumption.text}
-                                </div>
-                                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                                  <span style={assumptionStatusBadgeStyle(assumption.status)}>{assumption.status}</span>
-                                  <span style={assumptionOperatorBadgeStyle(operatorStatus)}>
-                                    {operatorStatus === "unreviewed" ? "review pending" : `operator ${operatorStatus}`}
-                                  </span>
-                                  <span style={styles.badge}>confidence {formatConfidence(assumption.confidence, "0.00")}</span>
-                                </div>
-                              </div>
-
-                              <div style={{ marginTop: 10, fontSize: 12, color: "#fde68a", lineHeight: 1.5 }}>
-                                Reason: {assumption.reason || "No explicit reason was recorded."}
-                              </div>
-
-                              {assumption.invalidation_triggers.length ? (
-                                <div style={{ marginTop: 8 }}>
-                                  <div style={styles.subtleText}>Invalidation triggers</div>
-                                  <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 8 }}>
-                                    {assumption.invalidation_triggers.map((trigger, index) => (
-                                      <span key={`${assumption.assumption_id}-trigger-${index}`} style={styles.badge}>
-                                        {trigger}
-                                      </span>
-                                    ))}
-                                  </div>
-                                </div>
-                              ) : null}
-
-                              <div style={{ marginTop: 8, ...styles.subtleText }}>
-                                Derived premise only. Mission-local only. Not canonical truth, approval, or resolution.
-                              </div>
-
-                              {reviewable ? (
-                                <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
-                                  <motion.button
-                                    type="button"
-                                    onClick={() => reviewAssumption(assumption.assumption_id, "confirm")}
-                                    disabled={missionSaving || missionLoading || loading}
-                                    style={styles.secondaryButton}
-                                    whileHover={{ scale: 1.02 }}
-                                    whileTap={{ scale: 0.98 }}
-                                  >
-                                    {missionActionLabel === "Accepting assumption" ? "Accepting..." : "Accept assumption"}
-                                  </motion.button>
-                                  <motion.button
-                                    type="button"
-                                    onClick={() => reviewAssumption(assumption.assumption_id, "reject")}
-                                    disabled={missionSaving || missionLoading || loading}
-                                    style={styles.secondaryButton}
-                                    whileHover={{ scale: 1.02 }}
-                                    whileTap={{ scale: 0.98 }}
-                                  >
-                                    {missionActionLabel === "Rejecting assumption" ? "Rejecting..." : "Reject assumption"}
-                                  </motion.button>
-                                </div>
-                              ) : null}
-                            </div>
-                          );
-                        })
-                      ) : (
-                        <div style={styles.previewBox}>
-                          <div style={{ fontSize: 12, color: "#cbd5f5", lineHeight: 1.55 }}>
-                            No mission-local assumption ledger entries are visible yet. Use refresh when the backend has derived assumptions ready.
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    {hiddenMissionAssumptions > 0 ? (
-                      <div style={{ marginTop: 12 }}>
-                        <button
-                          type="button"
-                          onClick={() => setShowAllAssumptions((value) => !value)}
-                          style={styles.secondaryButton}
-                        >
-                          {showAllAssumptions ? "Show fewer assumptions" : `Show ${hiddenMissionAssumptions} more assumptions`}
-                        </button>
-                      </div>
-                    ) : null}
-                  </div>
-
-                  <div style={styles.recordCard}>
-                    <div style={styles.recordMetaRow}>
-                      <div>
-                        <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Mission Activity</div>
-                        <div style={styles.subtleText}>
-                          Latest Sentinel run, draft, clarification packet, and manifest summary.
-                        </div>
-                      </div>
-                      <span style={{ ...styles.badge, ...styles.badgeGood }}>focused view</span>
-                    </div>
-                    <div style={{ marginTop: 12, display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Latest Sentinel run</div>
-                        <div style={{ marginTop: 4, fontSize: 13, fontWeight: 600, color: "#f5d0fe" }}>
-                          {getRecordString(latestHermesRun, "run_id") || selectedMission.latest_run_id || "none"}
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                          {getRecordString(latestHermesRun, "summary") || "No Sentinel run recorded yet."}
-                        </div>
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Latest draft</div>
-                        <div style={{ marginTop: 4, fontSize: 13, fontWeight: 600, color: "#f5d0fe" }}>
-                          {getRecordString(getRecordObject(latestDraft, "draft"), "petition_id") ||
-                            getRecordString(latestDraft, "petition_id") ||
-                            "none"}
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                          {latestDraftSummary || getRecordString(latestDraft, "summary") || "No draft exists yet for this mission."}
-                        </div>
-                        {latestDraftPreviewPath ? (
-                          <button
-                            type="button"
-                            onClick={() => openReviewPreview(latestDraftPreviewPath)}
-                            style={{ ...styles.secondaryButton, marginTop: 10 }}
-                          >
-                            Open review preview
-                          </button>
-                        ) : null}
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Clarification packet</div>
-                        <div style={{ marginTop: 4, fontSize: 13, fontWeight: 600, color: "#f5d0fe" }}>
-                          {getRecordString(latestClarificationPacket, "packet_id") || "none"}
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                          {latestPacketSummary ||
-                            getRecordString(getRecordObject(latestClarificationPacket, "provisional_answer"), "text") ||
-                            "No clarification packet exists yet."}
-                        </div>
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Manifest</div>
-                        <div style={{ marginTop: 4, fontSize: 13, fontWeight: 600, color: "#f5d0fe" }}>
-                          {getRecordString(selectedMission.manifest, "status") || "not yet written"}
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                          {getRecordString(selectedMission.manifest, "summary") || "No manifest summary yet."}
-                        </div>
-                      </div>
-                      <div style={styles.previewBox}>
-                        <div style={styles.subtleText}>Latest runner return</div>
-                        <div style={{ marginTop: 4, fontSize: 13, fontWeight: 600, color: "#f5d0fe" }}>
-                          {getRecordString(latestRunnerReturn, "instance_id") || "none"}
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                          {getRecordString(latestRunnerReturn, "summary") || "No helper return is linked to this mission yet."}
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                          Derived helper receipt only. Mission-local only. Not canonical truth, approval, or resolution.
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                          Confidence {formatConfidence(getRecordNumber(latestRunnerReturn, "confidence"), "0.00")} · count {runnerReturnCount}
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                          Helper suggestion: {getRecordString(latestRunnerReturn, "recommended_next_step") || "No helper suggestion is available."}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div style={styles.recordCard}>
-                    <div style={styles.recordMetaRow}>
-                      <div>
-                        <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Mission Chat</div>
-                        <div style={styles.subtleText}>
-                          Back-and-forth operator chat. Quick replies stay explicit and write only to mission notes.
-                        </div>
-                      </div>
-                      <span style={{ ...styles.badge, ...styles.badgeGood }}>{selectedMission.chat_count} messages</span>
-                    </div>
-
-                    <div style={{ marginTop: 12, ...styles.scrollArea, maxHeight: 260 }}>
-                      {selectedMission.mission_chat.length ? (
-                        selectedMission.mission_chat.map((message) => {
-                          const isAssistant = message.sender === "assistant";
-                          return (
-                            <motion.div
-                              key={message.message_id}
-                              initial={{ opacity: 0, y: 6 }}
-                              animate={{ opacity: 1, y: 0 }}
-                              style={{
-                                alignSelf: isAssistant ? "flex-start" : "flex-end",
-                                maxWidth: "92%",
-                                borderRadius: 16,
-                                border: isAssistant
-                                  ? "1px solid rgba(52,211,153,0.22)"
-                                  : "1px solid rgba(192,132,252,0.22)",
-                                background: isAssistant ? "rgba(6,78,59,0.22)" : "rgba(15,23,42,0.8)",
-                                padding: 12,
-                              }}
-                            >
-                              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                                <span style={{ ...styles.badge, ...(isAssistant ? styles.badgeGood : styles.badgeOutline) }}>
-                                  {isAssistant ? "Mission agent" : "Operator"}
-                                </span>
-                                <span style={styles.subtleText}>{message.created_at || "just now"}</span>
-                              </div>
-                              <div style={{ fontSize: 13, color: "#e2e8f0", lineHeight: 1.55 }}>{message.message}</div>
-                            </motion.div>
-                          );
-                        })
-                      ) : (
-                        <div style={styles.recordCard}>No mission chat yet. Send a message or pick a quick reply.</div>
-                      )}
-                    </div>
-
-                    <div style={styles.previewBox}>
-                      <textarea
-                        ref={missionChatComposerRef}
-                        value={missionChatText}
-                        onChange={(event) => setMissionChatDraft(event.target.value)}
-                        placeholder="Ask a question, add more context, or give the mission a direct instruction."
-                        autoComplete="off"
-                        style={{ ...styles.fieldTextarea, minHeight: 96 }}
-                      />
-                      <div style={{ marginTop: 8, ...styles.subtleText }}>
-                        {missionChatText.trim()
-                          ? "Draft only. This text stays local until you explicitly send it."
-                          : "No unsent chat draft."}
-                      </div>
-                      <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
-                        {missionSummaryQuickReplies.map((quickReply) => (
-                          <motion.button
-                            key={quickReply.label}
-                            type="button"
-                            onClick={() => runMissionQuickReply(quickReply)}
-                            disabled={missionSaving}
-                            style={styles.secondaryButton}
-                            whileHover={{ scale: 1.02 }}
-                            whileTap={{ scale: 0.98 }}
-                          >
-                            {quickReply.label}
-                          </motion.button>
-                        ))}
-                      </div>
-                      <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
-                        <motion.button
-                          type="button"
-                          onClick={() => sendMissionChat(missionChatText)}
-                          disabled={missionSaving || !missionChatText.trim()}
-                          style={styles.refreshButton}
-                          whileHover={{ scale: 1.02 }}
-                          whileTap={{ scale: 0.98 }}
-                        >
-                          {missionSaving && missionActionLabel === "Sending mission chat" ? "Sending..." : "Send chat"}
-                        </motion.button>
-                        <motion.button
-                          type="button"
-                          onClick={() => clearMissionChatDraft(selectedMissionId)}
-                          style={styles.secondaryButton}
-                          whileHover={{ scale: 1.02 }}
-                          whileTap={{ scale: 0.98 }}
-                        >
-                          Clear
-                        </motion.button>
-                      </div>
-                      <div style={{ marginTop: 10, ...styles.subtleText }}>
-                        Chat stays in <span style={styles.mono}>workbench/missions/{selectedMission.mission_id}/notes/chat.jsonl</span> and never writes to
-                        governed memory or dispatch.
-                      </div>
-                    </div>
-                  </div>
-
-                  <div style={styles.recordCard}>
-                    <div style={styles.recordMetaRow}>
-                      <div>
-                        <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Mission Artifacts</div>
-                        <div style={styles.subtleText}>Recent artifact records from the mission-local manifest or artifact index.</div>
-                      </div>
-                      <span style={{ ...styles.badge, ...styles.badgeOutline }}>{selectedMission.artifact_count} records</span>
-                    </div>
-                    <div style={{ marginTop: 12, display: "flex", flexDirection: "column" as const, gap: 10, maxHeight: 260, overflowY: "auto" }}>
-                      {selectedMissionArtifactRefs.length ? (
-                        selectedMissionArtifactRefs.map((item, index) => {
-                          const kind = getRecordString(item, "artifact_kind") || getRecordString(item, "kind") || "artifact";
-                          const stage = getRecordString(item, "artifact_stage") || "n/a";
-                          const role = getRecordString(item, "problem_role") || "";
-                          const quality = getRecordString(item, "quality_signal") || "";
-                          const reusable = getRecordString(item, "reusability_class") || "";
-                          const path = getRecordString(item, "path");
-                          const createdAt = getRecordString(item, "created_at");
-
-                          return (
-                            <div key={`${kind}-${path}-${index}`} style={styles.recordCard}>
-                              <div style={styles.recordMetaRow}>
-                                <div>
-                                  <div style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0" }}>{kind}</div>
-                                  <div style={styles.subtleText}>{path}</div>
-                                </div>
-                                <span style={styles.badge}>{stage}</span>
-                              </div>
-                              <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
-                                {role ? <span style={styles.badge}>{role}</span> : null}
-                                {quality ? <span style={styles.badge}>{quality}</span> : null}
-                                {reusable ? <span style={styles.badge}>{reusable}</span> : null}
-                                {createdAt ? <span style={styles.badge}>{createdAt}</span> : null}
-                              </div>
-                            </div>
-                          );
-                        })
-                      ) : (
-                        <div style={styles.recordCard}>No mission artifacts have been indexed yet.</div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div style={styles.recordCard}>
-                    <div style={styles.recordMetaRow}>
-                      <div>
-                        <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Prompt Translator</div>
-                        <div style={styles.subtleText}>
-                          Translate messy operator input into a proposal only. It does not send chat, intake, or create missions.
-                        </div>
-                      </div>
-                      <span style={{ ...styles.badge, ...styles.badgeWarn }}>Not Executed</span>
-                    </div>
-                    <div style={{ marginTop: 12, display: "flex", flexDirection: "column" as const, gap: 10 }}>
-                      <textarea
-                        value={translatorDraftText}
-                        onChange={(event) => setTranslatorDraft(event.target.value)}
-                        placeholder="Paste a messy prompt to see what the system thinks you mean."
-                        autoComplete="off"
-                        style={{ ...styles.fieldTextarea, minHeight: 96 }}
-                      />
-                      <div style={styles.subtleText}>
-                        Proposed only. Operator must choose the next step. Translation is inspectable and never auto-executes.
-                      </div>
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const }}>
-                        <motion.button
-                          type="button"
-                          onClick={translateMissionPrompt}
-                          disabled={translatorSaving || !translatorDraftText.trim()}
-                          style={styles.refreshButton}
-                          whileHover={{ scale: 1.02 }}
-                          whileTap={{ scale: 0.98 }}
-                        >
-                          {translatorSaving ? "Translating..." : "Translate Prompt"}
-                        </motion.button>
-                        <motion.button
-                          type="button"
-                          onClick={() => clearTranslatorDraft(selectedMissionId)}
-                          style={styles.secondaryButton}
-                          whileHover={{ scale: 1.02 }}
-                          whileTap={{ scale: 0.98 }}
-                        >
-                          Clear Draft
-                        </motion.button>
-                        <span style={{ ...styles.badge, ...styles.badgeOutline }}>{promptTranslationCount} saved</span>
-                      </div>
-                    </div>
-                    {promptTranslationPreview ? (
-                      <div style={{ marginTop: 12, display: "flex", flexDirection: "column" as const, gap: 10 }}>
-                        <div style={{ ...styles.previewBox, marginTop: 0 }}>
-                          <div style={styles.recordMetaRow}>
-                            <div style={{ fontSize: 13, fontWeight: 600, color: "#e2e8f0" }}>Latest Proposal</div>
-                            <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
-                              <span style={{ ...styles.badge, ...styles.badgeWarn }}>Proposed Only</span>
-                              <span style={{ ...styles.badge, ...styles.badgeWarn }}>Operator Chooses Next Step</span>
-                              <span style={{ ...styles.badge, ...styles.badgeOutline }}>
-                                {promptTranslationPreview.created_at || "saved"}
-                              </span>
-                            </div>
-                          </div>
-                          <div style={{ marginTop: 10, display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))" }}>
-                            <div style={styles.recordCard}>
-                              <div style={styles.subtleText}>Target Guess</div>
-                              <div style={{ marginTop: 4, fontSize: 13, color: "#e2e8f0" }}>
-                                {titleCaseLabel(promptTranslationPreview.target_type || "unknown")}
-                                {promptTranslationPreview.target_mission_id ? ` (${promptTranslationPreview.target_mission_id})` : ""}
-                              </div>
-                            </div>
-                            <div style={styles.recordCard}>
-                              <div style={styles.subtleText}>Recommended Role</div>
-                              <div style={{ marginTop: 4, fontSize: 13, color: "#e2e8f0" }}>
-                                {titleCaseLabel(promptTranslationPreview.recommended_role || "unknown")}
-                              </div>
-                            </div>
-                            <div style={styles.recordCard}>
-                              <div style={styles.subtleText}>Recommended Mode</div>
-                              <div style={{ marginTop: 4, fontSize: 13, color: "#e2e8f0" }}>
-                                {titleCaseLabel(promptTranslationPreview.recommended_mode || "unknown")}
-                              </div>
-                            </div>
-                            <div style={styles.recordCard}>
-                              <div style={styles.subtleText}>Scope</div>
-                              <div style={{ marginTop: 4, fontSize: 13, color: "#e2e8f0" }}>
-                                {titleCaseLabel(promptTranslationPreview.scope || "unknown")}
-                              </div>
-                            </div>
-                            <div style={styles.recordCard}>
-                              <div style={styles.subtleText}>Sufficiency</div>
-                              <div style={{ marginTop: 4, fontSize: 13, color: "#e2e8f0" }}>
-                                {promptTranslationPreview.sufficiency?.can_proceed ? "Can proceed with review" : "Missing requirements"}
-                              </div>
-                            </div>
-                          </div>
-                          <div style={{ marginTop: 10, display: "grid", gap: 10, gridTemplateColumns: "minmax(0, 1fr)" }}>
-                            <div>
-                              <div style={styles.subtleText}>Original Prompt</div>
-                              <div style={{ marginTop: 6, fontSize: 13, color: "#cbd5f5", lineHeight: 1.5 }}>
-                                {promptTranslationPreview.source_text || "No source prompt recorded."}
-                              </div>
-                            </div>
-                            <div>
-                              <div style={styles.subtleText}>Recommended Safe Action</div>
-                              <div style={{ marginTop: 6, fontSize: 13, color: "#e2e8f0", lineHeight: 1.5 }}>
-                                {promptTranslationPreview.recommended_safe_action || "No safe action recorded."}
-                              </div>
-                            </div>
-                            <div>
-                              <div style={styles.subtleText}>Translated Instruction</div>
-                              <div style={{ ...styles.previewBox, marginTop: 6 }}>
-                                <div style={{ fontSize: 13, color: "#e2e8f0", lineHeight: 1.5 }}>
-                                  {promptTranslationPreview.translated_instruction || "No translated instruction recorded."}
-                                </div>
-                              </div>
-                            </div>
-                            <div>
-                              <div style={styles.subtleText}>Missing Requirements</div>
-                              <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
-                                {promptTranslationPreview.sufficiency?.missing_requirements?.length ? (
-                                  promptTranslationPreview.sufficiency.missing_requirements.map((requirement) => (
-                                    <span key={requirement} style={{ ...styles.badge, ...styles.badgeWarn }}>
-                                      {requirement}
-                                    </span>
-                                  ))
-                                ) : (
-                                  <span style={{ ...styles.badge, ...styles.badgeGood }}>Nothing missing from translator input</span>
-                                )}
-                              </div>
-                            </div>
-                            {promptTranslationPreview.notes?.length ? (
-                              <div>
-                                <div style={styles.subtleText}>Notes</div>
-                                <div style={{ marginTop: 6, display: "flex", flexDirection: "column" as const, gap: 6 }}>
-                                  {promptTranslationPreview.notes.map((note) => (
-                                    <div key={note} style={{ fontSize: 12, color: "#94a3b8", lineHeight: 1.5 }}>
-                                      {note}
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : null}
-                          </div>
-                          <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" as const }}>
-                            <motion.button
-                              type="button"
-                              onClick={copyTranslatedInstruction}
-                              style={styles.secondaryButton}
-                              whileHover={{ scale: 1.02 }}
-                              whileTap={{ scale: 0.98 }}
-                            >
-                              Copy Instruction
-                            </motion.button>
-                            <motion.button
-                              type="button"
-                              onClick={stageTranslatedInstructionForMissionInput}
-                              style={styles.secondaryButton}
-                              whileHover={{ scale: 1.02 }}
-                              whileTap={{ scale: 0.98 }}
-                            >
-                              Send to Mission Draft
-                            </motion.button>
-                            <motion.button
-                              type="button"
-                              onClick={stageTranslatedInstructionForChat}
-                              style={styles.secondaryButton}
-                              whileHover={{ scale: 1.02 }}
-                              whileTap={{ scale: 0.98 }}
-                            >
-                              Use in Chat Draft
-                            </motion.button>
-                            <motion.button
-                              type="button"
-                              onClick={stageProposedMissionDraft}
-                              style={styles.secondaryButton}
-                              whileHover={{ scale: 1.02 }}
-                              whileTap={{ scale: 0.98 }}
-                            >
-                              Create Proposed Mission Draft
-                            </motion.button>
-                            <motion.button
-                              type="button"
-                              onClick={discardPromptTranslation}
-                              style={styles.secondaryButton}
-                              whileHover={{ scale: 1.02 }}
-                              whileTap={{ scale: 0.98 }}
-                            >
-                              Discard
-                            </motion.button>
-                          </div>
-                          <div style={{ marginTop: 10, ...styles.subtleText }}>
-                            Not yet executed. These actions only copy or stage text for operator review.
-                          </div>
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-
-                  <div style={styles.recordCard}>
-                    <div style={styles.recordMetaRow}>
-                      <div>
-                        <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Mission Inputs</div>
-                        <div style={styles.subtleText}>
-                          Send to Mission (Unreviewed Input) writes into the workbench intake folder only.
-                        </div>
-                      </div>
-                      <span style={{ ...styles.badge, ...styles.badgeWarn }}>Unreviewed</span>
-                    </div>
-                    <div style={{ marginTop: 12, display: "flex", flexDirection: "column" as const, gap: 10 }}>
-                      <textarea
-                        value={missionInputText}
-                        onChange={(event) => setMissionInputDraft(event.target.value)}
-                        placeholder="Add safe mission input for intake, review, or follow-up."
-                        autoComplete="off"
-                        style={styles.fieldTextarea}
-                      />
-                      <div style={styles.subtleText}>
-                        {missionInputText.trim()
-                          ? "Draft only. This input stays local until you explicitly send it."
-                          : "No unsent mission input draft."}
-                      </div>
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const }}>
-                        <motion.button
-                          type="button"
-                          onClick={sendMissionInput}
-                          disabled={missionSaving || !missionInputText.trim()}
-                          style={styles.refreshButton}
-                          whileHover={{ scale: 1.02 }}
-                          whileTap={{ scale: 0.98 }}
-                        >
-                          {missionSaving && missionActionLabel === "Sending mission input" ? "Sending..." : "Send to Mission"}
-                        </motion.button>
-                        <motion.button
-                          type="button"
-                          onClick={() => clearMissionInputDraft(selectedMissionId)}
-                          style={styles.secondaryButton}
-                          whileHover={{ scale: 1.02 }}
-                          whileTap={{ scale: 0.98 }}
-                        >
-                          Clear
-                        </motion.button>
-                      </div>
-                      <div style={styles.subtleText}>
-                        This lands in <span style={styles.mono}>workbench/missions/{selectedMission.mission_id}/intake/</span> as{" "}
-                        <span style={styles.mono}>user_provided</span> and remains unreviewed until an operator acts.
-                      </div>
-                    </div>
-                    <div style={{ marginTop: 12, ...styles.scrollArea }}>
-                      {selectedMissionInputs.length ? (
-                        selectedMissionInputs.map((input) => (
-                          <div key={input.input_id} style={styles.recordCard}>
-                            <div style={styles.recordMetaRow}>
-                              <div>
-                                <div style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0" }}>{input.input_id}</div>
-                                <div style={styles.subtleText}>{input.created_at}</div>
-                              </div>
-                              <span style={{ ...styles.badge, ...styles.badgeWarn }}>{input.status}</span>
-                            </div>
-                            <div style={{ marginTop: 8, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>{input.content}</div>
-                            <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
-                              <span style={styles.badge}>{input.source_type}</span>
-                              <span style={styles.badge}>{input.path}</span>
-                            </div>
-                          </div>
-                        ))
-                      ) : (
-                        <div style={styles.recordCard}>No mission inputs have been sent to this expedition yet.</div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div style={styles.recordCard}>
-                    <div style={styles.recordMetaRow}>
-                      <div>
-                        <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Workbench (Not Governed Memory)</div>
-                        <div style={styles.subtleText}>
-                          Messy sandbox for code, experiments, notes, and raw outputs. It is not bridge-submittable directly.
-                        </div>
-                      </div>
-                      <span style={{ ...styles.badge, ...styles.badgeGood }}>Workbench Only</span>
-                    </div>
-                    <div style={{ marginTop: 12, ...styles.tabRow }}>
-                      {selectedMissionFolders.length ? (
-                        selectedMissionFolders.map((folder) => (
-                          <button
-                            key={folder.name}
-                            type="button"
-                            onClick={() => setWorkbenchFolder(folder.name)}
-                            style={{
-                              ...styles.tabButton,
-                              ...(workbenchFolder === folder.name ? styles.tabButtonActive : null),
-                            }}
-                          >
-                            {folder.name} ({folder.file_count})
-                          </button>
-                        ))
-                      ) : (
-                        <span style={styles.subtleText}>Workbench folders will appear after the first mission is created.</span>
-                      )}
-                    </div>
-                    <div style={{ marginTop: 12, fontSize: 12, color: "#94a3b8" }}>
-                      root <span style={styles.mono}>{selectedMission.workbench.root}</span>
-                    </div>
-                    <div style={{ marginTop: 12, ...styles.scrollArea }}>
-                      {workbenchFilesForFolder.length ? (
-                        workbenchFilesForFolder.map((file) => (
-                          <div key={file.path} style={styles.recordCard}>
-                            <div style={styles.recordMetaRow}>
-                              <div>
-                                <div style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0" }}>{file.name}</div>
-                                <div style={styles.subtleText}>{file.path}</div>
-                              </div>
-                              <span style={styles.badge}>{file.bytes_label}</span>
-                            </div>
-                            <div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8" }}>
-                              modified {file.modified_at}
-                            </div>
-                          </div>
-                        ))
-                      ) : (
-                        <div style={styles.recordCard}>
-                          No files yet in <span style={styles.mono}>{workbenchFolder}</span>.
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <div style={styles.recordCard}>
-                  Select an expedition to inspect its mission brief, run summary, intake files, and workbench.
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {false ? (
+        {viewMode === "diagnostics" ? (
           <>
             <div style={styles.panel}>
               <div style={styles.sectionTitleRow}>
@@ -5209,4 +5006,7 @@ export default function Dashboard() {
     </div>
   );
 }
+
+
+
 

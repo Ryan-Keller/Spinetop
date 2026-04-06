@@ -11,6 +11,7 @@ Start here:
 - [Support Orchestration Contract](docs/support_orchestration_contract_v1.md)
 - [Helper Catalog](docs/helper_catalog_v1.md)
 - [Support Channel Schema](docs/support_channel_schema_v1.md)
+- [Hermes Profile Bootstrap](docs/hermes_profile_bootstrap_v1.md)
 - [Collective Legacy Migration Plan](docs/collective_legacy_migration_plan.md)
 - [Memory Migration Check](scripts/check_memory_schema_migration.py)
 - [Knowledge Flow](docs/knowledge_flow_README.md)
