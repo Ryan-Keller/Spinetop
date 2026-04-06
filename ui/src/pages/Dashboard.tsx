@@ -304,6 +304,24 @@ type ExpeditionSummary = {
   operator_posture?: string;
   operator_posture_reason?: string;
   triage_bucket?: string;
+  queue_hygiene?: {
+    last_activity_at?: string;
+    last_activity_age_days?: number | null;
+    parked_age_days?: number | null;
+    duplicate_candidate?: boolean;
+    stale_candidate?: boolean;
+    blocked_candidate?: boolean;
+    parked_candidate?: boolean;
+    review_ready?: boolean;
+    archive_candidate?: boolean;
+    superseded_by_newer_similar?: boolean;
+    junk_pattern?: boolean;
+    signals?: string[];
+    recommended_action?: string;
+    recommendation_reason?: string;
+  };
+  recommended_queue_action?: string;
+  queue_action_reason?: string;
   path: string;
 };
 
@@ -321,6 +339,18 @@ type ExpeditionGroupedCounts = {
   duplicate_groups?: number;
   duplicate_candidates?: number;
   hidden_duplicate_count?: number;
+  queue_summary?: QueueSummary;
+};
+
+type QueueSummary = {
+  total_queued?: number;
+  active?: number;
+  parked?: number;
+  blocked?: number;
+  duplicate_candidates?: number;
+  stale_candidates?: number;
+  review_ready?: number;
+  archive_close_candidates?: number;
 };
 
 type MissionAttentionItem = {
@@ -450,6 +480,27 @@ type WorkbenchSummary = {
   files: WorkbenchFile[];
 };
 
+type PromptTranslation = {
+  translation_id: string;
+  created_at: string;
+  source_text: string;
+  target_type: "existing_mission" | "new_mission" | "unknown" | string;
+  target_mission_id?: string | null;
+  recommended_role: string;
+  recommended_mode: string;
+  scope: string;
+  sufficiency: {
+    can_proceed: boolean;
+    missing_requirements: string[];
+  };
+  recommended_safe_action: string;
+  requires_operator_confirmation: boolean;
+  translated_instruction: string;
+  notes?: string[];
+  derived_only?: boolean;
+  path?: string;
+};
+
 type ExpeditionDetail = {
   mission_id: string;
   objective: string;
@@ -509,6 +560,7 @@ type ExpeditionDetail = {
   blocking_questions?: string[];
   operator_options?: { label: string; value: string; kind?: string }[];
   triage_bucket?: string;
+  queue_hygiene?: ExpeditionSummary["queue_hygiene"];
   mission_summary?: {
     mission_id: string;
     status: string;
@@ -544,6 +596,9 @@ type ExpeditionDetail = {
     parked_at?: string;
     wake_hint?: string;
   };
+  latest_prompt_translation?: PromptTranslation | null;
+  prompt_translation_count?: number;
+  prompt_translations?: PromptTranslation[];
   mission_inputs: MissionInputRecord[];
   mission_chat: MissionChatMessage[];
   workbench: WorkbenchSummary;
@@ -585,6 +640,7 @@ type ExpeditionsResponse = {
   source_root?: string;
   items: ExpeditionSummary[];
   grouped_counts?: ExpeditionGroupedCounts;
+  queue_summary?: QueueSummary;
 };
 
 type ExpeditionDetailResponse = {
@@ -1333,11 +1389,15 @@ export default function Dashboard() {
   const [hermesRuns, setHermesRuns] = useState<HermesRun[]>([]);
   const [petitionDrafts, setPetitionDrafts] = useState<DraftRecord[]>([]);
   const [expeditions, setExpeditions] = useState<ExpeditionSummary[]>(fallbackExpeditions);
+  const [expeditionQueueSummary, setExpeditionQueueSummary] = useState<QueueSummary>({});
   const [selectedMissionId, setSelectedMissionId] = useState<string | null>(null);
   const [selectedMission, setSelectedMission] = useState<ExpeditionDetail | null>(null);
   const [newMissionObjective, setNewMissionObjective] = useState("");
   const [missionInputDrafts, setMissionInputDrafts] = useState<Record<string, string>>({});
   const [missionChatDrafts, setMissionChatDrafts] = useState<Record<string, string>>({});
+  const [translatorDrafts, setTranslatorDrafts] = useState<Record<string, string>>({});
+  const [translatorPreviewByMission, setTranslatorPreviewByMission] = useState<Record<string, PromptTranslation | null>>({});
+  const [dismissedTranslationByMission, setDismissedTranslationByMission] = useState<Record<string, string | null>>({});
   const [showDuplicateMissions, setShowDuplicateMissions] = useState(false);
   const [workbenchFolder, setWorkbenchFolder] = useState("intake");
   const [selectedDraftPath, setSelectedDraftPath] = useState<string | null>(null);
@@ -1345,6 +1405,7 @@ export default function Dashboard() {
   const [uiNotice, setUiNotice] = useState<UiNotice | null>(null);
   const [missionLoading, setMissionLoading] = useState(false);
   const [missionSaving, setMissionSaving] = useState(false);
+  const [translatorSaving, setTranslatorSaving] = useState(false);
   const [missionActionLabel, setMissionActionLabel] = useState("");
   const missionChatComposerRef = useRef<HTMLTextAreaElement | null>(null);
   const [calibrationAxes, setCalibrationAxes] = useState<CalibrationAxis[]>([
@@ -1412,8 +1473,13 @@ export default function Dashboard() {
       if (expeditionsResult.ok) {
         const items = Array.isArray(expeditionsResult.value.items) ? expeditionsResult.value.items : [];
         setExpeditions(items);
+        setExpeditionQueueSummary(
+          expeditionsResult.value.queue_summary ||
+            expeditionsResult.value.grouped_counts?.queue_summary || {}
+        );
       } else {
         setExpeditions([]);
+        setExpeditionQueueSummary({});
         errors.push(`expeditions: ${expeditionsResult.error instanceof Error ? expeditionsResult.error.message : "request failed"}`);
       }
 
@@ -1426,6 +1492,7 @@ export default function Dashboard() {
       setHermesRuns([]);
       setPetitionDrafts([]);
       setExpeditions([]);
+      setExpeditionQueueSummary({});
       setSelectedMission(null);
     } finally {
       setLoading(false);
@@ -1492,6 +1559,7 @@ export default function Dashboard() {
   const selectedPacket = packets.find((p) => p.recordName === selectedRecord) ?? packets[0] ?? null;
   const missionInputText = selectedMissionId ? missionInputDrafts[selectedMissionId] || "" : "";
   const missionChatText = selectedMissionId ? missionChatDrafts[selectedMissionId] || "" : "";
+  const translatorDraftText = selectedMissionId ? translatorDrafts[selectedMissionId] || "" : "";
 
   const setMissionInputDraft = (value: string) => {
     if (!selectedMissionId) return;
@@ -1503,6 +1571,11 @@ export default function Dashboard() {
     setMissionChatDrafts((prev) => ({ ...prev, [selectedMissionId]: value }));
   };
 
+  const setTranslatorDraft = (value: string) => {
+    if (!selectedMissionId) return;
+    setTranslatorDrafts((prev) => ({ ...prev, [selectedMissionId]: value }));
+  };
+
   const clearMissionInputDraft = (missionId?: string | null) => {
     if (!missionId) return;
     setMissionInputDrafts((prev) => ({ ...prev, [missionId]: "" }));
@@ -1511,6 +1584,11 @@ export default function Dashboard() {
   const clearMissionChatDraft = (missionId?: string | null) => {
     if (!missionId) return;
     setMissionChatDrafts((prev) => ({ ...prev, [missionId]: "" }));
+  };
+
+  const clearTranslatorDraft = (missionId?: string | null) => {
+    if (!missionId) return;
+    setTranslatorDrafts((prev) => ({ ...prev, [missionId]: "" }));
   };
 
   const queueCounts = useMemo(() => {
@@ -1600,6 +1678,12 @@ export default function Dashboard() {
   const latestDraft = selectedMission?.latest_draft ?? null;
   const latestClarificationPacket = selectedMission?.latest_clarification_packet ?? null;
   const latestRunnerReturn = selectedMission?.latest_runner_return ?? null;
+  const latestPromptTranslation = selectedMission?.latest_prompt_translation ?? null;
+  const promptTranslationCount = selectedMission?.prompt_translation_count ?? 0;
+  const dismissedTranslationId = selectedMissionId ? dismissedTranslationByMission[selectedMissionId] ?? null : null;
+  const promptTranslationPreview =
+    (selectedMissionId ? translatorPreviewByMission[selectedMissionId] ?? null : null) ||
+    (latestPromptTranslation && latestPromptTranslation.translation_id !== dismissedTranslationId ? latestPromptTranslation : null);
   const missionSummary = selectedMission?.mission_summary ?? null;
   const missionParkingStatus = selectedMission?.parking_status ?? null;
   const missionAutonomyStatus = selectedMission?.autonomy_status ?? null;
@@ -1716,10 +1800,12 @@ export default function Dashboard() {
   const supportedControlActions = controlTowerSafeActions.filter((action) =>
     [
       "resume mission",
+      "park mission",
       "retry bounded action",
       "refresh assumptions",
       "sync helper returns",
       "clear stale pending handoff",
+      "mark archive candidate",
       "answer blocker",
     ].includes(action.toLowerCase())
   );
@@ -1804,7 +1890,10 @@ export default function Dashboard() {
     return items.slice(0, 8);
   }, [expeditions, petitionDrafts, repeatedItemCount]);
   const visibleExpeditions = useMemo(() => groupExpeditions(expeditions, selectedMissionId), [expeditions, selectedMissionId]);
+  const queueSummary = expeditionQueueSummary;
   const blockedWaitingCount = attentionItems.filter((item) => item.key !== "noisy-signals").length;
+  const selectedQueueHygiene = selectedMission?.queue_hygiene;
+  const selectedQueueSignals = (selectedQueueHygiene?.signals ?? []).filter(Boolean);
   const latestMeaningfulSummary =
     latestDraftSummary ||
     getRecordString(latestHermesRun, "summary") ||
@@ -2047,6 +2136,7 @@ export default function Dashboard() {
       const payload = (await res.json()) as {
         ok?: boolean;
         item?: MissionInputRecord;
+        translation?: PromptTranslation;
         mission?: ExpeditionDetail;
         error?: string;
       };
@@ -2056,6 +2146,10 @@ export default function Dashboard() {
       clearMissionInputDraft(missionId);
       if (payload.mission) {
         setSelectedMission(payload.mission);
+      }
+      if (payload.translation) {
+        setTranslatorPreviewByMission((prev) => ({ ...prev, [missionId]: payload.translation ?? null }));
+        setDismissedTranslationByMission((prev) => ({ ...prev, [missionId]: null }));
       }
       setUiNotice({
         tone: "good",
@@ -2070,6 +2164,126 @@ export default function Dashboard() {
       setMissionSaving(false);
       setMissionActionLabel("");
     }
+  };
+
+  const translateMissionPrompt = async () => {
+    const missionId = selectedMissionId;
+    if (!missionId) {
+      setErrorText("Select an expedition first");
+      return;
+    }
+    const content = translatorDraftText.trim();
+    if (!content) {
+      setErrorText("Prompt translator input cannot be empty");
+      return;
+    }
+    try {
+      setTranslatorSaving(true);
+      const res = await fetch(`${API_BASE}/expeditions/${missionId}/translate-prompt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      });
+      const payload = (await res.json()) as {
+        ok?: boolean;
+        translation?: PromptTranslation;
+        mission?: ExpeditionDetail;
+        error?: string;
+      };
+      if (!res.ok || !payload.ok || !payload.translation) {
+        throw new Error(payload.error || `HTTP ${res.status}`);
+      }
+      if (payload.mission) {
+        setSelectedMission(payload.mission);
+      }
+      setTranslatorPreviewByMission((prev) => ({ ...prev, [missionId]: payload.translation ?? null }));
+      setDismissedTranslationByMission((prev) => ({ ...prev, [missionId]: null }));
+      setUiNotice({
+        tone: "info",
+        title: "Prompt translated",
+        detail: "Proposal saved for review only. Nothing was executed.",
+      });
+      await load();
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "Prompt translation failed");
+    } finally {
+      setTranslatorSaving(false);
+    }
+  };
+
+  const copyTranslatedInstruction = async () => {
+    const translation = promptTranslationPreview;
+    if (!translation) {
+      setErrorText("No translated instruction is available to copy");
+      return;
+    }
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("Clipboard is unavailable in this browser");
+      }
+      await navigator.clipboard.writeText(translation.translated_instruction || "");
+      setUiNotice({
+        tone: "good",
+        title: "Instruction copied",
+        detail: "The translated instruction was copied. It is still proposal-only.",
+      });
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "Copy failed");
+    }
+  };
+
+  const stageTranslatedInstructionForMissionInput = () => {
+    const translation = promptTranslationPreview;
+    const missionId = selectedMissionId;
+    if (!translation || !missionId) return;
+    setMissionInputDrafts((prev) => ({ ...prev, [missionId]: translation.translated_instruction || "" }));
+    setUiNotice({
+      tone: "info",
+      title: "Mission input draft staged",
+      detail: "The translated instruction was copied into the mission input draft. It was not sent.",
+    });
+  };
+
+  const stageTranslatedInstructionForChat = () => {
+    const translation = promptTranslationPreview;
+    const missionId = selectedMissionId;
+    if (!translation || !missionId) return;
+    setMissionChatDrafts((prev) => ({ ...prev, [missionId]: translation.translated_instruction || "" }));
+    missionChatComposerRef.current?.focus();
+    setUiNotice({
+      tone: "info",
+      title: "Chat draft staged",
+      detail: "The translated instruction was copied into mission chat draft only. It was not sent.",
+    });
+  };
+
+  const stageProposedMissionDraft = () => {
+    const translation = promptTranslationPreview;
+    if (!translation) return;
+    const objectiveSeed =
+      translation.target_type === "new_mission"
+        ? translation.source_text || translation.translated_instruction || ""
+        : translation.translated_instruction || translation.source_text || "";
+    setNewMissionObjective(objectiveSeed);
+    setUiNotice({
+      tone: "info",
+      title: "Proposed mission draft staged",
+      detail: "The new mission objective box was prefilled only. No mission was created.",
+    });
+  };
+
+  const discardPromptTranslation = () => {
+    const missionId = selectedMissionId;
+    if (!missionId) return;
+    const translationId = promptTranslationPreview?.translation_id ?? null;
+    clearTranslatorDraft(missionId);
+    setTranslatorPreviewByMission((prev) => ({ ...prev, [missionId]: null }));
+    setDismissedTranslationByMission((prev) => ({ ...prev, [missionId]: translationId }));
+    setUiNotice({
+      tone: "info",
+      title: "Translator draft cleared",
+      detail: "The current proposal was dismissed from view. Nothing was executed.",
+    });
   };
 
   const sendMissionChat = async (content: string, quickReply?: string) => {
@@ -2242,6 +2456,10 @@ export default function Dashboard() {
       });
       return;
     }
+    if (normalized === "park mission") {
+      await setMissionParking("parked");
+      return;
+    }
     if (normalized === "retry bounded action") {
       await runLoggedControlTowerIntervention("retry_bounded_action", {
         label: "Requesting bounded retry",
@@ -2268,6 +2486,15 @@ export default function Dashboard() {
     if (normalized === "clear stale pending handoff") {
       await runLoggedControlTowerIntervention("clear_stale_pending_handoff", {
         label: "Clearing stale handoff",
+      });
+      return;
+    }
+    if (normalized === "mark archive candidate") {
+      await runLoggedControlTowerIntervention("mark_archive_candidate", {
+        label: "Marking archive candidate",
+        reason:
+          selectedQueueHygiene?.recommendation_reason ||
+          "Operator explicitly marked this mission as an archive-review candidate.",
       });
       return;
     }
@@ -2485,6 +2712,50 @@ export default function Dashboard() {
               <div style={styles.recordCard}>
                 <div style={styles.recordMetaRow}>
                   <div>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Queue hygiene</div>
+                    <div style={styles.subtleText}>Read-only backlog classification so stale, duplicate, and review-ready work is visible before any action.</div>
+                  </div>
+                  <span style={{ ...styles.badge, ...styles.badgeOutline }}>recommendations only</span>
+                </div>
+                <div style={{ marginTop: 12, display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))" }}>
+                  <div style={styles.previewBox}>
+                    <div style={styles.subtleText}>Queued</div>
+                    <div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#f5d0fe" }}>{queueSummary.total_queued ?? expeditions.length}</div>
+                  </div>
+                  <div style={styles.previewBox}>
+                    <div style={styles.subtleText}>Active</div>
+                    <div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#86efac" }}>{queueSummary.active ?? 0}</div>
+                  </div>
+                  <div style={styles.previewBox}>
+                    <div style={styles.subtleText}>Blocked</div>
+                    <div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#fde68a" }}>{queueSummary.blocked ?? 0}</div>
+                  </div>
+                  <div style={styles.previewBox}>
+                    <div style={styles.subtleText}>Parked</div>
+                    <div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#cbd5f5" }}>{queueSummary.parked ?? 0}</div>
+                  </div>
+                  <div style={styles.previewBox}>
+                    <div style={styles.subtleText}>Duplicates</div>
+                    <div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#c4b5fd" }}>{queueSummary.duplicate_candidates ?? 0}</div>
+                  </div>
+                  <div style={styles.previewBox}>
+                    <div style={styles.subtleText}>Stale</div>
+                    <div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#fca5a5" }}>{queueSummary.stale_candidates ?? 0}</div>
+                  </div>
+                  <div style={styles.previewBox}>
+                    <div style={styles.subtleText}>Review ready</div>
+                    <div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#93c5fd" }}>{queueSummary.review_ready ?? 0}</div>
+                  </div>
+                  <div style={styles.previewBox}>
+                    <div style={styles.subtleText}>Archive candidates</div>
+                    <div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#f9a8d4" }}>{queueSummary.archive_close_candidates ?? 0}</div>
+                  </div>
+                </div>
+              </div>
+
+              <div style={styles.recordCard}>
+                <div style={styles.recordMetaRow}>
+                  <div>
                     <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Expedition List</div>
                     <div style={styles.subtleText}>
                       Click one to focus the mission details. Duplicate objectives are grouped by normalized objective so the main list stays calm.
@@ -2563,6 +2834,7 @@ export default function Dashboard() {
                               <span style={styles.badge}>{expedition.current_state}</span>
                               {expedition.operator_posture ? <span style={styles.badge}>{expedition.operator_posture}</span> : null}
                               {expedition.triage_bucket ? <span style={styles.badge}>{expedition.triage_bucket}</span> : null}
+                              {expedition.recommended_queue_action ? <span style={{ ...styles.badge, ...styles.badgeOutline }}>{expedition.recommended_queue_action}</span> : null}
                               <span style={styles.badge}>{expedition.latest_run_id || "no run yet"}</span>
                               <span style={styles.badge}>{expedition.last_updated || "no updates"}</span>
                             </div>
@@ -2574,6 +2846,20 @@ export default function Dashboard() {
                             {expedition.operator_posture_reason ? (
                               <div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8", lineHeight: 1.5 }}>
                                 {expedition.operator_posture_reason}
+                              </div>
+                            ) : null}
+                            {expedition.queue_action_reason ? (
+                              <div style={{ marginTop: 8, fontSize: 12, color: "#f5d0fe", lineHeight: 1.5 }}>
+                                Recommendation: {expedition.queue_action_reason}
+                              </div>
+                            ) : null}
+                            {expedition.queue_hygiene?.signals?.length ? (
+                              <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
+                                {expedition.queue_hygiene.signals.slice(0, 2).map((signal) => (
+                                  <span key={signal} style={styles.badge}>
+                                    {signal}
+                                  </span>
+                                ))}
                               </div>
                             ) : null}
                             {group.hidden_duplicate_count ? (
@@ -2622,6 +2908,7 @@ export default function Dashboard() {
                                     <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
                                       <span style={styles.badge}>duplicate #{duplicateItem.duplicate_rank ?? 2}</span>
                                       <span style={styles.badge}>same objective</span>
+                                      {duplicateItem.recommended_queue_action ? <span style={{ ...styles.badge, ...styles.badgeOutline }}>{duplicateItem.recommended_queue_action}</span> : null}
                                       {duplicateItem.duplicate_of_mission_id ? (
                                         <span style={styles.badge}>primary {duplicateItem.duplicate_of_mission_id}</span>
                                       ) : null}
@@ -2714,6 +3001,15 @@ export default function Dashboard() {
                         <div style={styles.subtleText}>Recommended next step</div>
                         <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f5d0fe", lineHeight: 1.5 }}>
                           {missionSummaryNextStep}
+                        </div>
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Queue recommendation</div>
+                        <div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f5d0fe", lineHeight: 1.5 }}>
+                          {selectedQueueHygiene?.recommended_action || "inspect before action"}
+                        </div>
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
+                          {selectedQueueHygiene?.recommendation_reason || "No queue-hygiene recommendation is available yet."}
                         </div>
                       </div>
                     </div>
@@ -2895,6 +3191,31 @@ export default function Dashboard() {
                             ))
                           ) : (
                             <div style={styles.subtleText}>No missing inputs are currently flagged.</div>
+                          )}
+                        </div>
+                      </div>
+                      <div style={styles.previewBox}>
+                        <div style={styles.subtleText}>Queue signals</div>
+                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                          {selectedQueueSignals.length ? (
+                            selectedQueueSignals.map((signal) => (
+                              <div
+                                key={signal}
+                                style={{
+                                  borderRadius: 12,
+                                  border: "1px solid rgba(192,132,252,0.18)",
+                                  background: "rgba(2,6,23,0.45)",
+                                  padding: "8px 10px",
+                                  fontSize: 12,
+                                  color: "#cbd5f5",
+                                  lineHeight: 1.45,
+                                }}
+                              >
+                                • {signal}
+                              </div>
+                            ))
+                          ) : (
+                            <div style={styles.subtleText}>No queue-hygiene signals are currently attached to this mission.</div>
                           )}
                         </div>
                       </div>
@@ -3537,6 +3858,199 @@ export default function Dashboard() {
                         <div style={styles.recordCard}>No mission artifacts have been indexed yet.</div>
                       )}
                     </div>
+                  </div>
+
+                  <div style={styles.recordCard}>
+                    <div style={styles.recordMetaRow}>
+                      <div>
+                        <div style={{ fontSize: 16, fontWeight: 600, color: "#e2e8f0" }}>Prompt Translator</div>
+                        <div style={styles.subtleText}>
+                          Translate messy operator input into a proposal only. It does not send chat, intake, or create missions.
+                        </div>
+                      </div>
+                      <span style={{ ...styles.badge, ...styles.badgeWarn }}>Not Executed</span>
+                    </div>
+                    <div style={{ marginTop: 12, display: "flex", flexDirection: "column" as const, gap: 10 }}>
+                      <textarea
+                        value={translatorDraftText}
+                        onChange={(event) => setTranslatorDraft(event.target.value)}
+                        placeholder="Paste a messy prompt to see what the system thinks you mean."
+                        autoComplete="off"
+                        style={{ ...styles.fieldTextarea, minHeight: 96 }}
+                      />
+                      <div style={styles.subtleText}>
+                        Proposed only. Operator must choose the next step. Translation is inspectable and never auto-executes.
+                      </div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const }}>
+                        <motion.button
+                          type="button"
+                          onClick={translateMissionPrompt}
+                          disabled={translatorSaving || !translatorDraftText.trim()}
+                          style={styles.refreshButton}
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
+                        >
+                          {translatorSaving ? "Translating..." : "Translate Prompt"}
+                        </motion.button>
+                        <motion.button
+                          type="button"
+                          onClick={() => clearTranslatorDraft(selectedMissionId)}
+                          style={styles.secondaryButton}
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
+                        >
+                          Clear Draft
+                        </motion.button>
+                        <span style={{ ...styles.badge, ...styles.badgeOutline }}>{promptTranslationCount} saved</span>
+                      </div>
+                    </div>
+                    {promptTranslationPreview ? (
+                      <div style={{ marginTop: 12, display: "flex", flexDirection: "column" as const, gap: 10 }}>
+                        <div style={{ ...styles.previewBox, marginTop: 0 }}>
+                          <div style={styles.recordMetaRow}>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: "#e2e8f0" }}>Latest Proposal</div>
+                            <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
+                              <span style={{ ...styles.badge, ...styles.badgeWarn }}>Proposed Only</span>
+                              <span style={{ ...styles.badge, ...styles.badgeWarn }}>Operator Chooses Next Step</span>
+                              <span style={{ ...styles.badge, ...styles.badgeOutline }}>
+                                {promptTranslationPreview.created_at || "saved"}
+                              </span>
+                            </div>
+                          </div>
+                          <div style={{ marginTop: 10, display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))" }}>
+                            <div style={styles.recordCard}>
+                              <div style={styles.subtleText}>Target Guess</div>
+                              <div style={{ marginTop: 4, fontSize: 13, color: "#e2e8f0" }}>
+                                {titleCaseLabel(promptTranslationPreview.target_type || "unknown")}
+                                {promptTranslationPreview.target_mission_id ? ` (${promptTranslationPreview.target_mission_id})` : ""}
+                              </div>
+                            </div>
+                            <div style={styles.recordCard}>
+                              <div style={styles.subtleText}>Recommended Role</div>
+                              <div style={{ marginTop: 4, fontSize: 13, color: "#e2e8f0" }}>
+                                {titleCaseLabel(promptTranslationPreview.recommended_role || "unknown")}
+                              </div>
+                            </div>
+                            <div style={styles.recordCard}>
+                              <div style={styles.subtleText}>Recommended Mode</div>
+                              <div style={{ marginTop: 4, fontSize: 13, color: "#e2e8f0" }}>
+                                {titleCaseLabel(promptTranslationPreview.recommended_mode || "unknown")}
+                              </div>
+                            </div>
+                            <div style={styles.recordCard}>
+                              <div style={styles.subtleText}>Scope</div>
+                              <div style={{ marginTop: 4, fontSize: 13, color: "#e2e8f0" }}>
+                                {titleCaseLabel(promptTranslationPreview.scope || "unknown")}
+                              </div>
+                            </div>
+                            <div style={styles.recordCard}>
+                              <div style={styles.subtleText}>Sufficiency</div>
+                              <div style={{ marginTop: 4, fontSize: 13, color: "#e2e8f0" }}>
+                                {promptTranslationPreview.sufficiency?.can_proceed ? "Can proceed with review" : "Missing requirements"}
+                              </div>
+                            </div>
+                          </div>
+                          <div style={{ marginTop: 10, display: "grid", gap: 10, gridTemplateColumns: "minmax(0, 1fr)" }}>
+                            <div>
+                              <div style={styles.subtleText}>Original Prompt</div>
+                              <div style={{ marginTop: 6, fontSize: 13, color: "#cbd5f5", lineHeight: 1.5 }}>
+                                {promptTranslationPreview.source_text || "No source prompt recorded."}
+                              </div>
+                            </div>
+                            <div>
+                              <div style={styles.subtleText}>Recommended Safe Action</div>
+                              <div style={{ marginTop: 6, fontSize: 13, color: "#e2e8f0", lineHeight: 1.5 }}>
+                                {promptTranslationPreview.recommended_safe_action || "No safe action recorded."}
+                              </div>
+                            </div>
+                            <div>
+                              <div style={styles.subtleText}>Translated Instruction</div>
+                              <div style={{ ...styles.previewBox, marginTop: 6 }}>
+                                <div style={{ fontSize: 13, color: "#e2e8f0", lineHeight: 1.5 }}>
+                                  {promptTranslationPreview.translated_instruction || "No translated instruction recorded."}
+                                </div>
+                              </div>
+                            </div>
+                            <div>
+                              <div style={styles.subtleText}>Missing Requirements</div>
+                              <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap" as const, gap: 8 }}>
+                                {promptTranslationPreview.sufficiency?.missing_requirements?.length ? (
+                                  promptTranslationPreview.sufficiency.missing_requirements.map((requirement) => (
+                                    <span key={requirement} style={{ ...styles.badge, ...styles.badgeWarn }}>
+                                      {requirement}
+                                    </span>
+                                  ))
+                                ) : (
+                                  <span style={{ ...styles.badge, ...styles.badgeGood }}>Nothing missing from translator input</span>
+                                )}
+                              </div>
+                            </div>
+                            {promptTranslationPreview.notes?.length ? (
+                              <div>
+                                <div style={styles.subtleText}>Notes</div>
+                                <div style={{ marginTop: 6, display: "flex", flexDirection: "column" as const, gap: 6 }}>
+                                  {promptTranslationPreview.notes.map((note) => (
+                                    <div key={note} style={{ fontSize: 12, color: "#94a3b8", lineHeight: 1.5 }}>
+                                      {note}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
+                          </div>
+                          <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" as const }}>
+                            <motion.button
+                              type="button"
+                              onClick={copyTranslatedInstruction}
+                              style={styles.secondaryButton}
+                              whileHover={{ scale: 1.02 }}
+                              whileTap={{ scale: 0.98 }}
+                            >
+                              Copy Instruction
+                            </motion.button>
+                            <motion.button
+                              type="button"
+                              onClick={stageTranslatedInstructionForMissionInput}
+                              style={styles.secondaryButton}
+                              whileHover={{ scale: 1.02 }}
+                              whileTap={{ scale: 0.98 }}
+                            >
+                              Send to Mission Draft
+                            </motion.button>
+                            <motion.button
+                              type="button"
+                              onClick={stageTranslatedInstructionForChat}
+                              style={styles.secondaryButton}
+                              whileHover={{ scale: 1.02 }}
+                              whileTap={{ scale: 0.98 }}
+                            >
+                              Use in Chat Draft
+                            </motion.button>
+                            <motion.button
+                              type="button"
+                              onClick={stageProposedMissionDraft}
+                              style={styles.secondaryButton}
+                              whileHover={{ scale: 1.02 }}
+                              whileTap={{ scale: 0.98 }}
+                            >
+                              Create Proposed Mission Draft
+                            </motion.button>
+                            <motion.button
+                              type="button"
+                              onClick={discardPromptTranslation}
+                              style={styles.secondaryButton}
+                              whileHover={{ scale: 1.02 }}
+                              whileTap={{ scale: 0.98 }}
+                            >
+                              Discard
+                            </motion.button>
+                          </div>
+                          <div style={{ marginTop: 10, ...styles.subtleText }}>
+                            Not yet executed. These actions only copy or stage text for operator review.
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
 
                   <div style={styles.recordCard}>

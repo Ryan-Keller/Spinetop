@@ -1,5 +1,5 @@
 ﻿{
-    "updated_at":  "2026-04-05T16:56:39.5119300-07:00",
+    "updated_at":  "2026-04-05T20:31:14.1584340-07:00",
     "repo_root":  "D:\\spine_desk\\Spinetop",
     "ui_root":  "D:\\spine_desk\\Spinetop\\ui",
     "wsl_distro":  "Ubuntu-24.04",
@@ -35,7 +35,7 @@
     "lan_proxy":  {
                       "name":  "frontend-lan-proxy",
                       "pid_file":  "D:\\spine_desk\\Spinetop\\services\\launcher\\state\\frontend-lan-proxy.pid",
-                      "pid":  181564,
+                      "pid":  197672,
                       "platform":  "windows",
                       "port":  5173,
                       "port_open":  true,
@@ -49,20 +49,20 @@
     "backend":  {
                     "name":  "backend",
                     "pid_file":  "D:\\spine_desk\\Spinetop\\services\\launcher\\state\\backend.pid",
-                    "pid":  827,
+                    "pid":  15718,
                     "platform":  "wsl",
                     "port":  5051,
-                    "port_open":  true,
+                    "port_open":  false,
                     "state":  "running",
                     "detail":  "launcher-owned process alive"
                 },
     "frontend":  {
                      "name":  "frontend",
                      "pid_file":  "D:\\spine_desk\\Spinetop\\services\\launcher\\state\\frontend.pid",
-                     "pid":  1004,
+                     "pid":  15805,
                      "platform":  "wsl",
                      "port":  5173,
-                     "port_open":  true,
+                     "port_open":  false,
                      "state":  "running",
                      "detail":  "launcher-owned process alive"
                  },

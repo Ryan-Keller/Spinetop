@@ -29,6 +29,7 @@ from state_machine import (
 )
 from governance_utils import can_bridge_to_honcho, read_nanny_state, read_return_all_state
 from helper_model_runtime import load_helper_runtime_profile
+from prompt_translator import read_prompt_translations, translate_and_store_prompt
 from review_and_submit_petition import build_review_payload, validate_draft_petition
 from run_hermes_v1 import (
     extract_json_candidate,
@@ -731,6 +732,10 @@ def _read_mirror_notes(mission_id: str) -> list[dict[str, Any]]:
             "path": path.relative_to(ROOT).as_posix(),
         })
     return rows
+
+
+def _read_prompt_translations(mission_id: str) -> list[dict[str, Any]]:
+    return read_prompt_translations(normalize_mission_id(mission_id))
 
 
 def _read_operator_interventions(mission_id: str) -> list[dict[str, Any]]:
@@ -3412,6 +3417,7 @@ def _safe_operator_actions(
     *,
     parking_status: dict[str, Any],
     summary_preview: dict[str, Any],
+    queue_hygiene: dict[str, Any] | None = None,
     last_blocked_reason: str,
     retry_ledger: dict[str, Any],
     latest_runner_return: dict[str, Any] | None,
@@ -3427,6 +3433,7 @@ def _safe_operator_actions(
             actions.append(action_text)
 
     parked = str(parking_status.get("status") or "active") == "parked"
+    hygiene = queue_hygiene if isinstance(queue_hygiene, dict) else {}
     blocked_questions = [str(item).strip() for item in summary_preview.get("blocking_questions", []) if str(item).strip()]
     blocked_reason = str(summary_preview.get("blocked_reason") or last_blocked_reason or "").strip()
     operator_posture = str(summary_preview.get("operator_posture") or "").strip()
@@ -3441,6 +3448,8 @@ def _safe_operator_actions(
     add("retry bounded action", condition=retry_available and _suggests_retry(latest_runner_return))
     add("clear stale pending handoff", condition=isinstance(active_handoff, dict) and str(active_handoff.get("status") or "").strip() == "blocked")
     add("inspect mirror note", condition=isinstance(latest_mirror_note, dict) and bool(latest_mirror_note.get("path")))
+    add("park mission", condition=bool(hygiene.get("stale_candidate")) and not parked and not bool(hygiene.get("review_ready")))
+    add("mark archive candidate", condition=bool(hygiene.get("archive_candidate")))
 
     if isinstance(active_handoff, dict) and str(active_handoff.get("status") or "").strip() in {"pending", "active"}:
         action = str(active_handoff.get("allowed_action") or "").strip()
@@ -3610,6 +3619,8 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
     runner_returns = _read_runner_returns(mission)
     latest_runner_return = runner_returns[0] if runner_returns else None
     mirror_notes = _read_mirror_notes(mission)
+    prompt_translations = _read_prompt_translations(mission)
+    latest_prompt_translation = prompt_translations[0] if prompt_translations else None
     trigger_records = _read_trigger_records(mission)
     latest_trigger = trigger_records[0] if trigger_records else None
     pending_triggers = [item for item in trigger_records if str(item.get("status") or "") == "pending"]
@@ -3689,6 +3700,37 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
         mission_dir / "working_memory.json",
         *[ROOT / str(item.get("path") or "") for item in workbench_files if str(item.get("path") or "").strip()],
     ])
+    queue_hygiene = _queue_hygiene_flags(
+        {
+            "mission_id": mission,
+            "objective": objective,
+            "current_state": current_state,
+            "status_badge": status_badge,
+            "created_at": str(brief.get("created_at") or (manifest or {}).get("created_at") or ""),
+            "last_updated": last_updated,
+            "mission_summary": summary_preview,
+            "operator_posture": str(summary_preview.get("operator_posture") or ""),
+            "triage_bucket": str(summary_preview.get("triage_bucket") or ""),
+            "parking_status": parking_status,
+            "control_tower_summary": control_tower_summary,
+        },
+        duplicate_count=1,
+        duplicate_rank=1,
+        primary_mission_id=mission,
+        primary_last_updated=last_updated,
+        normalized_objective=_normalize_mission_objective(objective),
+    )
+    control_tower_summary["safe_operator_actions"] = _safe_operator_actions(
+        parking_status=parking_status,
+        summary_preview=summary_preview,
+        queue_hygiene=queue_hygiene,
+        last_blocked_reason=str(control_tower_summary.get("last_blocked_reason") or ""),
+        retry_ledger=retry_ledger,
+        latest_runner_return=latest_runner_return,
+        latest_mirror_note=mirror_notes[0] if mirror_notes else None,
+        pending_helper_syncs=_pending_runner_return_sync_count(mission),
+        active_handoff=trigger_handoff,
+    )
 
     return {
         "mission_id": mission,
@@ -3734,8 +3776,12 @@ def _build_expedition_detail(mission_id: str) -> dict[str, Any]:
         "blocking_questions": list(summary_preview.get("blocking_questions") or []),
         "operator_options": list(summary_preview.get("operator_options") or []),
         "triage_bucket": str(summary_preview.get("triage_bucket") or ""),
+        "queue_hygiene": queue_hygiene,
         "mission_summary": summary_preview,
         "mirror_notes": mirror_notes[:10],
+        "latest_prompt_translation": latest_prompt_translation,
+        "prompt_translation_count": len(prompt_translations),
+        "prompt_translations": prompt_translations[:10],
         "mission_inputs": mission_inputs,
         "mission_chat": mission_chat,
         "workbench": {
@@ -3793,6 +3839,8 @@ def _control_tower_intervention_reason(action: str, detail: dict[str, Any]) -> s
             or str(mission_summary.get("blocked_reason") or "").strip()
             or "operator cleared a stale blocked handoff from control tower"
         )
+    if action_key == "mark_archive_candidate":
+        return "operator explicitly marked this mission as an archive-review candidate in mission-local notes"
     return "operator intervention from control tower"
 
 
@@ -3811,6 +3859,7 @@ def _apply_control_tower_intervention(
         "refresh_assumptions",
         "sync_helper_returns",
         "clear_stale_pending_handoff",
+        "mark_archive_candidate",
     }:
         raise ValueError("unsupported intervention")
 
@@ -3890,6 +3939,25 @@ def _apply_control_tower_intervention(
             )
             changed_paths.append(_trigger_handoff_path(mission).relative_to(ROOT).as_posix())
             outcome = {"handoff": cleared}
+    elif action_key == "mark_archive_candidate":
+        hygiene = detail.get("queue_hygiene") if isinstance(detail.get("queue_hygiene"), dict) else {}
+        if not bool(hygiene.get("archive_candidate")):
+            blocked_reason = "mission does not currently meet archive-candidate heuristics"
+        else:
+            marker_path = _interventions_dir(mission, ensure=True) / "archive_candidate.json"
+            marker = {
+                "mission_id": mission,
+                "status": "archive_candidate",
+                "marked_at": iso_now(),
+                "marked_by": "operator",
+                "reason": effective_reason,
+                "recommended_action": str(hygiene.get("recommended_action") or ""),
+                "signals": [str(item).strip() for item in hygiene.get("signals", []) if str(item).strip()][:6],
+                "derived_only": True,
+            }
+            _write_json(marker_path, marker)
+            changed_paths.append(marker_path.relative_to(ROOT).as_posix())
+            outcome = {"archive_candidate": marker}
 
     status = "blocked" if blocked_reason else "applied"
     intervention = _append_operator_intervention(
@@ -3931,6 +3999,7 @@ def _list_expeditions() -> tuple[list[dict[str, Any]], dict[str, Any]]:
             "duplicate_groups": 0,
             "duplicate_candidates": 0,
             "hidden_duplicate_count": 0,
+            "queue_summary": _queue_summary_from_items([]),
         }
 
     missions: list[dict[str, Any]] = []
@@ -3956,6 +4025,9 @@ def _list_expeditions() -> tuple[list[dict[str, Any]], dict[str, Any]]:
             "operator_posture": str(detail.get("operator_posture") or ""),
             "triage_bucket": str(detail.get("triage_bucket") or ""),
             "operator_posture_reason": str(detail.get("operator_posture_reason") or ""),
+            "mission_summary": detail.get("mission_summary") if isinstance(detail.get("mission_summary"), dict) else {},
+            "parking_status": detail.get("parking_status") if isinstance(detail.get("parking_status"), dict) else {},
+            "control_tower_summary": detail.get("control_tower_summary") if isinstance(detail.get("control_tower_summary"), dict) else {},
             "path": mission_dir.relative_to(ROOT).as_posix(),
         })
 
@@ -3975,7 +4047,7 @@ def _list_expeditions() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     for group_key, items in grouped.items():
         items.sort(
             key=lambda item: (
-                str(item.get("last_updated") or ""),
+                _queue_sort_timestamp(item),
                 str(item.get("created_at") or ""),
                 str(item.get("mission_id") or ""),
             ),
@@ -3987,6 +4059,7 @@ def _list_expeditions() -> tuple[list[dict[str, Any]], dict[str, Any]]:
             grouped_counts["duplicate_candidates"] += duplicate_count
             grouped_counts["hidden_duplicate_count"] += duplicate_count - 1
 
+        primary = items[0]
         for rank, item in enumerate(items, start=1):
             item["duplicate_group_key"] = group_key
             item["duplicate_count"] = duplicate_count
@@ -3994,10 +4067,20 @@ def _list_expeditions() -> tuple[list[dict[str, Any]], dict[str, Any]]:
             item["is_duplicate_candidate"] = duplicate_count > 1
             item["is_group_primary"] = rank == 1
             item["duplicate_of_mission_id"] = None if rank == 1 else items[0]["mission_id"]
+            item["queue_hygiene"] = _queue_hygiene_flags(
+                item,
+                duplicate_count=duplicate_count,
+                duplicate_rank=rank,
+                primary_mission_id=str(primary.get("mission_id") or ""),
+                primary_last_updated=_queue_sort_timestamp(primary),
+                normalized_objective=str(item.get("objective_normalized") or ""),
+            )
+            item["recommended_queue_action"] = str((item["queue_hygiene"] or {}).get("recommended_action") or "")
+            item["queue_action_reason"] = str((item["queue_hygiene"] or {}).get("recommendation_reason") or "")
 
     missions.sort(
         key=lambda item: (
-            str(item.get("last_updated") or ""),
+            _queue_sort_timestamp(item),
             str(item.get("created_at") or ""),
             str(item.get("mission_id") or ""),
         ),
@@ -4010,6 +4093,7 @@ def _list_expeditions() -> tuple[list[dict[str, Any]], dict[str, Any]]:
             str(item.get("duplicate_rank") or 0),
         )
     )
+    grouped_counts["queue_summary"] = _queue_summary_from_items(missions)
 
     return missions, grouped_counts
 
@@ -4069,6 +4153,166 @@ def parse_iso(value: str) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except Exception:
         return None
+
+
+QUEUE_STALE_DAYS = 7
+QUEUE_LONG_PARKED_DAYS = 14
+QUEUE_BLOCKED_IDLE_DAYS = 5
+QUEUE_JUNK_OBJECTIVE_RE = re.compile(
+    r"^(?:test|tmp|temp|temporary|debug|scratch|demo|dummy|junk|throwaway|foo|bar|asdf)\b"
+)
+
+
+def _days_since(timestamp: str, *, now: datetime | None = None) -> float | None:
+    parsed = parse_iso(timestamp)
+    if parsed is None:
+        return None
+    current = now or datetime.now(timezone.utc)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return max(0.0, (current - parsed).total_seconds() / 86400.0)
+
+
+def _queue_last_activity_at(detail: dict[str, Any]) -> str:
+    mission_summary = detail.get("mission_summary") if isinstance(detail.get("mission_summary"), dict) else {}
+    parking_status = detail.get("parking_status") if isinstance(detail.get("parking_status"), dict) else {}
+    candidates = [
+        str(mission_summary.get("last_operator_reply_at") or "").strip(),
+        str(parking_status.get("updated_at") or "").strip(),
+        str(detail.get("last_updated") or "").strip(),
+        str(detail.get("created_at") or "").strip(),
+    ]
+    return next((value for value in candidates if value), "")
+
+
+def _queue_sort_timestamp(detail: dict[str, Any]) -> str:
+    return _queue_last_activity_at(detail) or str(detail.get("created_at") or "").strip() or str(detail.get("last_updated") or "").strip()
+
+
+def _queue_hygiene_flags(
+    detail: dict[str, Any],
+    *,
+    duplicate_count: int,
+    duplicate_rank: int,
+    primary_mission_id: str,
+    primary_last_updated: str,
+    normalized_objective: str,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    mission_summary = detail.get("mission_summary") if isinstance(detail.get("mission_summary"), dict) else {}
+    parking_status = detail.get("parking_status") if isinstance(detail.get("parking_status"), dict) else {}
+    control_tower_summary = detail.get("control_tower_summary") if isinstance(detail.get("control_tower_summary"), dict) else {}
+    current_state = str(detail.get("current_state") or "").strip()
+    operator_posture = str(detail.get("operator_posture") or mission_summary.get("operator_posture") or "").strip()
+    triage_bucket = str(detail.get("triage_bucket") or mission_summary.get("triage_bucket") or "").strip()
+    status_badge = str(detail.get("status_badge") or "").strip()
+    blocked_reason = str(mission_summary.get("blocked_reason") or control_tower_summary.get("last_blocked_reason") or "").strip()
+    objective = str(detail.get("objective") or "").strip()
+    parked = str(parking_status.get("status") or "active").strip() == "parked" or operator_posture == "parked" or triage_bucket == "parked"
+    review_ready = (
+        status_badge == "ready_for_review"
+        or triage_bucket == "review"
+        or current_state in {"PACKAGE_READY", "BRIDGE_CONSIDERATION", "ARCHIVE_REVIEW"}
+    )
+    blocked = not parked and (
+        operator_posture == "needs_operator_answer"
+        or triage_bucket == "waiting"
+        or (status_badge == "waiting_for_user" and not review_ready)
+    )
+    last_activity_at = _queue_last_activity_at(detail)
+    last_activity_age_days = _days_since(last_activity_at, now=now)
+    parked_age_days = _days_since(str(parking_status.get("parked_at") or "").strip(), now=now)
+    stale_candidate = bool(last_activity_age_days is not None and last_activity_age_days >= QUEUE_STALE_DAYS and not review_ready)
+    long_parked = bool(parked and parked_age_days is not None and parked_age_days >= QUEUE_LONG_PARKED_DAYS)
+    blocked_without_new_input = bool(blocked and last_activity_age_days is not None and last_activity_age_days >= QUEUE_BLOCKED_IDLE_DAYS)
+    superseded_by_newer_similar = bool(
+        duplicate_count > 1
+        and duplicate_rank > 1
+        and primary_mission_id
+        and primary_mission_id != str(detail.get("mission_id") or "")
+        and str(primary_last_updated or "") >= _queue_sort_timestamp(detail)
+    )
+    junk_pattern = bool(normalized_objective and len(normalized_objective) <= 48 and QUEUE_JUNK_OBJECTIVE_RE.match(normalized_objective))
+    archive_candidate = bool(
+        long_parked
+        or superseded_by_newer_similar
+        or (junk_pattern and stale_candidate)
+        or (current_state in {"MISSION_CLOSED", "ARCHIVE_REVIEW"} and stale_candidate)
+    )
+
+    signals: list[str] = []
+    if duplicate_count > 1:
+        signals.append(f"{duplicate_count} missions share the same normalized objective.")
+    if stale_candidate and last_activity_age_days is not None:
+        signals.append(f"No recent mission-local activity for {round(last_activity_age_days, 1)} day(s).")
+    if long_parked and parked_age_days is not None:
+        signals.append(f"Mission has been parked for {round(parked_age_days, 1)} day(s).")
+    if blocked_without_new_input:
+        signals.append("Mission is blocked and has not received fresh operator input recently.")
+    if superseded_by_newer_similar:
+        signals.append(f"A newer similar mission ({primary_mission_id}) looks like the active primary.")
+    if junk_pattern:
+        signals.append("Objective matches a safely identifiable test-like or throwaway pattern.")
+    if review_ready:
+        signals.append("Mission already has a review-ready posture.")
+
+    recommended_action = "inspect before action"
+    recommendation_reason = "The mission needs operator review before any queue cleanup decision."
+    if review_ready:
+        recommended_action = "inspect before action"
+        recommendation_reason = "Review-ready missions should be checked before parking or archiving."
+    elif archive_candidate:
+        recommended_action = "archive candidate"
+        recommendation_reason = "Signals suggest this mission can be marked for archive review without deleting anything."
+    elif superseded_by_newer_similar or (duplicate_count > 1 and duplicate_rank > 1):
+        recommended_action = "collapse duplicate"
+        recommendation_reason = "This mission appears to be a duplicate or follower in a similar-objective group."
+    elif stale_candidate and not parked:
+        recommended_action = "park"
+        recommendation_reason = "This mission looks stale enough to quiet safely without removing it."
+    elif not blocked and not parked:
+        recommended_action = "keep active"
+        recommendation_reason = "This mission still looks like an active working queue item."
+
+    return {
+        "last_activity_at": last_activity_at,
+        "last_activity_age_days": None if last_activity_age_days is None else round(last_activity_age_days, 2),
+        "parked_age_days": None if parked_age_days is None else round(parked_age_days, 2),
+        "duplicate_candidate": duplicate_count > 1,
+        "stale_candidate": stale_candidate,
+        "blocked_candidate": blocked,
+        "parked_candidate": parked,
+        "review_ready": review_ready,
+        "archive_candidate": archive_candidate,
+        "superseded_by_newer_similar": superseded_by_newer_similar,
+        "junk_pattern": junk_pattern,
+        "signals": signals[:6],
+        "recommended_action": recommended_action,
+        "recommendation_reason": recommendation_reason,
+    }
+
+
+def _queue_summary_from_items(items: list[dict[str, Any]]) -> dict[str, Any]:
+    total_queued = len(items)
+    parked = sum(1 for item in items if bool((item.get("queue_hygiene") or {}).get("parked_candidate")))
+    blocked = sum(1 for item in items if bool((item.get("queue_hygiene") or {}).get("blocked_candidate")))
+    review_ready = sum(1 for item in items if bool((item.get("queue_hygiene") or {}).get("review_ready")))
+    duplicate_candidates = sum(
+        1 for item in items if bool((item.get("queue_hygiene") or {}).get("duplicate_candidate")) and not bool(item.get("is_group_primary"))
+    )
+    stale_candidates = sum(1 for item in items if bool((item.get("queue_hygiene") or {}).get("stale_candidate")))
+    archive_candidates = sum(1 for item in items if bool((item.get("queue_hygiene") or {}).get("archive_candidate")))
+    active = max(0, total_queued - parked - blocked - review_ready)
+    return {
+        "total_queued": total_queued,
+        "active": active,
+        "parked": parked,
+        "blocked": blocked,
+        "duplicate_candidates": duplicate_candidates,
+        "stale_candidates": stale_candidates,
+        "review_ready": review_ready,
+        "archive_close_candidates": archive_candidates,
+    }
 
 
 def is_bypass_allowed(petition: dict[str, Any], return_all: dict[str, Any]) -> bool:
@@ -5015,6 +5259,7 @@ def api_expeditions_list():
         "source_root": _safe_relative_path(EXPEDITIONS_ACTIVE_DIR),
         "items": items,
         "grouped_counts": grouped_counts,
+        "queue_summary": grouped_counts.get("queue_summary") if isinstance(grouped_counts, dict) else _queue_summary_from_items([]),
     })
 
 
@@ -5265,6 +5510,7 @@ def api_expedition_input(mission_id: str):
         latest_packet,
     )
     item = _write_mission_input(mission, content)
+    translation = translate_and_store_prompt(content, mission_id=mission)
     _refresh_working_memory(mission, operator_text=content, operator_reply_at=str(item.get("created_at") or ""), source="mission intake")
     after_sufficient, _ = _is_sufficient_to_proceed(
         objective,
@@ -5284,7 +5530,36 @@ def api_expedition_input(mission_id: str):
     return jsonify({
         "ok": True,
         "item": item,
+        "translation": translation,
         "trigger": trigger,
+        "mission": _build_expedition_detail(mission),
+    })
+
+
+@app.post("/api/expeditions/<mission_id>/translate-prompt")
+def api_expedition_translate_prompt(mission_id: str):
+    try:
+        mission = normalize_mission_id(mission_id)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    if not _mission_exists(mission):
+        return jsonify({"ok": False, "error": "mission not found"}), 404
+    try:
+        payload = request.get_json(force=True) or {}
+    except Exception:
+        payload = {}
+
+    content = str(payload.get("content") or payload.get("text") or "").strip()
+    if not content:
+        return jsonify({
+            "ok": False,
+            "error": "content is required",
+        }), 400
+
+    translation = translate_and_store_prompt(content, mission_id=mission)
+    return jsonify({
+        "ok": True,
+        "translation": translation,
         "mission": _build_expedition_detail(mission),
     })
 
@@ -5385,6 +5660,7 @@ def api_expedition_interventions(mission_id: str):
                 "refresh_assumptions",
                 "sync_helper_returns",
                 "clear_stale_pending_handoff",
+                "mark_archive_candidate",
             ],
         }), 400
     if not result["ok"]:
