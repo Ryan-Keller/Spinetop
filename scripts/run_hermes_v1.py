@@ -622,7 +622,14 @@ def load_provider_profile(runtime_config: dict[str, Any], provider: str) -> dict
     return profile
 
 
-def invoke_model(model_key: str, prompt: str, runtime_config: dict[str, Any]) -> str:
+def invoke_model(
+    model_key: str,
+    prompt: str,
+    runtime_config: dict[str, Any],
+    *,
+    system_prompt: str | None = None,
+    response_format: str = "json_object",
+) -> str:
     models = load_model_registry()
     if model_key not in models:
         raise ValueError(f"Unknown model key: {model_key}")
@@ -643,6 +650,13 @@ def invoke_model(model_key: str, prompt: str, runtime_config: dict[str, Any]) ->
 
     temperature = float(mode_safe_settings.get("temperature", 0.2)) if isinstance(mode_safe_settings, dict) else 0.2
     timeout_seconds = int(provider_profile.get("timeout_seconds", mode_safe_settings.get("timeout_seconds", 120))) if isinstance(mode_safe_settings, dict) else int(provider_profile.get("timeout_seconds", 120))
+    if response_format not in {"json_object", "text"}:
+        raise ValueError(f"Unsupported response_format: {response_format}")
+    resolved_system_prompt = (
+        system_prompt.strip()
+        if isinstance(system_prompt, str) and system_prompt.strip()
+        else "Return only a JSON object that matches the Sentinel-Spinetop v1 run schema. No markdown, no code fences, no commentary."
+    )
 
     if provider == "ollama":
         base_url = str(provider_profile.get("base_url") or "").strip()
@@ -660,15 +674,16 @@ def invoke_model(model_key: str, prompt: str, runtime_config: dict[str, Any]) ->
         body = {
             "model": model_name,
             "messages": [
-                {"role": "system", "content": "Return only a JSON object that matches the Sentinel-Spinetop v1 run schema. No markdown, no code fences, no commentary."},
+                {"role": "system", "content": resolved_system_prompt},
                 {"role": "user", "content": prompt},
             ],
             "stream": False,
-            "format": "json",
             "options": {
                 "temperature": temperature,
             },
         }
+        if response_format == "json_object":
+            body["format"] = "json"
         req = urllib.request.Request(
             url,
             data=json.dumps(body).encode("utf-8"),
@@ -698,12 +713,13 @@ def invoke_model(model_key: str, prompt: str, runtime_config: dict[str, Any]) ->
         body = {
             "model": model_name,
             "messages": [
-                {"role": "system", "content": "Return only a JSON object that matches the Sentinel-Spinetop v1 run schema. No markdown, no code fences, no commentary."},
+                {"role": "system", "content": resolved_system_prompt},
                 {"role": "user", "content": prompt},
             ],
             "temperature": temperature,
-            "response_format": {"type": "json_object"},
         }
+        if response_format == "json_object":
+            body["response_format"] = {"type": "json_object"}
         req = urllib.request.Request(
             url,
             data=json.dumps(body).encode("utf-8"),

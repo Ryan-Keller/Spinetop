@@ -10,6 +10,7 @@ from typing import Any
 from helper_model_runtime import load_helper_runtime_profile
 import support_orchestration
 from repo_paths import repo_root
+from run_hermes_v1 import extract_json_candidate, invoke_model, load_hermes_runtime_config
 from support_validation import (
     normalize_write_scope,
     require_object,
@@ -64,6 +65,7 @@ CONTRACT = {
     "runtime_role": RUNTIME_ROLE,
     "runtime_profile": {
         "role_description": HELPER_RUNTIME_PROFILE.role_description,
+        "active": HELPER_RUNTIME_PROFILE.active,
         "execution_backend": HELPER_RUNTIME_PROFILE.execution_backend,
         "allowed_model_keys": HELPER_RUNTIME_PROFILE.allowed_model_keys,
         "default_model_key": HELPER_RUNTIME_PROFILE.default_model_key,
@@ -126,6 +128,12 @@ def _load_json(path: Path) -> Any:
 def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _append_jsonl(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(data, ensure_ascii=False) + "\n")
 
 
 def _path_to_ref(path: Path) -> str:
@@ -280,7 +288,11 @@ def _thinking_target(output_path: Path) -> Path:
     return output_path.with_name(output_path.name + ".thinking.json")
 
 
-def _build_helper_thinking(
+def _helper_model_log_path() -> Path:
+    return ROOT / "logs" / "support" / "helper_model_invocations.jsonl"
+
+
+def _build_scripted_helper_thinking(
     instance: dict[str, Any],
     *,
     receipt_status: str,
@@ -339,7 +351,209 @@ def _build_helper_thinking(
         "highlighted_contradictions": contradictions,
         "separation_note": str(HELPER_RUNTIME_PROFILE.behavior_contract.get("separation_rule") or "").strip(),
         "derived_only": True,
+        "model_binding": {
+            "role_id": HELPER_RUNTIME_PROFILE.role_id,
+            "execution_backend": HELPER_RUNTIME_PROFILE.execution_backend,
+            "model_key": HELPER_RUNTIME_PROFILE.default_model_key,
+            "fallback_model_key": HELPER_RUNTIME_PROFILE.fallback_model_key,
+            "provider_requirement": HELPER_RUNTIME_PROFILE.provider_requirement,
+            "active": False,
+            "source": "disabled_safe_scripted_fallback",
+        },
     }
+
+
+def _helper_model_binding() -> dict[str, Any]:
+    return {
+        "role_id": HELPER_RUNTIME_PROFILE.role_id,
+        "active_flag": HELPER_RUNTIME_PROFILE.active,
+        "execution_backend": HELPER_RUNTIME_PROFILE.execution_backend,
+        "model_key": HELPER_RUNTIME_PROFILE.default_model_key,
+        "fallback_model_key": HELPER_RUNTIME_PROFILE.fallback_model_key,
+        "provider_requirement": HELPER_RUNTIME_PROFILE.provider_requirement,
+        "active": HELPER_RUNTIME_PROFILE.active
+        and HELPER_RUNTIME_PROFILE.execution_backend == "model_backed"
+        and bool(HELPER_RUNTIME_PROFILE.default_model_key),
+    }
+
+
+def _helper_model_prompt(
+    instance: dict[str, Any],
+    *,
+    receipt_status: str,
+    receipt_reason: str,
+    step_transcript: list[dict[str, Any]],
+) -> str:
+    prompt = {
+        "role": "Spinetop-helper_2b",
+        "task": "Produce internal tactical helper thinking only.",
+        "constraints": {
+            "may": [
+                "summarize mission-local context",
+                "suggest next checks",
+                "highlight contradictions",
+            ],
+            "must_not": [
+                "replace runner return",
+                "write mission truth",
+                "act as Expeditioner",
+                "write to an assumption ledger",
+                "write to a mission summary",
+            ],
+            "output_target": "helper_internal_thinking sidecar only",
+        },
+        "instance": {
+            "helper_id": instance["helper_id"],
+            "helper_type": instance["helper_type"],
+            "mandate_id": instance["mandate_id"],
+            "task_scope": instance["task_scope"],
+            "requested_by": instance["requested_by"],
+            "return_lane": instance["return_lane"],
+            "task_plan": list(instance.get("task_plan") or []),
+            "receipt_status": receipt_status,
+            "receipt_reason": receipt_reason,
+            "step_transcript": step_transcript,
+        },
+        "required_output_schema": {
+            "current_context": ["string"],
+            "key_observations": ["string"],
+            "possible_next_steps": ["string"],
+            "open_questions": ["string"],
+            "highlighted_contradictions": ["string"],
+        },
+    }
+    return json.dumps(prompt, indent=2, ensure_ascii=False)
+
+
+def _normalize_string_list(value: Any, *, field: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise RunnerHelperError(f"Model field '{field}' must be a list")
+    out: list[str] = []
+    for idx, item in enumerate(value):
+        if not isinstance(item, str):
+            raise RunnerHelperError(f"Model field '{field}' item {idx} must be a string")
+        text = item.strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def _build_model_helper_thinking(
+    instance: dict[str, Any],
+    *,
+    receipt_status: str,
+    receipt_reason: str,
+    step_transcript: list[dict[str, Any]],
+) -> dict[str, Any]:
+    binding = _helper_model_binding()
+    fallback = _build_scripted_helper_thinking(
+        instance,
+        receipt_status=receipt_status,
+        receipt_reason=receipt_reason,
+        step_transcript=step_transcript,
+    )
+    if not binding["active"]:
+        return fallback
+
+    runtime_config = load_hermes_runtime_config()
+    prompt = _helper_model_prompt(
+        instance,
+        receipt_status=receipt_status,
+        receipt_reason=receipt_reason,
+        step_transcript=step_transcript,
+    )
+    try:
+        raw = invoke_model(
+            str(binding["model_key"]),
+            prompt,
+            runtime_config,
+            system_prompt=(
+                "You are Spinetop-helper_2b. Return only a JSON object for internal helper thinking. "
+                "Do not write mission truth, do not output runner receipts, and do not act as Expeditioner."
+            ),
+            response_format="json_object",
+        )
+        candidate = extract_json_candidate(raw)
+        payload = json.loads(candidate)
+        current_context = _normalize_string_list(payload.get("current_context"), field="current_context")
+        key_observations = _normalize_string_list(payload.get("key_observations"), field="key_observations")
+        possible_next_steps = _normalize_string_list(payload.get("possible_next_steps"), field="possible_next_steps")
+        open_questions = _normalize_string_list(payload.get("open_questions"), field="open_questions")
+        contradictions = _normalize_string_list(
+            payload.get("highlighted_contradictions"),
+            field="highlighted_contradictions",
+        )
+        model_artifact = {
+            "helper_id": instance["helper_id"],
+            "helper_type": instance["helper_type"],
+            "role_id": RUNTIME_ROLE,
+            "artifact_kind": "helper_internal_thinking",
+            "thinking_style": list(HELPER_RUNTIME_PROFILE.behavior_contract.get("thinking_style") or []),
+            "output_structure": list(HELPER_RUNTIME_PROFILE.behavior_contract.get("output_structure") or []),
+            "current_context": current_context,
+            "key_observations": key_observations,
+            "possible_next_steps": possible_next_steps,
+            "open_questions": open_questions,
+            "highlighted_contradictions": contradictions,
+            "separation_note": str(HELPER_RUNTIME_PROFILE.behavior_contract.get("separation_rule") or "").strip(),
+            "derived_only": True,
+            "model_binding": {
+                **binding,
+                "active": True,
+                "source": "model",
+            },
+        }
+        _append_jsonl(
+            _helper_model_log_path(),
+            {
+                "timestamp": utc_now_iso(),
+                "role": RUNTIME_ROLE,
+                "helper_id": instance["helper_id"],
+                "status": "success",
+                "model_key": binding["model_key"],
+                "task_scope": instance["task_scope"],
+                "artifact_kind": "helper_internal_thinking",
+            },
+        )
+        return model_artifact
+    except Exception as exc:
+        fallback["model_binding"] = {
+            **binding,
+            "active": False,
+            "source": "model_failure_fallback",
+            "error": str(exc),
+        }
+        _append_jsonl(
+            _helper_model_log_path(),
+            {
+                "timestamp": utc_now_iso(),
+                "role": RUNTIME_ROLE,
+                "helper_id": instance["helper_id"],
+                "status": "failure",
+                "model_key": binding["model_key"],
+                "task_scope": instance["task_scope"],
+                "artifact_kind": "helper_internal_thinking",
+                "error": str(exc),
+            },
+        )
+        return fallback
+
+
+def _build_helper_thinking(
+    instance: dict[str, Any],
+    *,
+    receipt_status: str,
+    receipt_reason: str,
+    step_transcript: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return _build_model_helper_thinking(
+        instance,
+        receipt_status=receipt_status,
+        receipt_reason=receipt_reason,
+        step_transcript=step_transcript,
+    )
 
 
 def run_instance(instance_path: Path) -> int:

@@ -7,13 +7,14 @@
   "roles": {
     "spinetop_expeditioner": {
       "role_description": "Spinetop-Expeditioner is the mission-doing worker for useful first-pass derived outputs inside mission-local and workbench lanes.",
-      "execution_backend": "scripted",
+      "active": false,
+      "execution_backend": "model_backed",
       "allowed_model_keys": [
         "local_onboarding_gemma4_e4b_4k",
         "local_production_qwen2_5_coder_14b"
       ],
-      "default_model_key": "",
-      "fallback_model_key": "",
+      "default_model_key": "local_production_qwen2_5_coder_14b",
+      "fallback_model_key": "local_production_qwen2_5_coder_14b",
       "provider_requirement": "local_only",
       "mapped_helpers": [
         "retrieval_helper_2b",
@@ -100,20 +101,21 @@
         "Expeditioner should attempt a bounded first pass with the context in hand instead of defaulting to clarification.",
         "If the mission is sufficient to proceed, Expeditioner should move forward under explicit assumptions and refine later only if needed.",
         "Expeditioner outputs should stay lightweight and human-readable: first-pass answer first, assumptions only if any, and next steps only when helpful.",
-        "Set execution_backend to model_backed and choose a local model key only after operator approval.",
+        "Execution backend is operator-approved for bounded first-pass mission answers through the existing local model seam.",
         "If runtime is inactive, Expeditioner stays disabled-safe and falls back to scripted bounded receipts only.",
         "Scripted return packets remain the mirror-visible path even if a helper later reasons with a local model internally."
       ]
     },
     "spinetop-helper_2b": {
       "role_description": "Spinetop-helper_2b is the field-side mini brain for short-horizon expedition support and bounded runner-return preparation.",
-      "execution_backend": "scripted",
+      "active": false,
+      "execution_backend": "model_backed",
       "allowed_model_keys": [
         "local_onboarding_gemma4_e4b_4k",
         "local_production_qwen2_5_coder_14b"
       ],
-      "default_model_key": "",
-      "fallback_model_key": "",
+      "default_model_key": "local_production_qwen2_5_coder_14b",
+      "fallback_model_key": "local_production_qwen2_5_coder_14b",
       "provider_requirement": "local_only",
       "mapped_helpers": [
         "retrieval_helper_2b",
@@ -198,7 +200,7 @@
       "notes": [
         "Distinct Hermes-backed Spinetop helper role for field-side tactical support.",
         "Spinetop-helper_2b is not Sentinel, not Expeditioner, not the mirror, and not governance.",
-        "Set execution_backend to model_backed and choose a local model key only after operator approval.",
+        "Model-backed helper reasoning is limited to internal tactical thinking through the existing local model seam.",
         "If runtime is inactive, Spinetop-helper_2b stays disabled-safe and falls back to scripted bounded receipts only.",
         "Scripted runner-return packets remain the external return path even if helper-local reasoning is enabled later.",
         "When helper-local reasoning is emitted, it should use the small tactical structure and remain a separate internal artifact."
@@ -206,13 +208,14 @@
     },
     "spinetop-mirror": {
       "role_description": "Spinetop-Mirror is the read-only memory interpretation role for Honcho-backed inspection and mission-local reflection.",
-      "execution_backend": "scripted",
+      "active": false,
+      "execution_backend": "model_backed",
       "allowed_model_keys": [
         "local_onboarding_gemma4_e4b_4k",
         "local_production_qwen2_5_coder_14b"
       ],
-      "default_model_key": "",
-      "fallback_model_key": "",
+      "default_model_key": "local_production_qwen2_5_coder_14b",
+      "fallback_model_key": "local_production_qwen2_5_coder_14b",
       "provider_requirement": "local_only",
       "mapped_helpers": [],
       "context_refs": [

@@ -30,7 +30,13 @@ from state_machine import (
 from governance_utils import can_bridge_to_honcho, read_nanny_state, read_return_all_state
 from helper_model_runtime import load_helper_runtime_profile
 from review_and_submit_petition import build_review_payload, validate_draft_petition
-from run_hermes_v1 import validate_response_object
+from run_hermes_v1 import (
+    extract_json_candidate,
+    invoke_model,
+    load_hermes_runtime_config,
+    load_model_registry,
+    validate_response_object,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 EVENT_LOG = ROOT / "logs" / "topology" / "events.jsonl"
@@ -56,6 +62,7 @@ SUPPORT_ORCHESTRATION_DIR = ROOT / "logs" / "support" / "orchestration"
 SUPPORT_RETRIEVAL_DIR = ROOT / "logs" / "support" / "retrieval"
 SUPPORT_ORCHESTRATION_INSTANCES_DIR = SUPPORT_ORCHESTRATION_DIR / "instances"
 SUPPORT_RETRIEVAL_INSTANCES_DIR = SUPPORT_RETRIEVAL_DIR / "instances"
+EXPEDITIONER_MODEL_LOG = ROOT / "logs" / "support" / "expeditioner_model_invocations.jsonl"
 COMPACTOR_LOG_DIR = ROOT / "logs" / "compactor"
 ARCHIVE_DIR = MEMORY_DIR / "archive"
 COMPACTED_DIR = MEMORY_DIR / "compacted"
@@ -124,6 +131,7 @@ ALLOWED_TRIGGER_ACTIONS = {
 TRIGGER_RETRY_BUDGET = 1
 RETRY_BUDGET_TOTAL = 2
 RETRY_LOG_LIMIT = 40
+EXPEDITIONER_ROLE_ID = "spinetop_expeditioner"
 
 
 @app.after_request
@@ -2633,6 +2641,233 @@ def _first_pass_answer(objective: str, assumptions: list[str]) -> str:
     return ""
 
 
+def _normalize_section_lines(value: Any) -> list[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, list):
+        lines: list[str] = []
+        for item in value:
+            text = str(item or "").strip()
+            if text:
+                lines.append(text)
+        return lines
+    return []
+
+
+def _format_expeditioner_output(first_pass_answer: str, assumptions: list[str] | None = None, next_steps: list[str] | None = None) -> str:
+    answer_text = str(first_pass_answer or "").strip() or "No bounded first-pass answer was available."
+    sections = [f"First-pass answer: {answer_text}"]
+
+    normalized_assumptions = [item for item in (assumptions or []) if str(item).strip()]
+    if normalized_assumptions:
+        sections.append("Assumptions:\n" + "\n".join(f"- {item}" for item in normalized_assumptions))
+
+    normalized_next_steps = [item for item in (next_steps or []) if str(item).strip()]
+    if normalized_next_steps:
+        sections.append("Next steps:\n" + "\n".join(f"- {item}" for item in normalized_next_steps))
+
+    return "\n\n".join(sections)
+
+
+def _fallback_expeditioner_output(detail: dict[str, Any], message: str, quick_reply: str | None) -> str:
+    reply, _ = _clarification_reply_text(message, quick_reply, detail)
+    summary = detail.get("mission_summary") if isinstance(detail.get("mission_summary"), dict) else {}
+    assumptions = _assumption_summary_lines(_dict_list(detail.get("assumptions")))
+    next_step = str(summary.get("recommended_next_step") or "").strip()
+    return _format_expeditioner_output(reply, assumptions=assumptions, next_steps=[next_step] if next_step else [])
+
+
+def _expeditioner_runtime_binding() -> dict[str, Any]:
+    profile = load_helper_runtime_profile(EXPEDITIONER_ROLE_ID)
+    binding: dict[str, Any] = {
+        "role": profile.role_id,
+        "enabled": False,
+        "active_flag": profile.active,
+        "execution_backend": profile.execution_backend,
+        "model_key": "",
+        "fallback_model_key": profile.fallback_model_key,
+        "provider": "",
+        "model_name": "",
+    }
+    if not profile.active or profile.execution_backend != "model_backed" or not profile.default_model_key:
+        return binding
+
+    models = load_model_registry()
+    model_entry = models.get(profile.default_model_key, {})
+    if not isinstance(model_entry, dict):
+        return binding
+
+    provider = str(model_entry.get("provider") or "").strip().lower()
+    model_name = str(model_entry.get("model") or "").strip()
+    if not provider or not model_name:
+        return binding
+
+    binding.update(
+        {
+            "enabled": True,
+            "model_key": profile.default_model_key,
+            "provider": provider,
+            "model_name": model_name,
+        }
+    )
+    return binding
+
+
+def _expeditioner_trigger_context(detail: dict[str, Any], quick_reply: str | None) -> tuple[bool, str]:
+    latest_trigger = detail.get("latest_trigger") if isinstance(detail.get("latest_trigger"), dict) else {}
+    handoff = detail.get("trigger_handoff") if isinstance(detail.get("trigger_handoff"), dict) else {}
+    trigger_status = str(latest_trigger.get("status") or "").strip()
+    trigger_kind = str(latest_trigger.get("trigger_kind") or "").strip()
+    trigger_eval = latest_trigger.get("evaluation") if isinstance(latest_trigger.get("evaluation"), dict) else {}
+    if (
+        trigger_status in {"pending", "active"}
+        and trigger_kind in ALLOWED_TRIGGER_KINDS
+        and bool(trigger_eval.get("allowed"))
+    ):
+        trigger_reason = str(latest_trigger.get("reason") or trigger_kind or "trigger_record").strip()
+        return True, trigger_reason
+
+    allowed_action = str(handoff.get("allowed_action") or "").strip()
+    handoff_status = str(handoff.get("status") or "").strip()
+    if (
+        str(handoff.get("target_role") or "").strip() == EXPEDITIONER_ROLE_ID
+        and handoff_status in {"pending", "active"}
+        and allowed_action in ALLOWED_TRIGGER_ACTIONS
+    ):
+        trigger_reason = str(handoff.get("reason") or allowed_action or "trigger_handoff").strip()
+        return True, trigger_reason
+
+    return False, ""
+
+
+def _expeditioner_model_prompt(detail: dict[str, Any], message: str, quick_reply: str | None) -> str:
+    summary = detail.get("mission_summary") if isinstance(detail.get("mission_summary"), dict) else {}
+    working_memory = detail.get("working_memory") if isinstance(detail.get("working_memory"), dict) else {}
+    prompt = {
+        "role": "Spinetop-Expeditioner",
+        "mission_id": str(detail.get("mission_id") or "").strip(),
+        "objective": str(detail.get("objective") or "").strip(),
+        "current_state": str(detail.get("current_state") or "").strip(),
+        "operator_message": str(message or "").strip(),
+        "quick_reply": str(quick_reply or "").strip(),
+        "mission_summary": {
+            "status": str(summary.get("status") or "").strip(),
+            "operator_posture": str(summary.get("operator_posture") or "").strip(),
+            "latest_summary": str(summary.get("latest_summary") or "").strip(),
+            "recommended_next_step": str(summary.get("recommended_next_step") or "").strip(),
+        },
+        "active_assumptions": _assumption_summary_lines(_dict_list(detail.get("assumptions"))),
+        "confirmed_facts": _fact_summary_lines(_dict_list(working_memory.get("confirmed_facts"))),
+        "open_questions": _question_summary_lines(_dict_list(working_memory.get("open_questions"))),
+        "constraints": [
+            "Return only JSON with keys: first_pass_answer, assumptions, next_steps.",
+            "Do not write truth, approve, submit, or alter governance state.",
+            "Stay bounded, trigger-driven, and mission-local.",
+            "Omit assumptions and next_steps by using empty arrays when not needed.",
+        ],
+    }
+    return json.dumps(prompt, indent=2, ensure_ascii=False)
+
+
+def _normalize_expeditioner_model_output(raw_response: str) -> str:
+    candidate = extract_json_candidate(raw_response)
+    parsed: Any = None
+    if candidate is not None:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            parsed = None
+
+    if isinstance(parsed, dict):
+        answer = str(parsed.get("first_pass_answer") or parsed.get("answer") or "").strip()
+        assumptions = _normalize_section_lines(parsed.get("assumptions"))
+        next_steps = _normalize_section_lines(parsed.get("next_steps"))
+        if answer:
+            return _format_expeditioner_output(answer, assumptions=assumptions, next_steps=next_steps)
+
+    text = str(raw_response or "").strip()
+    if not text:
+        raise ValueError("model returned empty Expeditioner output")
+    return _format_expeditioner_output(text)
+
+
+def _log_expeditioner_model_invocation(
+    *,
+    mission_id: str,
+    trigger_reason: str,
+    binding: dict[str, Any],
+    status: str,
+    error: str = "",
+) -> None:
+    _append_jsonl(
+        EXPEDITIONER_MODEL_LOG,
+        {
+            "logged_at": iso_now(),
+            "mission_id": mission_id,
+            "role": EXPEDITIONER_ROLE_ID,
+            "model_key": str(binding.get("model_key") or "").strip(),
+            "provider": str(binding.get("provider") or "").strip(),
+            "model_used": str(binding.get("model_name") or "").strip(),
+            "trigger_reason": trigger_reason,
+            "status": status,
+            "error": error,
+        },
+    )
+
+
+def _try_expeditioner_model_reply(message: str, quick_reply: str | None, detail: dict[str, Any]) -> str | None:
+    objective = str(detail.get("objective") or "").strip()
+    current_state = str(detail.get("current_state") or "MISSION_DEFINED").strip() or "MISSION_DEFINED"
+    latest_packet = detail.get("latest_clarification_packet") if isinstance(detail.get("latest_clarification_packet"), dict) else None
+    sufficient, _ = _is_sufficient_to_proceed(objective, detail.get("mission_inputs"), current_state, latest_packet)
+    if not sufficient:
+        return None
+
+    has_action, trigger_reason = _expeditioner_trigger_context(detail, quick_reply)
+    if not has_action:
+        return None
+
+    binding = _expeditioner_runtime_binding()
+    if not bool(binding.get("enabled")):
+        return None
+
+    runtime_config = load_hermes_runtime_config()
+    system_prompt = (
+        "You are Spinetop-Expeditioner. Return only JSON with keys first_pass_answer, assumptions, and next_steps. "
+        "Stay bounded, derived-only, trigger-driven, and operator-visible. Never write truth, approve, submit, "
+        "change governance, or imply background execution."
+    )
+    prompt = _expeditioner_model_prompt(detail, message, quick_reply)
+    mission_id = str(detail.get("mission_id") or "").strip()
+
+    try:
+        raw_response = invoke_model(
+            str(binding.get("model_key") or "").strip(),
+            prompt,
+            runtime_config,
+            system_prompt=system_prompt,
+            response_format="json_object",
+        )
+        normalized = _normalize_expeditioner_model_output(raw_response)
+        _log_expeditioner_model_invocation(
+            mission_id=mission_id,
+            trigger_reason=trigger_reason,
+            binding=binding,
+            status="success",
+        )
+        return normalized
+    except Exception as exc:
+        _log_expeditioner_model_invocation(
+            mission_id=mission_id,
+            trigger_reason=trigger_reason,
+            binding=binding,
+            status="failure",
+            error=str(exc),
+        )
+        return None
+
+
 def _clarification_reply_text(message: str, quick_reply: str | None, detail: dict[str, Any]) -> tuple[str, str]:
     quick = str(quick_reply or "").strip().lower()
     summary = detail.get("mission_summary") if isinstance(detail.get("mission_summary"), dict) else {}
@@ -2763,11 +2998,19 @@ def _clarification_reply_text(message: str, quick_reply: str | None, detail: dic
 
 
 def _chat_reply(message: str, quick_reply: str | None, detail: dict[str, Any]) -> dict[str, str]:
+    model_reply = _try_expeditioner_model_reply(message, quick_reply, detail)
+    if model_reply:
+        return {
+            "role": "assistant",
+            "tone": "good",
+            "message": model_reply,
+        }
+
     reply, tone = _clarification_reply_text(message, quick_reply, detail)
     return {
         "role": "assistant",
         "tone": tone,
-        "message": reply,
+        "message": _fallback_expeditioner_output(detail, message, quick_reply),
     }
 
 

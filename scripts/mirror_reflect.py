@@ -6,16 +6,19 @@ import re
 import sys
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from helper_model_runtime import load_helper_runtime_profile
 from repo_paths import repo_root
+from run_hermes_v1 import extract_json_candidate, invoke_model, load_hermes_runtime_config
 
 
 ROOT = repo_root()
 RUNTIME_ROLE = "spinetop-mirror"
 PROFILE = load_helper_runtime_profile(RUNTIME_ROLE)
+MIRROR_MODEL_LOG = ROOT / "logs" / "support" / "mirror_model_invocations.jsonl"
 APPROVED_READ_ROOTS = [
     ROOT / "workbench" / "missions",
     ROOT / "logs",
@@ -56,6 +59,10 @@ class MemoryItem:
     speaker: str
     text: str
     payload: dict[str, Any]
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _is_under(path: Path, root: Path) -> bool:
@@ -153,6 +160,12 @@ def _extract_speaker(record: dict[str, Any]) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip().lower()
     return "unknown"
+
+
+def _append_jsonl(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(data, ensure_ascii=False) + "\n")
 
 
 def load_memory_items(paths: list[str]) -> list[MemoryItem]:
@@ -298,7 +311,23 @@ def _build_suggested_focus(patterns: list[str], contradictions: list[str], gaps:
     return focus[:3]
 
 
-def build_reflection(items: list[MemoryItem]) -> dict[str, Any]:
+def _scripted_model_binding(source: str, *, active: bool, error: str | None = None) -> dict[str, Any]:
+    binding = {
+        "role_id": PROFILE.role_id,
+        "active_flag": PROFILE.active,
+        "execution_backend": PROFILE.execution_backend,
+        "model_key": PROFILE.default_model_key,
+        "fallback_model_key": PROFILE.fallback_model_key,
+        "provider_requirement": PROFILE.provider_requirement,
+        "active": active,
+        "source": source,
+    }
+    if error:
+        binding["error"] = error
+    return binding
+
+
+def _scripted_reflection(items: list[MemoryItem], *, model_binding: dict[str, Any] | None = None) -> dict[str, Any]:
     repeated = _find_repeated_messages(items)
     role_patterns = _find_role_patterns(items)
     patterns = repeated + [line for line in role_patterns if line not in repeated]
@@ -313,7 +342,126 @@ def build_reflection(items: list[MemoryItem]) -> dict[str, Any]:
         "gaps": gaps,
         "suggested_focus": _build_suggested_focus(patterns, contradictions, gaps),
         "source_refs": sorted({item.source_ref for item in items}),
+        "model_binding": model_binding or _scripted_model_binding("scripted", active=False),
     }
+
+
+def _normalize_string_list(value: Any, *, field: str) -> list[str]:
+    if not isinstance(value, list):
+        raise MirrorReflectError(f"Model field '{field}' must be a list")
+    out: list[str] = []
+    for idx, item in enumerate(value):
+        if not isinstance(item, str):
+            raise MirrorReflectError(f"Model field '{field}' item {idx} must be a string")
+        text = item.strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def _model_prompt(items: list[MemoryItem]) -> str:
+    prompt = {
+        "role": "Spinetop-Mirror",
+        "task": "Read memory-like inputs and produce a reflective mission-local interpretation only.",
+        "authority_boundary": {
+            "may_read": list(PROFILE.authority_boundary.get("may_read") or []),
+            "may_write_only": list(PROFILE.authority_boundary.get("may_write_only") or []),
+            "may_not": list(PROFILE.authority_boundary.get("may_not") or []),
+            "critical_rule": "Mirror reads memory. Mirror never writes to memory.",
+        },
+        "required_output_schema": {
+            "summary": "string",
+            "patterns": ["string"],
+            "contradictions": ["string"],
+            "gaps": ["string"],
+            "suggested_focus": ["string"],
+        },
+        "requirements": [
+            "Return only structured reflection fields.",
+            "Stay mission-local and derived-only.",
+            "Do not answer tasks, approve actions, or act as governance.",
+            "Do not propose writes to Honcho or any mutation of sessions/messages/peers.",
+        ],
+        "memory_items": [
+            {
+                "source_ref": item.source_ref,
+                "timestamp": item.timestamp,
+                "speaker": item.speaker,
+                "text": item.text,
+            }
+            for item in items
+        ],
+    }
+    return json.dumps(prompt, indent=2, ensure_ascii=False)
+
+
+def _build_model_reflection(items: list[MemoryItem]) -> dict[str, Any]:
+    binding = _scripted_model_binding(
+        "model",
+        active=PROFILE.active and PROFILE.execution_backend == "model_backed" and bool(PROFILE.default_model_key),
+    )
+    fallback = _scripted_reflection(items, model_binding=_scripted_model_binding("disabled_safe_scripted_fallback", active=False))
+    if not binding["active"]:
+        return fallback
+
+    prompt = _model_prompt(items)
+    try:
+        raw = invoke_model(
+            str(binding["model_key"]),
+            prompt,
+            load_hermes_runtime_config(),
+            system_prompt=(
+                "You are Spinetop-Mirror. Return only a JSON object with summary, patterns, contradictions, "
+                "gaps, and suggested_focus. Mirror reads memory and never writes to memory. "
+                "Do not write to Honcho, do not mutate sessions/messages/peers, and do not claim authority."
+            ),
+            response_format="json_object",
+        )
+        candidate = extract_json_candidate(raw)
+        payload = json.loads(candidate)
+        reflection = {
+            "role": PROFILE.role_id,
+            "kind": "mirror_reflection",
+            "summary": str(payload.get("summary") or "").strip(),
+            "patterns": _normalize_string_list(payload.get("patterns"), field="patterns"),
+            "contradictions": _normalize_string_list(payload.get("contradictions"), field="contradictions"),
+            "gaps": _normalize_string_list(payload.get("gaps"), field="gaps"),
+            "suggested_focus": _normalize_string_list(payload.get("suggested_focus"), field="suggested_focus"),
+            "source_refs": sorted({item.source_ref for item in items}),
+            "model_binding": binding,
+        }
+        if not reflection["summary"]:
+            raise MirrorReflectError("Model field 'summary' must be a non-empty string")
+        _append_jsonl(
+            MIRROR_MODEL_LOG,
+            {
+                "timestamp": utc_now_iso(),
+                "role": PROFILE.role_id,
+                "status": "success",
+                "model_key": binding["model_key"],
+                "artifact_kind": "mirror_reflection",
+                "source_ref_count": len(reflection["source_refs"]),
+            },
+        )
+        return reflection
+    except Exception as exc:
+        fallback["model_binding"] = _scripted_model_binding("model_failure_fallback", active=False, error=str(exc))
+        _append_jsonl(
+            MIRROR_MODEL_LOG,
+            {
+                "timestamp": utc_now_iso(),
+                "role": PROFILE.role_id,
+                "status": "failure",
+                "model_key": binding["model_key"],
+                "artifact_kind": "mirror_reflection",
+                "error": str(exc),
+            },
+        )
+        return fallback
+
+
+def build_reflection(items: list[MemoryItem]) -> dict[str, Any]:
+    return _build_model_reflection(items)
 
 
 def write_reflection(path: Path, reflection: dict[str, Any]) -> None:

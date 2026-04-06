@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 
 import runner_helper
@@ -56,6 +57,16 @@ def patched_support_root(temp_root: Path):
             setattr(module, name, value)
 
 
+@contextmanager
+def patched_attr(module, name: str, value):
+    original = getattr(module, name)
+    try:
+        setattr(module, name, value)
+        yield
+    finally:
+        setattr(module, name, original)
+
+
 def _spawn_request(return_lane: str, write_scope: list[str]) -> dict[str, object]:
     return {
         "request_type": "spawn",
@@ -75,7 +86,14 @@ def _assert(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
-def _run_case(temp_root: Path, *, case_name: str, return_lane: str, write_scope: list[str]) -> None:
+def _run_case(
+    temp_root: Path,
+    *,
+    case_name: str,
+    return_lane: str,
+    write_scope: list[str],
+    expected_thinking_source: str,
+) -> None:
     request_path = temp_root / "logs" / "support" / "orchestration" / "requests" / f"{case_name}.json"
     _write_json(request_path, _spawn_request(return_lane, write_scope))
 
@@ -107,8 +125,17 @@ def _run_case(temp_root: Path, *, case_name: str, return_lane: str, write_scope:
         f"{case_name}: thinking artifact output structure mismatch",
     )
     _assert(
-        thinking_payload.get("highlighted_contradictions") == [],
-        f"{case_name}: complete run should not invent contradictions",
+        thinking_payload.get("model_binding", {}).get("source") == expected_thinking_source,
+        f"{case_name}: unexpected thinking source {thinking_payload.get('model_binding')}",
+    )
+    _assert(payload.get("task_result", {}).get("step_count") == 2, f"{case_name}: runner receipt changed unexpectedly")
+    _assert(
+        not (temp_root / "memory" / "collective").exists(),
+        f"{case_name}: helper must not write to collective truth lanes",
+    )
+    _assert(
+        not (temp_root / "workbench" / "missions").exists(),
+        f"{case_name}: helper must not create mission truth or assumption artifacts during runner receipt generation",
     )
 
     event_log = temp_root / "logs" / "support" / "orchestration" / "events.jsonl"
@@ -124,18 +151,54 @@ def _run_case(temp_root: Path, *, case_name: str, return_lane: str, write_scope:
 def main() -> int:
     temp_root = _support_temp_root()
     with patched_support_root(temp_root):
-        _run_case(
-            temp_root,
-            case_name="orchestration_lane",
-            return_lane="logs/support/orchestration/",
-            write_scope=["logs/support/orchestration/"],
+        with patched_attr(
+            runner_helper,
+            "load_hermes_runtime_config",
+            lambda: {"mode_safe_settings": {"temperature": 0.1, "timeout_seconds": 5}, "provider_profiles": {}},
+        ):
+            with patched_attr(
+                runner_helper,
+                "invoke_model",
+                lambda model_key, prompt, runtime_config, **kwargs: json.dumps(
+                    {
+                        "current_context": ["mandate runner_contract_mandate_001", "bounded helper task is active"],
+                        "key_observations": ["local context summarized for the helper", "runner receipt remains separate"],
+                        "possible_next_steps": ["review the external receipt", "schedule another bounded helper only if needed"],
+                        "open_questions": ["Does any contradiction require a new helper request?"],
+                        "highlighted_contradictions": [],
+                    }
+                ),
+            ):
+                with patched_attr(
+                    runner_helper,
+                    "HELPER_RUNTIME_PROFILE",
+                    replace(runner_helper.HELPER_RUNTIME_PROFILE, active=True),
+                ):
+                    _run_case(
+                        temp_root,
+                        case_name="orchestration_lane",
+                        return_lane="logs/support/orchestration/",
+                        write_scope=["logs/support/orchestration/"],
+                        expected_thinking_source="model",
+                    )
+
+        disabled_profile = replace(
+            runner_helper.HELPER_RUNTIME_PROFILE,
+            active=False,
         )
-        _run_case(
-            temp_root,
-            case_name="mission_local_draft_lane",
-            return_lane="memory/drafts/",
-            write_scope=["logs/support/orchestration/", "memory/drafts/"],
-        )
+        with patched_attr(runner_helper, "HELPER_RUNTIME_PROFILE", disabled_profile):
+            with patched_attr(
+                runner_helper,
+                "invoke_model",
+                lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("disabled-safe path should not invoke model")),
+            ):
+                _run_case(
+                    temp_root,
+                    case_name="mission_local_draft_lane",
+                    return_lane="memory/drafts/",
+                    write_scope=["logs/support/orchestration/", "memory/drafts/"],
+                    expected_thinking_source="disabled_safe_scripted_fallback",
+                )
     print("runner_helper_contracts_ok")
     return 0
 

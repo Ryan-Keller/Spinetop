@@ -202,6 +202,9 @@ def validate_helper_models(models: set[str]) -> list[str]:
         if not role_description:
             issues.append(f"helper role {role_id} role_description must be a non-empty string")
 
+        if "active" not in role or not isinstance(role.get("active"), bool):
+            issues.append(f"helper role {role_id} active must be a boolean")
+
         allowed_model_keys = role.get("allowed_model_keys", [])
         if not isinstance(allowed_model_keys, list) or not all(isinstance(item, str) for item in allowed_model_keys):
             issues.append(f"helper role {role_id} allowed_model_keys must be a list of strings")

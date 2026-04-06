@@ -19,6 +19,7 @@ def main() -> int:
             {
                 "role_id": profile.role_id,
                 "role_description": profile.role_description,
+                "active": profile.active,
                 "execution_backend": profile.execution_backend,
                 "allowed_model_keys": profile.allowed_model_keys,
                 "default_model_key": profile.default_model_key,

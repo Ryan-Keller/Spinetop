@@ -20,6 +20,7 @@ LOCAL_PROVIDERS = {"ollama"}
 class HelperRuntimeProfile:
     role_id: str
     role_description: str
+    active: bool
     execution_backend: str
     allowed_model_keys: list[str]
     default_model_key: str
@@ -58,6 +59,10 @@ def _validate_role(role_id: str, role: dict[str, Any], models: dict[str, dict[st
     role_description = str(role.get("role_description") or "").strip()
     if not role_description:
         raise ValueError(f"helper role {role_id} role_description must be a non-empty string")
+
+    if "active" not in role or not isinstance(role.get("active"), bool):
+        raise ValueError(f"helper role {role_id} active must be a boolean")
+    active = bool(role.get("active"))
 
     execution_backend = str(role.get("execution_backend") or "").strip()
     if execution_backend not in {"scripted", "model_backed"}:
@@ -153,6 +158,7 @@ def _validate_role(role_id: str, role: dict[str, Any], models: dict[str, dict[st
     return HelperRuntimeProfile(
         role_id=role_id,
         role_description=role_description,
+        active=active,
         execution_backend=execution_backend,
         allowed_model_keys=normalized_allowed,
         default_model_key=default_model_key,
@@ -193,6 +199,7 @@ def main() -> int:
                 "ok": True,
                 "role_id": profile.role_id,
                 "role_description": profile.role_description,
+                "active": profile.active,
                 "execution_backend": profile.execution_backend,
                 "allowed_model_keys": profile.allowed_model_keys,
                 "default_model_key": profile.default_model_key,
