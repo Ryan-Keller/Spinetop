@@ -72,6 +72,16 @@ def main() -> int:
         [
             {
                 "sender": "assistant",
+                "message": "Historical preview reopening question.",
+                "created_at": "2026-04-04T06:59:00Z",
+            },
+            {
+                "sender": "user",
+                "message": "Hold",
+                "created_at": "2026-04-04T06:59:10Z",
+            },
+            {
+                "sender": "assistant",
                 "message": "Do you want me to open the review preview and keep it pending?",
                 "created_at": "2026-04-05T07:05:03Z",
             },
@@ -99,6 +109,11 @@ def main() -> int:
                 "sender": "user",
                 "message": "Answer blockers",
                 "created_at": "2026-04-05T07:05:58Z",
+            },
+            {
+                "sender": "assistant",
+                "message": "No active agent runs right now.",
+                "created_at": "2026-04-07T03:11:00Z",
             },
         ],
     )
@@ -137,6 +152,20 @@ def main() -> int:
             "summary": "Successful bounded expeditioner return for operator review.",
         },
     )
+    for idx in range(3, 10):
+        extra_path = notes_root / "agent_runs" / f"agent_run_2026040{idx}T010000Z_spinetop-helper-2b_extra{idx}.json"
+        _write_json(
+            extra_path,
+            {
+                "run_id": extra_path.stem,
+                "artifact_kind": "agent_role_invocation",
+                "role": "spinetop-helper-2b",
+                "created_at": f"2026-04-0{idx}T01:00:00Z",
+                "trigger_reason": "operator_test",
+                "status": "success",
+                "summary": f"Historical bounded helper return {idx} for operator review.",
+            },
+        )
     _write_json(
         trigger_path,
         {
@@ -190,7 +219,7 @@ def main() -> int:
         calls: list[dict] = []
 
         def _fake_invoke(model_key: str, prompt: str, runtime_config: dict, **kwargs) -> str:
-            calls.append({"model_key": model_key, "prompt": prompt, "kwargs": kwargs})
+            calls.append({"model_key": model_key, "prompt": prompt, "prompt_payload": json.loads(prompt), "kwargs": kwargs})
             return json.dumps(
                 {
                     "summary": "The memory shows a stalled coordination loop where repeated prompts outrun stable user intent.",
@@ -231,6 +260,19 @@ def main() -> int:
     for key in ("summary", "patterns", "contradictions", "gaps", "suggested_focus"):
         _assert(key in reflection, f"missing reflection field: {key}")
     _assert(calls, "model-backed Mirror should invoke the shared model seam")
+    prompt_payload = calls[0]["prompt_payload"]
+    prompt_items = list(prompt_payload.get("memory_items") or [])
+    context_window = prompt_payload.get("context_window") or {}
+    history_summary = prompt_payload.get("history_summary") or {}
+    _assert(int((context_window.get("caps") or {}).get("total_items") or 0) == 14, f"expected explicit prompt item cap: {context_window}")
+    _assert(len(prompt_items) <= 14, f"prompt items should stay capped: {len(prompt_items)}")
+    _assert(int(context_window.get("total_loaded_items") or 0) > len(prompt_items), f"expected prompt compaction against loaded items: {context_window}")
+    _assert(int(history_summary.get("successful_execution_count") or 0) >= 2, f"expected full-history success count summary: {history_summary}")
+    _assert(any(int(item.get("repeat_count") or 0) >= 2 for item in prompt_items), f"expected repeated evidence to collapse with repeat_count: {prompt_items}")
+    _assert(
+        any(str(item.get("text") or "") == "No active agent runs right now." for item in prompt_items),
+        f"timeline-mismatch cue should survive prompt trimming: {prompt_items}",
+    )
     _assert("stalled coordination loop" in reflection["summary"], "expected model-generated summary")
     _assert(reflection["model_binding"]["source"] == "model", "expected active model binding")
     _assert("task" not in reflection["summary"].lower(), "summary drifted into task-answer framing")
