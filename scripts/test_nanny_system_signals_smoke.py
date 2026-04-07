@@ -229,6 +229,11 @@ def _test_compute_status_detects_signals_without_mutation() -> None:
             "Repeated junk blockers detected" in titles or "Weak blocker questions detected" in titles,
             f"blocker quality signal missing: {status}",
         )
+        _assert("Revive eligible missions" not in titles, f"parked missions should be excluded from system signals: {status}")
+        _assert(
+            "revive eligible missions" not in [str(action).lower() for action in status.get("recommended_actions", [])],
+            f"parked missions should not drive recommended actions: {status}",
+        )
         _assert(status.get("recommended_actions"), f"recommended actions should be present: {status}")
 
 

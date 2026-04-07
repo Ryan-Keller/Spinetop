@@ -67,7 +67,7 @@
     ]
   },
   "runtime_behavior": {
-    "active_by_default": false,
+    "active_by_default": true,
     "inactive_mode": "disabled_safe_noop",
     "inactive_behavior": [
       "emit disabled status only",

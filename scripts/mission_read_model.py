@@ -13,6 +13,16 @@ def _helper(helpers: dict[str, Any], name: str) -> Any:
     return helpers[name]
 
 
+def _is_parked_mission_item(mission: dict[str, Any]) -> bool:
+    parking_status = mission.get("parking_status") if isinstance(mission.get("parking_status"), dict) else {}
+    mission_summary = mission.get("mission_summary") if isinstance(mission.get("mission_summary"), dict) else {}
+    return (
+        str(parking_status.get("status") or "active").strip() == "parked"
+        or str(mission.get("operator_posture") or mission_summary.get("operator_posture") or "").strip() == "parked"
+        or str(mission.get("triage_bucket") or mission_summary.get("triage_bucket") or "").strip() == "parked"
+    )
+
+
 def _role_label_for_helper(helper_type: str) -> str:
     helper = str(helper_type or "").strip()
     if helper == "retrieval_helper_2b":
@@ -750,7 +760,11 @@ def _list_expeditions(*, helpers: dict[str, Any] | None = None) -> tuple[list[di
         })
 
     grouped: dict[str, list[dict[str, Any]]] = {}
+    parked_missions: list[dict[str, Any]] = []
     for mission in missions:
+        if _is_parked_mission_item(mission):
+            parked_missions.append(mission)
+            continue
         group_key = mission["objective_normalized"] or mission["mission_id"]
         grouped.setdefault(group_key, []).append(mission)
 
@@ -787,6 +801,24 @@ def _list_expeditions(*, helpers: dict[str, Any] | None = None) -> tuple[list[di
             )
             item["recommended_queue_action"] = str((item["queue_hygiene"] or {}).get("recommended_action") or "")
             item["queue_action_reason"] = str((item["queue_hygiene"] or {}).get("recommendation_reason") or "")
+
+    for item in parked_missions:
+        item["duplicate_group_key"] = item["mission_id"]
+        item["duplicate_count"] = 1
+        item["duplicate_rank"] = 1
+        item["is_duplicate_candidate"] = False
+        item["is_group_primary"] = True
+        item["duplicate_of_mission_id"] = None
+        item["queue_hygiene"] = queue_hygiene_flags(
+            item,
+            duplicate_count=1,
+            duplicate_rank=1,
+            primary_mission_id=str(item.get("mission_id") or ""),
+            primary_last_updated=queue_sort_timestamp(item),
+            normalized_objective=str(item.get("objective_normalized") or ""),
+        )
+        item["recommended_queue_action"] = str((item["queue_hygiene"] or {}).get("recommended_action") or "")
+        item["queue_action_reason"] = str((item["queue_hygiene"] or {}).get("recommendation_reason") or "")
 
     missions.sort(key=lambda item: (queue_sort_timestamp(item), str(item.get("created_at") or ""), str(item.get("mission_id") or "")), reverse=True)
     missions.sort(key=lambda item: (0 if item.get("is_group_primary") else 1, str(item.get("duplicate_group_key") or ""), str(item.get("duplicate_rank") or 0)))

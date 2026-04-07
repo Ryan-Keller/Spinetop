@@ -208,6 +208,45 @@ def _test_queue_classification_and_summary() -> None:
         _assert(review_item.get("recommended_queue_action") == "inspect before action", f"review-ready missions should not be auto-parked: {review_item}")
 
 
+def _test_parked_missions_do_not_affect_active_duplicate_grouping() -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="queue_hygiene_parked_isolation_"))
+    with _patched_roots(temp_root):
+        _seed_mission(
+            temp_root,
+            "mission_active_primary",
+            objective="Prepare ship checklist",
+            current_state="EXPEDITION_ACTIVE",
+            created_at="2026-04-05T10:00:00+00:00",
+            updated_at="2026-04-05T10:00:00+00:00",
+            operating_status="proceeding_with_assumptions",
+            can_continue_without_input=True,
+            blocked_reason="",
+        )
+        _seed_mission(
+            temp_root,
+            "mission_parked_same_objective",
+            objective="Prepare ship checklist",
+            current_state="MISSION_CLOSED",
+            created_at="2026-04-01T10:00:00+00:00",
+            updated_at="2026-04-04T10:00:00+00:00",
+            operating_status="idle",
+            can_continue_without_input=True,
+            blocked_reason="",
+            parked=True,
+            parked_at="2026-04-04T10:00:00+00:00",
+        )
+
+        items, _ = dashboard_api._list_expeditions()
+        by_id = {item["mission_id"]: item for item in items}
+        active_item = by_id["mission_active_primary"]
+        parked_item = by_id["mission_parked_same_objective"]
+
+        _assert(active_item.get("duplicate_count") == 1, f"active mission should ignore parked duplicate grouping: {active_item}")
+        _assert(active_item.get("is_duplicate_candidate") is False, f"active mission should not be marked duplicate by parked mission: {active_item}")
+        _assert(parked_item.get("duplicate_count") == 1, f"parked mission should stay isolated from active duplicate grouping: {parked_item}")
+    return None
+
+
 def _test_expeditions_list_is_read_only() -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="queue_hygiene_read_only_"))
     with _patched_roots(temp_root):
@@ -271,6 +310,7 @@ def _test_mark_archive_candidate_stays_mission_local() -> None:
 
 def main() -> int:
     _test_queue_classification_and_summary()
+    _test_parked_missions_do_not_affect_active_duplicate_grouping()
     _test_expeditions_list_is_read_only()
     _test_mark_archive_candidate_stays_mission_local()
     print("expedition queue hygiene smoke passed")

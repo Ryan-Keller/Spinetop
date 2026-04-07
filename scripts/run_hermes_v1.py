@@ -80,6 +80,31 @@ def load_json_file(path: Path) -> Any:
         return {"_error": f"invalid json: {exc}"}
 
 
+def normalize_ollama_options(model_cfg: dict[str, Any]) -> dict[str, Any]:
+    raw = model_cfg.get("ollama_options", {})
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("model_registry.json ollama_options must be an object when present")
+
+    options: dict[str, Any] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("model_registry.json ollama_options keys must be non-empty strings")
+        option_key = key.strip()
+        if option_key == "num_ctx":
+            try:
+                normalized = int(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("model_registry.json ollama_options.num_ctx must be an integer") from exc
+            if normalized <= 0:
+                raise ValueError("model_registry.json ollama_options.num_ctx must be greater than zero")
+            options[option_key] = normalized
+            continue
+        options[option_key] = value
+    return options
+
+
 def load_text_lines(path: Path, tail: int = 20) -> list[str]:
     if not path.exists():
         return []
@@ -650,6 +675,7 @@ def invoke_model(
 
     temperature = float(mode_safe_settings.get("temperature", 0.2)) if isinstance(mode_safe_settings, dict) else 0.2
     timeout_seconds = int(provider_profile.get("timeout_seconds", mode_safe_settings.get("timeout_seconds", 120))) if isinstance(mode_safe_settings, dict) else int(provider_profile.get("timeout_seconds", 120))
+    ollama_options = normalize_ollama_options(model_cfg) if provider == "ollama" else {}
     if response_format not in {"json_object", "text"}:
         raise ValueError(f"Unsupported response_format: {response_format}")
     resolved_system_prompt = (
@@ -680,6 +706,7 @@ def invoke_model(
             "stream": False,
             "options": {
                 "temperature": temperature,
+                **ollama_options,
             },
         }
         if response_format == "json_object":

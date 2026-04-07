@@ -5,7 +5,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from record_schemas import normalize_dispatch_petition_record
+from record_schemas import normalize_dispatch_petition_record, normalize_governance_decision_record
 from repo_paths import repo_root
 
 
@@ -114,7 +114,8 @@ def validate_governance() -> list[str]:
 
 def validate_dispatch() -> list[str]:
     issues: list[str] = []
-    seen: dict[str, list[str]] = defaultdict(list)
+    seen_petitions: dict[str, list[str]] = defaultdict(list)
+    seen_decisions: dict[str, list[str]] = defaultdict(list)
 
     if not DISPATCH_DIR.exists():
         return []
@@ -130,17 +131,28 @@ def validate_dispatch() -> list[str]:
                 issues.append(f"{folder.name}/{path.name}: {error}")
                 continue
             assert payload is not None
+            record_type = str(payload.get("record_type") or "").strip()
+            location = f"{folder.name}/{path.name}"
             try:
-                normalized = normalize_dispatch_petition_record(payload, path=path, legacy_ok=True)
+                if record_type == "governance_decision":
+                    normalized = normalize_governance_decision_record(payload, path=path, legacy_ok=True)
+                    decision_id = str(normalized.get("decision_id") or f"legacy:{path.name}")
+                    seen_decisions[decision_id].append(location)
+                else:
+                    normalized = normalize_dispatch_petition_record(payload, path=path, legacy_ok=True)
+                    petition_id = str(normalized.get("petition_id") or f"legacy:{path.name}")
+                    seen_petitions[petition_id].append(location)
             except Exception as exc:
-                issues.append(f"{folder.name}/{path.name}: {exc}")
+                issues.append(f"{location}: {exc}")
                 continue
-            petition_id = str(normalized.get("petition_id") or f"legacy:{path.name}")
-            seen[petition_id].append(f"{folder.name}/{path.name}")
 
-    for petition_id, locations in sorted(seen.items()):
+    for petition_id, locations in sorted(seen_petitions.items()):
         if len(locations) > 1:
             issues.append(f"duplicate canonical petition_id {petition_id}: {locations}")
+
+    for decision_id, locations in sorted(seen_decisions.items()):
+        if len(locations) > 1:
+            issues.append(f"duplicate governance decision_id {decision_id}: {locations}")
 
     return issues
 

@@ -22,7 +22,7 @@ It is intentionally boring:
 
 | Profile key | Model | Role | Readiness | Notes |
 |---|---|---|---|---|
-| `local_production_qwen2_5_coder_14b` | `qwen2.5-coder:14b` | production default | ready | Default Sentinel local model |
+| `local_production_qwen2_5_coder_14b` | `qwen2.5-coder:14b` | production default | ready | Default Sentinel local model with `num_ctx=8192` in runtime requests |
 | `local_onboarding_gemma4_e4b_4k` | `gemma4:e4b-4k` | onboarding candidate | needs validation | Manual onboarding target |
 
 ## Runtime Config Structure

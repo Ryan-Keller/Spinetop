@@ -213,6 +213,10 @@ def _mission_snapshot(mission_id: str, *, now: datetime) -> dict[str, Any]:
     }
 
 
+def _active_missions_only(missions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [mission for mission in missions if not bool(mission.get("parked"))]
+
+
 def _signal(
     signal_id: str,
     *,
@@ -310,9 +314,10 @@ def compute_status() -> dict:
     events = read_events()
     dispatch_records = read_dispatch_records()
     missions = [_mission_snapshot(mission_id, now=now) for mission_id in _mission_ids()]
+    active_missions = _active_missions_only(missions)
 
     grouped_objectives: dict[str, list[dict[str, Any]]] = {}
-    for mission in missions:
+    for mission in active_missions:
         group_key = str(mission.get("normalized_objective") or mission.get("mission_id") or "").strip()
         grouped_objectives.setdefault(group_key, []).append(mission)
     for group in grouped_objectives.values():
@@ -325,7 +330,7 @@ def compute_status() -> dict:
 
     weak_question_examples: list[str] = []
     blocker_counts = {"junk": 0, "system": 0, "human": 0}
-    for mission in missions:
+    for mission in active_missions:
         blocked_reason = str(mission.get("blocked_reason") or "")
         questions = mission.get("questions") if isinstance(mission.get("questions"), list) else []
         if mission.get("junk_objective") or mission.get("duplicate_follower"):
@@ -343,26 +348,24 @@ def compute_status() -> dict:
         blocker_counts[blocker_classification] += 1
         weak_question_examples.extend(mission.get("weak_questions", []))
 
-    duplicate_followers = sum(1 for mission in missions if mission.get("duplicate_follower"))
+    duplicate_followers = sum(1 for mission in active_missions if mission.get("duplicate_follower"))
     stale_missions = sum(
         1
-        for mission in missions
+        for mission in active_missions
         if mission.get("last_activity_age_days") is not None and float(mission["last_activity_age_days"]) >= QUEUE_STALE_DAYS
     )
     archive_candidates = sum(
         1
-        for mission in missions
+        for mission in active_missions
         if (
             bool(mission.get("duplicate_follower"))
             or bool(mission.get("junk_objective") and mission.get("last_activity_age_days") is not None and float(mission["last_activity_age_days"]) >= QUEUE_STALE_DAYS)
-            or bool(mission.get("parked") and mission.get("last_activity_age_days") is not None and float(mission["last_activity_age_days"]) >= QUEUE_LONG_PARKED_DAYS)
         )
     )
     blocked_missions = sum(
         1
-        for mission in missions
-        if not bool(mission.get("parked"))
-        and (
+        for mission in active_missions
+        if (
             bool(mission.get("questions"))
             or str(mission.get("blocked_reason") or "").strip()
             or not bool(mission.get("can_continue", False))
@@ -371,30 +374,22 @@ def compute_status() -> dict:
     weak_questions = len(weak_question_examples)
     junk_blockers = sum(
         1
-        for mission in missions
+        for mission in active_missions
         if mission.get("blocker_classification") == "junk"
         and (mission.get("questions") or mission.get("blocked_reason") or mission.get("duplicate_follower"))
     )
-    poor_intake = sum(1 for mission in missions if mission.get("poor_intake"))
-    missing_objectives = sum(1 for mission in missions if not str(mission.get("objective") or "").strip())
-    revive_candidates = sum(
-        1
-        for mission in missions
-        if mission.get("parked")
-        and not mission.get("junk_objective")
-        and not mission.get("duplicate_follower")
-        and bool(mission.get("can_continue", False))
-    )
+    poor_intake = sum(1 for mission in active_missions if mission.get("poor_intake"))
+    missing_objectives = sum(1 for mission in active_missions if not str(mission.get("objective") or "").strip())
     retry_loops = sum(
         1
-        for mission in missions
+        for mission in active_missions
         if "repeated_same_failure_without_new_evidence" in mission.get("retry_stop_conditions", [])
     )
     retry_budget_hits = sum(
-        1 for mission in missions if "exhausted_retry_budget" in mission.get("retry_stop_conditions", [])
+        1 for mission in active_missions if "exhausted_retry_budget" in mission.get("retry_stop_conditions", [])
     )
     repeated_retry_failures = sum(
-        1 for mission in missions if len(mission.get("retry_reasons", [])) >= 2 or int(mission.get("retry_budget_used") or 0) >= 2
+        1 for mission in active_missions if len(mission.get("retry_reasons", [])) >= 2 or int(mission.get("retry_budget_used") or 0) >= 2
     )
 
     honcho_events = [
@@ -464,7 +459,7 @@ def compute_status() -> dict:
 
     signals: list[dict[str, Any]] = []
     if (
-        len(missions) >= QUEUE_PRESSURE_MISSIONS
+        len(active_missions) >= QUEUE_PRESSURE_MISSIONS
         or duplicate_followers >= QUEUE_PRESSURE_DUPLICATES
         or archive_candidates >= QUEUE_PRESSURE_ARCHIVE
     ):
@@ -479,7 +474,7 @@ def compute_status() -> dict:
             "queue_pressure",
             level="signal",
             title="Queue overloaded",
-            cause=" + ".join(cause_parts[:3]) or f"{len(missions)} missions in queue",
+            cause=" + ".join(cause_parts[:3]) or f"{len(active_missions)} missions in queue",
             action_label="Clean Queue",
             action_kind="clean_queue",
             severity="bad" if duplicate_followers >= QUEUE_PRESSURE_DUPLICATES and archive_candidates >= QUEUE_PRESSURE_ARCHIVE else "watch",
@@ -551,20 +546,8 @@ def compute_status() -> dict:
         ))
         recommended_actions.append("review blocked missions")
 
-    if len(signals) < MAX_SIGNALS and revive_candidates >= REVIVE_ELIGIBLE_WARN:
-        signals.append(_signal(
-            "revive_recall",
-            level="signal",
-            title="Revive eligible missions",
-            cause=f"{revive_candidates} parked missions can likely continue",
-            action_label="Revive eligible missions",
-            action_kind="revive_eligible_missions",
-            severity="watch",
-        ))
-        recommended_actions.append("revive eligible missions")
-
     learning = _learning_payload(
-        missions,
+        active_missions,
         counts=blocker_counts,
         weak_question_examples=weak_question_examples,
     )
@@ -586,7 +569,7 @@ def compute_status() -> dict:
             "weak_question_count": weak_questions,
         },
         "derived_counts": {
-            "missions": len(missions),
+            "missions": len(active_missions),
             "duplicates": duplicate_followers,
             "archive_candidates": archive_candidates,
             "blocked_missions": blocked_missions,

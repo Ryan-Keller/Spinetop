@@ -13,6 +13,9 @@
     "local_production_qwen2_5_coder_14b": {
       "provider": "ollama",
       "model": "qwen2.5-coder:14b",
+      "ollama_options": {
+        "num_ctx": 8192
+      },
       "class": "production_local",
       "intended_use": ["deeper reasoning", "repair analysis", "complex summaries", "default Sentinel runs"]
     },

@@ -20,7 +20,7 @@ def _write_json(path: Path, payload: dict) -> None:
 def main() -> int:
     profile = helper_model_runtime.load_helper_runtime_profile("spinetop_expeditioner")
     _assert(profile.role_id == "spinetop_expeditioner", "role id mismatch")
-    _assert(profile.active is False, "spinetop_expeditioner should require explicit activation")
+    _assert(profile.active is True, "spinetop_expeditioner should stay active unless workers are shut down")
     _assert(profile.execution_backend == "model_backed", "spinetop_expeditioner should be model_backed")
     _assert(profile.inactive_behavior == "disabled_safe", "Expeditioner runtime should stay disabled-safe when inactive")
     _assert(
@@ -87,7 +87,7 @@ def main() -> int:
 
     helper_profile = helper_model_runtime.load_helper_runtime_profile("spinetop-helper_2b")
     _assert(helper_profile.role_id == "spinetop-helper_2b", "helper role id mismatch")
-    _assert(helper_profile.active is False, "spinetop-helper_2b should require explicit activation")
+    _assert(helper_profile.active is True, "spinetop-helper_2b should stay active unless workers are shut down")
     _assert(helper_profile.execution_backend == "model_backed", "spinetop-helper_2b should use the model seam")
     _assert(
         helper_profile.inactive_behavior == "disabled_safe",
@@ -169,7 +169,11 @@ def main() -> int:
         {
             "models": {
                 "local_onboarding_gemma4_e4b_4k": {"provider": "ollama", "model": "gemma4:e4b-4k"},
-                "local_production_qwen2_5_coder_14b": {"provider": "ollama", "model": "qwen2.5-coder:14b"},
+                "local_production_qwen2_5_coder_14b": {
+                    "provider": "ollama",
+                    "model": "qwen2.5-coder:14b",
+                    "ollama_options": {"num_ctx": 8192},
+                },
             }
         },
     )
@@ -213,7 +217,7 @@ def main() -> int:
                 },
                 "spinetop-helper_2b": {
                     "role_description": "Spinetop-helper_2b is the field-side mini brain for short-horizon expedition support and bounded runner-return preparation.",
-                    "active": False,
+                    "active": True,
                     "execution_backend": "model_backed",
                     "allowed_model_keys": [
                         "local_onboarding_gemma4_e4b_4k",
@@ -300,7 +304,7 @@ def main() -> int:
         "configured Expeditioner fallback model key mismatch",
     )
     _assert(helper_configured.role_id == "spinetop-helper_2b", "configured helper role should load")
-    _assert(helper_configured.active is False, "configured helper role should preserve inactive flag")
+    _assert(helper_configured.active is True, "configured helper role should preserve default-active behavior")
     _assert(helper_configured.execution_backend == "model_backed", "configured helper role should stay model_backed")
     _assert(
         helper_configured.behavior_contract.get("thinking_style") == ["short horizon", "local context", "tactical suggestions"],
