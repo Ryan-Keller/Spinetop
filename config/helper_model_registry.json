@@ -112,10 +112,10 @@
                                              "execution_backend":  "model_backed",
                                              "allowed_model_keys":  [
                                                                         "local_onboarding_gemma4_e4b_4k",
-                                                                        "local_production_qwen2_5_coder_14b"
+                                                                        "local_helper_granite3_3_2b"
                                                                     ],
-                                             "default_model_key":  "local_production_qwen2_5_coder_14b",
-                                             "fallback_model_key":  "local_production_qwen2_5_coder_14b",
+                                             "default_model_key":  "local_helper_granite3_3_2b",
+                                             "fallback_model_key":  "local_helper_granite3_3_2b",
                                              "provider_requirement":  "local_only",
                                              "mapped_helpers":  [
                                                                     "retrieval_helper_2b",
@@ -212,10 +212,10 @@
                                           "execution_backend":  "model_backed",
                                           "allowed_model_keys":  [
                                                                      "local_onboarding_gemma4_e4b_4k",
-                                                                     "local_production_qwen2_5_coder_14b"
+                                                                     "local_mirror_gemma4_e4b"
                                                                  ],
-                                          "default_model_key":  "local_production_qwen2_5_coder_14b",
-                                          "fallback_model_key":  "local_production_qwen2_5_coder_14b",
+                                          "default_model_key":  "local_mirror_gemma4_e4b",
+                                          "fallback_model_key":  "local_mirror_gemma4_e4b",
                                           "provider_requirement":  "local_only",
                                           "mapped_helpers":  [
 

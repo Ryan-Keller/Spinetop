@@ -30,6 +30,18 @@
       "model": "gpt-5-research",
       "class": "research_api",
       "intended_use": ["comparative research", "model scouting", "market scan"]
+    },
+    "local_helper_granite3_3_2b": {
+      "provider": "ollama",
+      "model": "granite3.3:2b",
+      "class": "production_local",
+      "intended_use": ["short-horizon support", "bounded helper reasoning", "helper_2b tactical summaries"]
+    },
+    "local_mirror_gemma4_e4b": {
+      "provider": "ollama",
+      "model": "gemma4:e4b",
+      "class": "production_local",
+      "intended_use": ["memory interpretation", "mission-local reflection", "Mirror read-only summaries"]
     }
   }
 }
