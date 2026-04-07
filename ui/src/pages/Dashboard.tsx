@@ -483,6 +483,33 @@ type ControlTowerIntervention = {
   changed_paths?: string[];
 };
 
+type ControlTowerExecutionRun = {
+  run_id?: string;
+  role?: string;
+  status?: string;
+  summary?: string;
+  created_at?: string;
+  source_ref?: string;
+  origin?: string;
+  origin_label?: string;
+  trigger_reason?: string;
+};
+
+type ControlTowerExecutionVisibility = {
+  active_execution_now?: boolean;
+  active_execution_status?: string;
+  active_execution_role?: string;
+  active_execution_action?: string;
+  recent_runs_window?: number;
+  recent_successful_run_count?: number;
+  recent_successful_manual_run_count?: number;
+  latest_successful_run?: ControlTowerExecutionRun | null;
+  latest_successful_manual_run?: ControlTowerExecutionRun | null;
+  autonomy_governance_blocked?: boolean;
+  governance_block_reason?: string;
+  summary_lines?: string[];
+};
+
 type ControlTowerSummary = {
   autonomy_state?: string;
   last_trigger?: ControlTowerTrigger | null;
@@ -493,6 +520,7 @@ type ControlTowerSummary = {
   last_blocked_reason?: string;
   active_role_handoff?: ControlTowerHandoff | null;
   latest_role_activity?: ControlTowerActivity | null;
+  execution_visibility?: ControlTowerExecutionVisibility | null;
   operator_attention_reason?: string;
   recent_operator_interventions?: ControlTowerIntervention[];
   safe_operator_actions?: string[];
@@ -1781,6 +1809,8 @@ export default function Dashboard() {
   const controlTowerRetryBudget = controlTowerSummary?.retry_budget ?? 0;
   const controlTowerRetryUsed = controlTowerSummary?.retry_used ?? 0;
   const controlTowerRetryRemaining = Math.max(0, controlTowerRetryBudget - controlTowerRetryUsed);
+  const controlTowerExecutionVisibility = controlTowerSummary?.execution_visibility ?? null;
+  const controlTowerExecutionLines = (controlTowerExecutionVisibility?.summary_lines ?? []).filter(Boolean);
   const controlTowerSafeActions = (controlTowerSummary?.safe_operator_actions ?? []).filter(Boolean);
   const recentControlInterventions = (controlTowerSummary?.recent_operator_interventions ?? []).filter(Boolean);
   const supportedControlActions = controlTowerSafeActions.filter((action) =>
@@ -2410,6 +2440,8 @@ export default function Dashboard() {
           const expandedRunnerReturn = expandedMission?.latest_runner_return ?? null;
           const expandedLatestAgentRun = expandedMission?.latest_agent_run ?? null;
           const expandedLatestRoleActivity = expandedControlTowerSummary?.latest_role_activity ?? null;
+          const expandedExecutionVisibility = expandedControlTowerSummary?.execution_visibility ?? null;
+          const expandedExecutionLines = (expandedExecutionVisibility?.summary_lines ?? []).filter(Boolean);
           const expandedMissionSummaryReason =
             expandedControlTowerSummary?.operator_attention_reason ||
             expandedMissionSummary?.operator_posture_reason ||
@@ -2473,6 +2505,15 @@ export default function Dashboard() {
                           <div style={styles.subtleText}>Control Tower details</div>
                           <div style={{ marginTop: 6, fontSize: 13, color: "#cbd5f5", lineHeight: 1.55 }}>{expandedMissionSummaryReason}</div>
                           <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" as const }}><span style={styles.badge}>{expandedControlTowerAutonomyState}</span><span style={styles.badge}>{expandedRetryRemaining} retry left</span></div>
+                          <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
+                            {expandedExecutionLines.length
+                              ? expandedExecutionLines.map((line) => (
+                                  <div key={`${expedition.mission_id}-${line}`} style={{ fontSize: 12, color: "#94a3b8", lineHeight: 1.5 }}>
+                                    {line}
+                                  </div>
+                                ))
+                              : <div style={styles.subtleText}>No execution visibility summary yet.</div>}
+                          </div>
                         </div>
                         <div style={styles.previewBox}>
                           <div style={styles.subtleText}>Assumptions</div>
@@ -2830,7 +2871,7 @@ export default function Dashboard() {
                 </div>
               ) : null}
 
-              <details style={styles.recordCard}><summary style={{ cursor: "pointer", fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Control Tower details</summary><div style={{ marginTop: 12, display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}><div style={styles.previewBox}><div style={styles.subtleText}>Autonomy</div><div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f8fafc" }}>{controlTowerAutonomyState}</div></div><div style={styles.previewBox}><div style={styles.subtleText}>Retry budget</div><div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f8fafc" }}>{controlTowerRetryRemaining} remaining</div></div><div style={styles.previewBox}><div style={styles.subtleText}>Attention reason</div><div style={{ marginTop: 4, fontSize: 12, color: "#cbd5f5" }}>{controlTowerSummary?.operator_attention_reason || missionSummaryReason}</div></div><div style={styles.previewBox}><div style={styles.subtleText}>Latest role activity</div><div style={{ marginTop: 4, fontSize: 12, color: "#cbd5f5" }}>{latestRoleActivityText}</div></div></div></details>
+              <details style={styles.recordCard}><summary style={{ cursor: "pointer", fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Control Tower details</summary><div style={{ marginTop: 12, display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}><div style={styles.previewBox}><div style={styles.subtleText}>Autonomy</div><div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f8fafc" }}>{controlTowerAutonomyState}</div></div><div style={styles.previewBox}><div style={styles.subtleText}>Retry budget</div><div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f8fafc" }}>{controlTowerRetryRemaining} remaining</div></div><div style={styles.previewBox}><div style={styles.subtleText}>Attention reason</div><div style={{ marginTop: 4, fontSize: 12, color: "#cbd5f5" }}>{controlTowerSummary?.operator_attention_reason || missionSummaryReason}</div></div><div style={styles.previewBox}><div style={styles.subtleText}>Latest role activity</div><div style={{ marginTop: 4, fontSize: 12, color: "#cbd5f5" }}>{latestRoleActivityText}</div></div></div><div style={{ marginTop: 12, display: "grid", gap: 8 }}>{controlTowerExecutionLines.length ? controlTowerExecutionLines.map((line) => <div key={line} style={{ ...styles.previewBox, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>{line}</div>) : <div style={styles.subtleText}>No execution visibility summary yet.</div>}</div></details>
               <details style={styles.recordCard}><summary style={{ cursor: "pointer", fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Assumptions</summary><div style={{ marginTop: 12, display: "grid", gap: 8 }}><div style={{ ...styles.previewBox, fontSize: 12, color: "#cbd5f5" }}>{missionActiveAssumptionCount} active of {missionAssumptionCount} total. Derived only, mission-local only, never canonical truth.</div>{visibleMissionAssumptions.length ? visibleMissionAssumptions.map((assumption) => <div key={assumption.assumption_id} style={styles.recordCard}><div style={styles.recordMetaRow}><div style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>{assumption.text}</div><div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const }}><span style={assumptionStatusBadgeStyle(assumption.status)}>{assumption.status}</span><span style={assumptionOperatorBadgeStyle(assumption.confirmation?.operator_status || "unreviewed")}>{assumption.confirmation?.operator_status || "unreviewed"}</span></div></div><div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8" }}>{assumption.reason}</div><div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" as const }}><button type="button" onClick={() => void reviewAssumption(assumption.assumption_id, "confirm")} style={styles.secondaryButton}>Accept</button><button type="button" onClick={() => void reviewAssumption(assumption.assumption_id, "reject")} style={styles.secondaryButton}>Reject</button></div></div>) : <div style={styles.subtleText}>No assumptions are visible yet.</div>}</div></details>
               <details style={styles.recordCard}><summary style={{ cursor: "pointer", fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Runner returns</summary><div style={{ marginTop: 12, display: "grid", gap: 10 }}><div style={styles.previewBox}><div style={styles.subtleText}>Latest helper return</div><div style={{ marginTop: 4, fontSize: 13, color: "#cbd5f5" }}>{getRecordString(latestRunnerReturn, "summary") || "No helper return is linked to this mission yet."}</div></div><button type="button" onClick={() => void syncRunnerReturns()} style={styles.secondaryButton}>Sync helper returns</button></div></details>
               <details style={styles.recordCard}><summary style={{ cursor: "pointer", fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Mirror</summary><div style={styles.previewBox}><div style={styles.subtleText}>Mirror-door summary</div><div style={{ marginTop: 4, fontSize: 13, color: "#cbd5f5" }}>{mirrorDoorTest.available ? `${mirrorDoorBlocked} blocked correctly, ${mirrorDoorAccepted} accepted, ${mirrorDoorUnexpected} unexpected` : "Mirror-door summary not available."}</div></div></details>

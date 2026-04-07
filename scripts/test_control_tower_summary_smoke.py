@@ -217,6 +217,40 @@ def _test_control_tower_summary() -> None:
                 "created_at": "2026-04-05T12:03:00+00:00",
             },
         )
+        _write_json(
+            notes_root / "agent_runs" / "agent_run_001.json",
+            {
+                "run_id": "agent_run_001",
+                "artifact_kind": "agent_role_invocation",
+                "role": "spinetop_expeditioner",
+                "role_label": "Expeditioner",
+                "mission_id": mission_id,
+                "created_at": "2026-04-05T12:00:30+00:00",
+                "trigger_reason": "explicit_role_invocation",
+                "status": "success",
+                "summary": "Expeditioner completed a bounded manual pass.",
+                "confidence": 0.81,
+                "next_step": "Review the bounded result.",
+                "derived_only": True,
+            },
+        )
+        _write_json(
+            notes_root / "agent_runs" / "agent_run_002.json",
+            {
+                "run_id": "agent_run_002",
+                "artifact_kind": "agent_role_invocation",
+                "role": "spinetop_mirror",
+                "role_label": "Mirror",
+                "mission_id": mission_id,
+                "created_at": "2026-04-05T12:00:40+00:00",
+                "trigger_reason": "explicit_role_invocation",
+                "status": "success",
+                "summary": "Mirror completed a bounded manual review.",
+                "confidence": 0.78,
+                "next_step": "Compare the review with the runner receipt.",
+                "derived_only": True,
+            },
+        )
 
         retrieval_instance_id = "helper_unsynced"
         _write_json(
@@ -243,6 +277,8 @@ def _test_control_tower_summary() -> None:
         detail = dashboard_api._build_expedition_detail(mission_id)
         summary = detail.get("control_tower_summary") if isinstance(detail.get("control_tower_summary"), dict) else {}
         actions = list(summary.get("safe_operator_actions") or [])
+        visibility = summary.get("execution_visibility") if isinstance(summary.get("execution_visibility"), dict) else {}
+        visibility_lines = list(visibility.get("summary_lines") or [])
 
         _assert(summary.get("autonomy_state") == "blocked", f"expected blocked autonomy state: {summary}")
         _assert(summary.get("retry_budget") == 2, f"retry budget should surface: {summary}")
@@ -253,10 +289,89 @@ def _test_control_tower_summary() -> None:
         _assert((summary.get("active_role_handoff") or {}).get("allowed_action") == "retry_expedition_refresh", f"expected retry handoff: {summary}")
         _assert((summary.get("latest_role_activity") or {}).get("kind") == "mirror_note", f"latest role activity should prefer newest mirror note: {summary}")
         _assert(summary.get("operator_attention_reason") == "blocked by exhausted retry budget", f"operator attention reason should be readable: {summary}")
+        _assert(visibility.get("recent_runs_window") == 10, f"recent run window should be capped and visible: {visibility}")
+        _assert(visibility.get("active_execution_now") is False, f"blocked handoff should not look like an active run: {visibility}")
+        _assert(visibility.get("recent_successful_run_count") == 2, f"recent successful runs should be counted: {visibility}")
+        _assert(visibility.get("recent_successful_manual_run_count") == 2, f"manual invoke successes should be counted separately: {visibility}")
+        _assert(
+            "No active runs right now." in visibility_lines,
+            f"visibility lines should say when nothing is active: {visibility}",
+        )
+        _assert(
+            "2 recent successful manual runs occurred (last 10 runs max)." in visibility_lines,
+            f"visibility lines should mention successful manual runs: {visibility}",
+        )
+        _assert(
+            "Latest successful role activity came from operator invoke-role (Mirror)." in visibility_lines,
+            f"visibility lines should explain manual invoke provenance: {visibility}",
+        )
+        _assert(
+            "Autonomy is blocked: blocked by exhausted retry budget." in visibility_lines,
+            f"non-governance blocks should stay distinct from governance blocks: {visibility}",
+        )
         _assert("refresh assumptions" in actions, f"assumptions refresh should be suggested: {summary}")
         _assert("sync helper returns" in actions, f"helper sync should be suggested when unsynced receipts exist: {summary}")
         _assert("answer blocker" in actions, f"blocked missions should suggest answering blocker: {summary}")
         _assert("inspect mirror note" in actions, f"mirror note inspection should be suggested: {summary}")
+
+
+def _test_parked_mission_visibility() -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="control_tower_parked_"))
+    mission_id = "mission_parked_visibility"
+    with _patched_roots(temp_root):
+        _seed_expedition_state(
+            temp_root,
+            mission_id,
+            objective="Show that autonomy is blocked by a parked mission",
+            working_memory={
+                "blocked_reason": "Mission is parked pending explicit operator resume.",
+                "can_continue_without_input": False,
+                "operator_posture": "parked",
+            },
+        )
+        notes_root = temp_root / "workbench" / "missions" / mission_id / "notes"
+        _write_json(
+            notes_root / "parking_status.json",
+            {
+                "mission_id": mission_id,
+                "status": "parked",
+                "reason": "mission parked by operator while waiting on governance-safe review",
+                "parked_at": "2026-04-05T12:04:00+00:00",
+                "parked_by": "operator",
+                "resume_hint": "Resume only when the operator wants autonomy reconsidered.",
+                "updated_at": "2026-04-05T12:04:00+00:00",
+            },
+        )
+        _write_json(
+            notes_root / "agent_runs" / "agent_run_001.json",
+            {
+                "run_id": "agent_run_001",
+                "artifact_kind": "agent_role_invocation",
+                "role": "spinetop_expeditioner",
+                "role_label": "Expeditioner",
+                "mission_id": mission_id,
+                "created_at": "2026-04-05T12:03:30+00:00",
+                "trigger_reason": "explicit_role_invocation",
+                "status": "success",
+                "summary": "Expeditioner completed a manual checkpoint before parking.",
+                "confidence": 0.82,
+                "next_step": "Leave the mission parked until explicitly resumed.",
+                "derived_only": True,
+            },
+        )
+
+        detail = dashboard_api._build_expedition_detail(mission_id)
+        summary = detail.get("control_tower_summary") if isinstance(detail.get("control_tower_summary"), dict) else {}
+        visibility = summary.get("execution_visibility") if isinstance(summary.get("execution_visibility"), dict) else {}
+        visibility_lines = list(visibility.get("summary_lines") or [])
+
+        _assert(summary.get("autonomy_state") == "blocked", f"parked mission should block autonomy: {summary}")
+        _assert(visibility.get("autonomy_governance_blocked") is True, f"parked mission should be treated as governance-blocked visibility: {visibility}")
+        _assert(visibility.get("governance_block_reason") == "mission_parked", f"parked reason should be explicit: {visibility}")
+        _assert(
+            "Autonomy blocked because mission is parked." in visibility_lines,
+            f"parked autonomy block should be called out plainly: {visibility}",
+        )
 
 
 def _test_get_detail_is_read_only() -> None:
@@ -287,6 +402,7 @@ def _test_get_detail_is_read_only() -> None:
 
 def main() -> int:
     _test_control_tower_summary()
+    _test_parked_mission_visibility()
     _test_get_detail_is_read_only()
     print("control tower summary smoke passed")
     return 0

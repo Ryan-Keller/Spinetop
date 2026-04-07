@@ -59,6 +59,7 @@ class MemoryItem:
     speaker: str
     text: str
     payload: dict[str, Any]
+    sort_key: tuple[int, str, str]
 
 
 def utc_now_iso() -> str:
@@ -168,6 +169,21 @@ def _append_jsonl(path: Path, data: dict[str, Any]) -> None:
         fh.write(json.dumps(data, ensure_ascii=False) + "\n")
 
 
+def _parse_timestamp(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def load_memory_items(paths: list[str]) -> list[MemoryItem]:
     items: list[MemoryItem] = []
     for raw_path in paths:
@@ -176,17 +192,25 @@ def load_memory_items(paths: list[str]) -> list[MemoryItem]:
             text = _extract_text(record)
             if not text:
                 continue
+            timestamp = _extract_timestamp(record)
+            parsed_timestamp = _parse_timestamp(timestamp)
             items.append(
                 MemoryItem(
                     source_ref=_path_to_ref(path),
-                    timestamp=_extract_timestamp(record),
+                    timestamp=timestamp,
                     speaker=_extract_speaker(record),
                     text=text,
                     payload=record,
+                    sort_key=(
+                        0 if parsed_timestamp is not None else 1,
+                        parsed_timestamp.isoformat() if parsed_timestamp is not None else "",
+                        _path_to_ref(path),
+                    ),
                 )
             )
     if not items:
         raise MirrorReflectError("Mirror needs at least one readable memory item")
+    items.sort(key=lambda item: item.sort_key)
     return items
 
 
@@ -234,6 +258,107 @@ def _find_role_patterns(items: list[MemoryItem]) -> list[str]:
     return patterns
 
 
+def _iter_payload_scalars(payload: Any) -> list[str]:
+    values: list[str] = []
+    if isinstance(payload, dict):
+        for value in payload.values():
+            values.extend(_iter_payload_scalars(value))
+    elif isinstance(payload, list):
+        for value in payload:
+            values.extend(_iter_payload_scalars(value))
+    elif isinstance(payload, (str, bool, int, float)):
+        text = str(payload).strip()
+        if text:
+            values.append(text)
+    return values
+
+
+def _payload_text(item: MemoryItem) -> str:
+    return " | ".join(_iter_payload_scalars(item.payload)).lower()
+
+
+def _looks_like_operator_driven(item: MemoryItem) -> bool:
+    payload_text = _payload_text(item)
+    return any(token in payload_text for token in ("operator_", "operator ", "manual", "control_tower", "explicit_role_invocation"))
+
+
+def _find_timeline_mismatches(items: list[MemoryItem]) -> tuple[list[str], list[str], list[str], str | None]:
+    contradictions: list[str] = []
+    patterns: list[str] = []
+    gaps: list[str] = []
+
+    success_runs = [
+        item
+        for item in items
+        if str(item.payload.get("status") or "").strip().lower() == "success"
+        and str(item.payload.get("artifact_kind") or "").strip().lower() in {"agent_role_invocation", "agent_run"}
+    ]
+    operator_success_runs = [item for item in success_runs if _looks_like_operator_driven(item)]
+    blocked_triggers = [
+        item
+        for item in items
+        if (
+            str(item.payload.get("status") or "").strip().lower() == "blocked"
+            or "blocked by parked mission" in _payload_text(item)
+            or str((((item.payload.get("evaluation") or {}) if isinstance(item.payload.get("evaluation"), dict) else {}).get("blocked_reason")) or "").strip().lower() == "blocked by parked mission"
+        )
+        and (
+            str(item.payload.get("trigger_kind") or "").strip()
+            or str(item.payload.get("allowed_action") or "").strip()
+            or str(item.payload.get("policy_basis") or "").strip()
+        )
+    ]
+    parked_items = [
+        item
+        for item in items
+        if str(item.payload.get("status") or "").strip().lower() == "parked"
+        or bool(str(item.payload.get("parked_at") or "").strip())
+    ]
+    no_active_claims = [
+        item
+        for item in items
+        if any(phrase in _normalize_text(item.text) for phrase in ("no active agent runs", "no active runs"))
+    ]
+
+    latest_success = success_runs[-1] if success_runs else None
+    latest_operator_success = operator_success_runs[-1] if operator_success_runs else None
+    latest_blocked_trigger = blocked_triggers[-1] if blocked_triggers else None
+    latest_parked = parked_items[-1] if parked_items else None
+
+    if latest_operator_success and latest_blocked_trigger:
+        contradictions.append(
+            "Recent operator-driven role execution succeeded even while trigger history shows autonomy blocked by a parked mission, so manual execution and autonomous continuation are diverging rather than agreeing."
+        )
+
+    if latest_success and no_active_claims:
+        contradictions.append(
+            "Recent execution artifacts exist, but at least one reflection frame says there are no active runs; the mission needs a timeline-aware distinction between historical success and currently active work."
+        )
+
+    if latest_parked and len(success_runs) >= 2:
+        patterns.append(
+            f"Artifact history kept growing while the mission stayed parked, with {len(success_runs)} successful role run artifacts still visible in mission-local notes."
+        )
+
+    if blocked_triggers and operator_success_runs:
+        patterns.append(
+            f"Operator-driven activity remains visible ({len(operator_success_runs)} successful run artifact{'s' if len(operator_success_runs) != 1 else ''}) even though trigger-driven autonomy is blocked."
+        )
+
+    summary_note = None
+    if latest_operator_success and latest_blocked_trigger:
+        summary_note = (
+            "Recent operator-driven successes do not clear the parked, blocked autonomy posture; they show that manual invocation can still work while autonomous continuation remains blocked."
+        )
+    elif latest_success and latest_parked:
+        summary_note = "Recent execution should be read as artifact history, not proof that the parked mission is currently active."
+
+    if not any(item.timestamp for item in success_runs + blocked_triggers + parked_items):
+        gaps.append("Recent run, trigger, or parking evidence is present but weakly timestamped, which makes timeline comparison less reliable.")
+
+    return contradictions, patterns, gaps, summary_note
+
+
 def _find_contradictions(items: list[MemoryItem]) -> list[str]:
     contradictions: list[str] = []
     by_speaker: dict[str, set[str]] = {}
@@ -259,6 +384,10 @@ def _find_contradictions(items: list[MemoryItem]) -> list[str]:
         if key == "status" and {"active", "parked"}.issubset(meaningful):
             contradictions.append("Structured memory flips between 'active' and 'parked', suggesting unresolved session state.")
             break
+    timeline_contradictions, _, _, _ = _find_timeline_mismatches(items)
+    for line in timeline_contradictions:
+        if line not in contradictions:
+            contradictions.append(line)
     return contradictions
 
 
@@ -281,10 +410,14 @@ def _find_gaps(items: list[MemoryItem]) -> list[str]:
     timestamped = sum(1 for item in items if item.timestamp)
     if timestamped < len(items):
         gaps.append("Some memory items lack timestamps, which weakens pattern-over-time interpretation.")
+    _, _, timeline_gaps, _ = _find_timeline_mismatches(items)
+    for line in timeline_gaps:
+        if line not in gaps:
+            gaps.append(line)
     return gaps
 
 
-def _build_summary(items: list[MemoryItem], patterns: list[str], contradictions: list[str], gaps: list[str]) -> str:
+def _build_summary(items: list[MemoryItem], patterns: list[str], contradictions: list[str], gaps: list[str], summary_note: str | None = None) -> str:
     dominant_speaker = Counter(item.speaker for item in items).most_common(1)[0][0]
     summary_parts = [
         f"This session reads as a memory of coordination rather than resolution, with {len(items)} interpretable records led mostly by {dominant_speaker}.",
@@ -295,6 +428,8 @@ def _build_summary(items: list[MemoryItem], patterns: list[str], contradictions:
         summary_parts.append("Intent shows at least one tension or reversal instead of a single stable trajectory.")
     if gaps:
         summary_parts.append("Missing context limits how confidently the session meaning can be reconstructed.")
+    if summary_note:
+        summary_parts.append(summary_note)
     return " ".join(summary_parts)
 
 
@@ -330,13 +465,23 @@ def _scripted_model_binding(source: str, *, active: bool, error: str | None = No
 def _scripted_reflection(items: list[MemoryItem], *, model_binding: dict[str, Any] | None = None) -> dict[str, Any]:
     repeated = _find_repeated_messages(items)
     role_patterns = _find_role_patterns(items)
+    timeline_contradictions, timeline_patterns, timeline_gaps, summary_note = _find_timeline_mismatches(items)
     patterns = repeated + [line for line in role_patterns if line not in repeated]
+    for line in timeline_patterns:
+        if line not in patterns:
+            patterns.append(line)
     contradictions = _find_contradictions(items)
+    for line in timeline_contradictions:
+        if line not in contradictions:
+            contradictions.append(line)
     gaps = _find_gaps(items)
+    for line in timeline_gaps:
+        if line not in gaps:
+            gaps.append(line)
     return {
         "role": PROFILE.role_id,
         "kind": "mirror_reflection",
-        "summary": _build_summary(items, patterns, contradictions, gaps),
+        "summary": _build_summary(items, patterns, contradictions, gaps, summary_note),
         "patterns": patterns,
         "contradictions": contradictions,
         "gaps": gaps,
@@ -360,6 +505,7 @@ def _normalize_string_list(value: Any, *, field: str) -> list[str]:
 
 
 def _model_prompt(items: list[MemoryItem]) -> str:
+    timeline_contradictions, timeline_patterns, timeline_gaps, summary_note = _find_timeline_mismatches(items)
     prompt = {
         "role": "Spinetop-Mirror",
         "task": "Read memory-like inputs and produce a reflective mission-local interpretation only.",
@@ -381,7 +527,17 @@ def _model_prompt(items: list[MemoryItem]) -> str:
             "Stay mission-local and derived-only.",
             "Do not answer tasks, approve actions, or act as governance.",
             "Do not propose writes to Honcho or any mutation of sessions/messages/peers.",
+            "Prefer recent timestamped evidence over static state snapshots when they differ.",
+            "Explicitly compare recent execution artifacts, current mission posture, autonomy status, and trigger history.",
+            "Distinguish operator-driven or manual execution from autonomy-driven execution.",
+            "Treat 'recent execution but no active runs' as a possible timeline mismatch, not automatic consistency.",
         ],
+        "timeline_cues": {
+            "candidate_contradictions": timeline_contradictions,
+            "candidate_patterns": timeline_patterns,
+            "candidate_gaps": timeline_gaps,
+            "summary_note": summary_note or "",
+        },
         "memory_items": [
             {
                 "source_ref": item.source_ref,
@@ -401,6 +557,7 @@ def _build_model_reflection(items: list[MemoryItem]) -> dict[str, Any]:
         active=PROFILE.active and PROFILE.execution_backend == "model_backed" and bool(PROFILE.default_model_key),
     )
     fallback = _scripted_reflection(items, model_binding=_scripted_model_binding("disabled_safe_scripted_fallback", active=False))
+    timeline_contradictions, timeline_patterns, timeline_gaps, summary_note = _find_timeline_mismatches(items)
     if not binding["active"]:
         return fallback
 
@@ -430,6 +587,17 @@ def _build_model_reflection(items: list[MemoryItem]) -> dict[str, Any]:
             "source_refs": sorted({item.source_ref for item in items}),
             "model_binding": binding,
         }
+        for line in timeline_patterns:
+            if line not in reflection["patterns"]:
+                reflection["patterns"].append(line)
+        for line in timeline_contradictions:
+            if line not in reflection["contradictions"]:
+                reflection["contradictions"].append(line)
+        for line in timeline_gaps:
+            if line not in reflection["gaps"]:
+                reflection["gaps"].append(line)
+        if summary_note and summary_note not in reflection["summary"]:
+            reflection["summary"] = f"{reflection['summary']} {summary_note}".strip()
         if not reflection["summary"]:
             raise MirrorReflectError("Model field 'summary' must be a non-empty string")
         _append_jsonl(

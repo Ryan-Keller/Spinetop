@@ -475,6 +475,33 @@ export type ControlTowerIntervention = {
   changed_paths?: string[];
 };
 
+export type ControlTowerExecutionRun = {
+  run_id?: string;
+  role?: string;
+  status?: string;
+  summary?: string;
+  created_at?: string;
+  source_ref?: string;
+  origin?: string;
+  origin_label?: string;
+  trigger_reason?: string;
+};
+
+export type ControlTowerExecutionVisibility = {
+  active_execution_now?: boolean;
+  active_execution_status?: string;
+  active_execution_role?: string;
+  active_execution_action?: string;
+  recent_runs_window?: number;
+  recent_successful_run_count?: number;
+  recent_successful_manual_run_count?: number;
+  latest_successful_run?: ControlTowerExecutionRun | null;
+  latest_successful_manual_run?: ControlTowerExecutionRun | null;
+  autonomy_governance_blocked?: boolean;
+  governance_block_reason?: string;
+  summary_lines?: string[];
+};
+
 export type ControlTowerSummary = {
   autonomy_state?: string;
   last_trigger?: ControlTowerTrigger | null;
@@ -485,6 +512,7 @@ export type ControlTowerSummary = {
   last_blocked_reason?: string;
   active_role_handoff?: ControlTowerHandoff | null;
   latest_role_activity?: ControlTowerActivity | null;
+  execution_visibility?: ControlTowerExecutionVisibility | null;
   operator_attention_reason?: string;
   recent_operator_interventions?: ControlTowerIntervention[];
   safe_operator_actions?: string[];

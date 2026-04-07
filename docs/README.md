@@ -20,6 +20,7 @@ Start here:
 - [Sentinel Model Lifecycle](hermes_model_lifecycle_v1.md)
 - [Hermes Profile Bootstrap](hermes_profile_bootstrap_v1.md)
 - [Agent Invocation Layer](agent_invocation_layer_v1.md)
+- [Role Testing Sandbox](role_testing_sandbox.md)
 - [Sentinel Role Config](../config/sentinel_role.json)
 - [Mirror Role Config](../config/mirror_role.json)
 - [Knowledge Flow](knowledge_flow_README.md)

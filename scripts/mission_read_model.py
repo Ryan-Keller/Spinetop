@@ -8,6 +8,8 @@ from state_machine import normalize_mission_id, read_artifact_index, read_missio
 
 import mission_storage
 
+RECENT_RUNS_WINDOW = 10
+
 
 def _helper(helpers: dict[str, Any], name: str) -> Any:
     return helpers[name]
@@ -91,6 +93,152 @@ def _latest_role_activity(
         return None
     candidates.sort(key=lambda item: (str(item.get("created_at") or ""), str(item.get("source_ref") or "")), reverse=True)
     return candidates[0]
+
+
+def _agent_run_origin(run: dict[str, Any] | None) -> tuple[str, str]:
+    run = run if isinstance(run, dict) else {}
+    trigger_reason = (
+        str(run.get("trigger_reason") or "")
+        .strip()
+        .lower()
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
+    if trigger_reason in {"explicit_role_invocation", "operator_invoke_role"}:
+        return ("operator_invoke_role", "operator invoke-role")
+    if any(token in trigger_reason for token in ("operator", "manual", "invoke")):
+        return ("operator_invoke_role", "operator invoke-role")
+    if trigger_reason:
+        return ("governed_or_other", trigger_reason.replace("_", " "))
+    return ("unknown", "unknown source")
+
+
+def _run_visibility_item(run: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(run, dict) or not run:
+        return None
+    origin, origin_label = _agent_run_origin(run)
+    return {
+        "run_id": str(run.get("run_id") or "").strip(),
+        "role": str(run.get("role_label") or run.get("role") or "").strip() or "role",
+        "status": str(run.get("status") or "").strip(),
+        "summary": str(run.get("summary") or "").strip(),
+        "created_at": str(run.get("created_at") or "").strip(),
+        "source_ref": str(run.get("path") or run.get("source_ref") or "").strip(),
+        "origin": origin,
+        "origin_label": origin_label,
+        "trigger_reason": str(run.get("trigger_reason") or "").strip(),
+    }
+
+
+def _execution_visibility_summary(
+    *,
+    active_handoff: dict[str, Any] | None,
+    autonomy_status: dict[str, Any],
+    agent_runs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    active_handoff = active_handoff if isinstance(active_handoff, dict) else {}
+    autonomy_status = autonomy_status if isinstance(autonomy_status, dict) else {}
+
+    successful_runs = [item for item in agent_runs if str(item.get("status") or "").strip() == "success"]
+    successful_runs.sort(key=lambda item: (str(item.get("created_at") or ""), str(item.get("path") or "")), reverse=True)
+    recent_successful_runs = successful_runs[:RECENT_RUNS_WINDOW]
+    successful_manual_runs = [item for item in recent_successful_runs if _agent_run_origin(item)[0] == "operator_invoke_role"]
+    latest_successful_run = recent_successful_runs[0] if recent_successful_runs else None
+    latest_manual_successful_run = successful_manual_runs[0] if successful_manual_runs else None
+
+    active_status = str(active_handoff.get("status") or "").strip()
+    active_target_role = str(active_handoff.get("target_role") or "").strip() or "role"
+    active_action = str(active_handoff.get("allowed_action") or "").strip()
+    active_execution_now = active_status in {"pending", "active"}
+    if active_execution_now:
+        active_execution_summary = (
+            f"Active execution now: {active_target_role} {active_status}"
+            f"{f' for {active_action}' if active_action else ''}."
+        )
+    else:
+        active_execution_summary = "No active runs right now."
+
+    success_count = len(recent_successful_runs)
+    if success_count:
+        recent_success_summary = (
+            f"{success_count} recent successful role run{'s' if success_count != 1 else ''} recorded"
+            f" (last {RECENT_RUNS_WINDOW} runs max)."
+        )
+    else:
+        recent_success_summary = "No recent successful role runs recorded."
+
+    manual_success_count = len(successful_manual_runs)
+    latest_manual_item = _run_visibility_item(latest_manual_successful_run)
+    if manual_success_count:
+        manual_execution_summary = (
+            f"{manual_success_count} recent successful manual run{'s' if manual_success_count != 1 else ''} occurred"
+            f" (last {RECENT_RUNS_WINDOW} runs max)."
+        )
+    else:
+        manual_execution_summary = "No recent successful operator invoke-role runs recorded."
+
+    latest_success_item = _run_visibility_item(latest_successful_run)
+    if latest_manual_item:
+        latest_manual_summary = (
+            f"Latest successful role activity came from {latest_manual_item['origin_label']}"
+            f" ({latest_manual_item['role']})."
+        )
+    elif latest_success_item:
+        latest_manual_summary = (
+            f"Latest successful role activity came from {latest_success_item['origin_label']}"
+            f" ({latest_success_item['role']})."
+        )
+    else:
+        latest_manual_summary = "No successful role activity has been recorded yet."
+
+    last_blocked_reason = str(autonomy_status.get("last_blocked_reason") or "").strip()
+    if bool(autonomy_status.get("parked")) and str(autonomy_status.get("autonomy_status") or "") == "blocked":
+        autonomy_block_summary = "Autonomy blocked because mission is parked."
+        governance_blocked = True
+        governance_block_reason = "mission_parked"
+    elif bool(autonomy_status.get("kill_switch_active")) and str(autonomy_status.get("autonomy_status") or "") == "blocked":
+        autonomy_block_summary = (
+            f"Autonomy blocked by governance: {last_blocked_reason or 'return_all or nanny cooling is active'}."
+        )
+        governance_blocked = True
+        governance_block_reason = "kill_switch_active"
+    elif str(autonomy_status.get("autonomy_status") or "") == "blocked":
+        autonomy_block_summary = (
+            f"Autonomy is blocked: {last_blocked_reason}." if last_blocked_reason else "Autonomy is blocked."
+        )
+        governance_blocked = False
+        governance_block_reason = ""
+    elif str(autonomy_status.get("autonomy_status") or "") == "guarded":
+        autonomy_block_summary = (
+            f"Autonomy is guarded: {last_blocked_reason}." if last_blocked_reason else "Autonomy is guarded."
+        )
+        governance_blocked = False
+        governance_block_reason = ""
+    else:
+        autonomy_block_summary = "Autonomy ready; no governance block is active."
+        governance_blocked = False
+        governance_block_reason = ""
+
+    return {
+        "active_execution_now": active_execution_now,
+        "active_execution_status": active_status or "idle",
+        "active_execution_role": active_target_role if active_execution_now else "",
+        "active_execution_action": active_action if active_execution_now else "",
+        "recent_runs_window": RECENT_RUNS_WINDOW,
+        "recent_successful_run_count": success_count,
+        "recent_successful_manual_run_count": manual_success_count,
+        "latest_successful_run": latest_success_item,
+        "latest_successful_manual_run": latest_manual_item,
+        "autonomy_governance_blocked": governance_blocked,
+        "governance_block_reason": governance_block_reason,
+        "summary_lines": [
+            active_execution_summary,
+            recent_success_summary,
+            manual_execution_summary,
+            latest_manual_summary,
+            autonomy_block_summary,
+        ],
+    }
 
 
 def _mission_summary_payload(
@@ -452,6 +600,11 @@ def _build_control_tower_summary(
         helpers=helpers,
     )
     recent_interventions = read_operator_interventions(mission_id)[:5]
+    execution_visibility = _execution_visibility_summary(
+        active_handoff=active_handoff,
+        autonomy_status=autonomy_status,
+        agent_runs=agent_runs,
+    )
 
     return {
         "autonomy_state": str(autonomy_status.get("autonomy_status") or autonomy_status.get("status") or "ready").strip(),
@@ -477,6 +630,7 @@ def _build_control_tower_summary(
         "last_blocked_reason": str(autonomy_status.get("last_blocked_reason") or "").strip(),
         "active_role_handoff": active_handoff,
         "latest_role_activity": latest_role_activity,
+        "execution_visibility": execution_visibility,
         "operator_attention_reason": operator_attention_reason,
         "recent_operator_interventions": recent_interventions,
         "safe_operator_actions": safe_operator_actions(

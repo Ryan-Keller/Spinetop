@@ -63,6 +63,9 @@ def main() -> int:
 
     chat_path = notes_root / "chat.jsonl"
     status_path = memory_root / "parking_status.json"
+    agent_run_path = notes_root / "agent_runs" / "agent_run_20260407T030625Z_spinetop-helper-2b_1b7740.json"
+    agent_run_path_two = notes_root / "agent_runs" / "agent_run_20260407T030925Z_spinetop-expeditioner_ab12cd.json"
+    trigger_path = notes_root / "triggers" / "trigger_20260406T072333Z_b4ad61.json"
 
     _write_jsonl(
         chat_path,
@@ -103,9 +106,52 @@ def main() -> int:
         status_path,
         {
             "mission_id": mission_id,
-            "status": "active",
-            "reason": "no",
-            "updated_at": "2026-04-05T07:06:26Z",
+            "status": "parked",
+            "reason": "Parked from the mission console.",
+            "parked_at": "2026-04-06T05:59:53Z",
+            "parked_by": "operator",
+            "updated_at": "2026-04-06T23:43:30Z",
+        },
+    )
+    _write_json(
+        agent_run_path,
+        {
+            "run_id": "agent_run_20260407T030625Z_spinetop-helper-2b_1b7740",
+            "artifact_kind": "agent_role_invocation",
+            "role": "spinetop-helper-2b",
+            "created_at": "2026-04-07T03:06:25Z",
+            "trigger_reason": "operator_test",
+            "status": "success",
+            "summary": "Successful bounded helper return for operator review.",
+        },
+    )
+    _write_json(
+        agent_run_path_two,
+        {
+            "run_id": "agent_run_20260407T030925Z_spinetop-expeditioner_ab12cd",
+            "artifact_kind": "agent_role_invocation",
+            "role": "spinetop-expeditioner",
+            "created_at": "2026-04-07T03:09:25Z",
+            "trigger_reason": "operator_test",
+            "status": "success",
+            "summary": "Successful bounded expeditioner return for operator review.",
+        },
+    )
+    _write_json(
+        trigger_path,
+        {
+            "trigger_id": "trigger_20260406T072333Z_b4ad61",
+            "mission_id": mission_id,
+            "created_at": "2026-04-06T07:23:33Z",
+            "trigger_kind": "operator_refresh_requested",
+            "reason": "return-to-base default option 1 applied after visible delay",
+            "source": "control_tower_intervention",
+            "policy_basis": "operator_requested_refresh",
+            "status": "blocked",
+            "evaluation": {
+                "blocked_reason": "blocked by parked mission",
+                "policy_condition": "mission_parked",
+            },
         },
     )
 
@@ -136,6 +182,9 @@ def main() -> int:
             [
                 "workbench/missions/mirror_test_mission/notes/chat.jsonl",
                 "memory/drafts/parking_status.json",
+                "workbench/missions/mirror_test_mission/notes/agent_runs/agent_run_20260407T030625Z_spinetop-helper-2b_1b7740.json",
+                "workbench/missions/mirror_test_mission/notes/agent_runs/agent_run_20260407T030925Z_spinetop-expeditioner_ab12cd.json",
+                "workbench/missions/mirror_test_mission/notes/triggers/trigger_20260406T072333Z_b4ad61.json",
             ]
         )
         calls: list[dict] = []
@@ -185,6 +234,18 @@ def main() -> int:
     _assert("stalled coordination loop" in reflection["summary"], "expected model-generated summary")
     _assert(reflection["model_binding"]["source"] == "model", "expected active model binding")
     _assert("task" not in reflection["summary"].lower(), "summary drifted into task-answer framing")
+    _assert(
+        "manual invocation can still work while autonomous continuation remains blocked" in reflection["summary"],
+        "timeline-aware summary note should be appended",
+    )
+    _assert(
+        any("manual execution and autonomous continuation are diverging" in item for item in reflection["contradictions"]),
+        f"expected blocked-autonomy/manual-run contradiction: {reflection['contradictions']}",
+    )
+    _assert(
+        any("Artifact history kept growing while the mission stayed parked" in item for item in reflection["patterns"]),
+        f"expected parked mission artifact-growth pattern: {reflection['patterns']}",
+    )
     _assert(output_path.exists(), "reflection output file was not written")
     model_logs = _read_jsonl(temp_root / "logs" / "support" / "mirror_model_invocations.jsonl")
     _assert(len(model_logs) == 1, f"expected one model invocation log entry, got {model_logs}")
@@ -229,6 +290,9 @@ def main() -> int:
             [
                 "workbench/missions/mirror_test_mission/notes/chat.jsonl",
                 "memory/drafts/parking_status.json",
+                "workbench/missions/mirror_test_mission/notes/agent_runs/agent_run_20260407T030625Z_spinetop-helper-2b_1b7740.json",
+                "workbench/missions/mirror_test_mission/notes/agent_runs/agent_run_20260407T030925Z_spinetop-expeditioner_ab12cd.json",
+                "workbench/missions/mirror_test_mission/notes/triggers/trigger_20260406T072333Z_b4ad61.json",
             ]
         )
 
@@ -245,6 +309,10 @@ def main() -> int:
 
     _assert(disabled_reflection["model_binding"]["source"] == "disabled_safe_scripted_fallback", "expected disabled-safe fallback binding")
     _assert(any("Repeated" in item for item in disabled_reflection["patterns"]), "expected scripted repeated-signal fallback")
+    _assert(
+        any("manual execution and autonomous continuation are diverging" in item for item in disabled_reflection["contradictions"]),
+        f"expected scripted blocked-autonomy/manual-run contradiction: {disabled_reflection['contradictions']}",
+    )
     _assert(not (temp_root / "logs" / "support" / "mirror_model_disabled.jsonl").exists(), "disabled-safe fallback should not log model invocations")
 
     failure_profile = replace(helper_model_runtime.load_helper_runtime_profile("spinetop-mirror"), active=True)
@@ -261,6 +329,9 @@ def main() -> int:
             [
                 "workbench/missions/mirror_test_mission/notes/chat.jsonl",
                 "memory/drafts/parking_status.json",
+                "workbench/missions/mirror_test_mission/notes/agent_runs/agent_run_20260407T030625Z_spinetop-helper-2b_1b7740.json",
+                "workbench/missions/mirror_test_mission/notes/agent_runs/agent_run_20260407T030925Z_spinetop-expeditioner_ab12cd.json",
+                "workbench/missions/mirror_test_mission/notes/triggers/trigger_20260406T072333Z_b4ad61.json",
             ]
         )
 
