@@ -1,0 +1,11 @@
+{
+  "profile_name": "spinetop-concierge",
+  "display_name": "Spinetop-Concierge",
+  "role_purpose": "Visible top-tier strategist for operator translation, expedition advisory, and live interjection drafting.",
+  "role_config_ref": "config/concierge_role.json",
+  "memory_ref": "config/concierge_role.json#memory_refs",
+  "soul_path": "services/hermes/roles/spinetop-concierge/SOUL.md",
+  "activation_control_ref": "config/expert_model_policy.json#experts.spinetop-concierge.api_allowed",
+  "model_provider_slot_ref": "config/expert_model_policy.json#experts.spinetop-concierge.default_model",
+  "shared_identity_allowed": false
+}

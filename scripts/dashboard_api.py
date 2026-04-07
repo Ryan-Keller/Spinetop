@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -7,7 +8,7 @@ import threading
 import urllib.request
 from collections import Counter
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from flask import Flask, jsonify, request
@@ -3957,6 +3958,370 @@ def _expedition_signals_api_item(mission_id: str) -> dict[str, Any]:
     }
 
 
+def _replay_event_key(kind: str, created_at: str, artifact_ref: str, identity: str) -> str:
+    seed = "|".join([kind, created_at, artifact_ref, identity])
+    return f"{kind}_{_short_digest(seed)}"
+
+
+def _timeline_event_record(kind: str, item: dict[str, Any]) -> dict[str, Any] | None:
+    created_at = str(item.get("created_at") or "").strip()
+    if not created_at:
+        return None
+    artifact_ref = str(item.get("artifact_ref") or "").strip()
+    if kind == "agent_run":
+        identity = str(item.get("run_id") or "").strip()
+        return {
+            "event_key": _replay_event_key(kind, created_at, artifact_ref, identity),
+            "kind": kind,
+            "created_at": created_at,
+            "summary": str(item.get("summary") or "").strip(),
+            "role": str(item.get("role") or "").strip(),
+            "status": str(item.get("status") or "").strip(),
+            "artifact_ref": artifact_ref,
+            "run_id": identity,
+        }
+    if kind == "trigger":
+        identity = str(item.get("trigger_id") or "").strip()
+        return {
+            "event_key": _replay_event_key(kind, created_at, artifact_ref, identity),
+            "kind": kind,
+            "created_at": created_at,
+            "summary": str(item.get("reason") or item.get("trigger_kind") or "").strip(),
+            "role": str(item.get("target_role") or "").strip(),
+            "status": str(item.get("status") or "").strip(),
+            "artifact_ref": artifact_ref,
+            "trigger_id": identity,
+            "trigger_kind": str(item.get("trigger_kind") or "").strip(),
+            "allowed_action": str(item.get("allowed_action") or "").strip(),
+        }
+    if kind == "intervention":
+        identity = str(item.get("intervention_id") or "").strip()
+        refs = [str(ref).strip() for ref in item.get("artifact_refs", []) if str(ref).strip()]
+        primary_ref = refs[0] if refs else artifact_ref
+        return {
+            "event_key": _replay_event_key(kind, created_at, primary_ref, identity),
+            "kind": kind,
+            "created_at": created_at,
+            "summary": str(item.get("reason") or item.get("action") or "").strip(),
+            "role": "operator",
+            "status": str(item.get("status") or "").strip(),
+            "artifact_ref": primary_ref,
+            "intervention_id": identity,
+            "action": str(item.get("action") or "").strip(),
+            "artifact_refs": refs,
+        }
+    return None
+
+
+def _expedition_replay_truth_events(mission_id: str) -> list[dict[str, Any]]:
+    timeline = _expedition_timeline_api_item(mission_id)
+    events: list[dict[str, Any]] = []
+    for kind, field in (
+        ("agent_run", "recent_agent_runs"),
+        ("trigger", "recent_triggers"),
+        ("intervention", "recent_interventions"),
+    ):
+        for item in timeline.get(field, []) or []:
+            if not isinstance(item, dict):
+                continue
+            record = _timeline_event_record(kind, item)
+            if record:
+                events.append(record)
+    events.sort(key=lambda item: (str(item.get("created_at") or ""), str(item.get("event_key") or "")))
+    for index, item in enumerate(events):
+        item["event_index"] = index
+    return events
+
+
+_REPLAY_RELATIVE_TIME_RE = re.compile(r"^\s*(\d+)\s*([smhd])\s*$", re.IGNORECASE)
+
+
+def _parse_replay_relative_time(value: Any) -> timedelta:
+    match = _REPLAY_RELATIVE_TIME_RE.match(str(value or ""))
+    if not match:
+        raise ValueError("relative_time value must look like '5m', '30s', '2h', or '1d'")
+    amount = int(match.group(1))
+    unit = match.group(2).lower()
+    if amount <= 0:
+        raise ValueError("relative_time value must be greater than zero")
+    if unit == "s":
+        return timedelta(seconds=amount)
+    if unit == "m":
+        return timedelta(minutes=amount)
+    if unit == "h":
+        return timedelta(hours=amount)
+    return timedelta(days=amount)
+
+
+def _encode_replay_window_payload(payload: dict[str, Any]) -> str:
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    token = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    return f"rw_{_short_digest(raw.decode('utf-8'))}_{token}"
+
+
+def _decode_replay_window_payload(replay_window_id: str) -> dict[str, Any]:
+    value = str(replay_window_id or "").strip()
+    if not value.startswith("rw_"):
+        raise ValueError("invalid replay_window_id")
+    parts = value.split("_", 2)
+    if len(parts) != 3:
+        raise ValueError("invalid replay_window_id")
+    token = parts[2]
+    padding = "=" * (-len(token) % 4)
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(token + padding).decode("utf-8"))
+    except Exception as exc:
+        raise ValueError("invalid replay_window_id") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("invalid replay_window_id")
+    return payload
+
+
+def _build_replay_window(mission_id: str, mode: str, value: Any) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    events = _expedition_replay_truth_events(mission)
+    if not events:
+        raise ValueError("replay window unavailable because no mission timeline events are available")
+
+    normalized_mode = str(mode or "").strip().lower()
+    if normalized_mode == "event_count":
+        try:
+            count = int(value)
+        except Exception as exc:
+            raise ValueError("event_count value must be an integer") from exc
+        if count <= 0:
+            raise ValueError("event_count value must be greater than zero")
+        window_events = events[-count:]
+    elif normalized_mode == "relative_time":
+        delta = _parse_replay_relative_time(value)
+        latest_time = parse_iso(str(events[-1].get("created_at") or ""))
+        if latest_time is None:
+            raise ValueError("relative_time replay window requires timeline events with timestamps")
+        window_start_threshold = latest_time - delta
+        window_events = [
+            item for item in events
+            if (parse_iso(str(item.get("created_at") or "")) or latest_time) >= window_start_threshold
+        ]
+    else:
+        raise ValueError("mode must be one of: relative_time, event_count")
+
+    if not window_events:
+        raise ValueError("replay window contains no events")
+
+    payload = {
+        "mission_id": mission,
+        "window_start": str(window_events[0].get("created_at") or "").strip(),
+        "window_end": str(window_events[-1].get("created_at") or "").strip(),
+        "event_keys": [str(item.get("event_key") or "").strip() for item in window_events],
+    }
+    return {
+        "replay_window_id": _encode_replay_window_payload(payload),
+        "mission_id": mission,
+        "window_start": payload["window_start"],
+        "window_end": payload["window_end"],
+        "event_count": len(window_events),
+        "available_directions": ["forward", "reverse"],
+        "truth_frozen": True,
+    }
+
+
+def _replay_window_events(mission_id: str, replay_window_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    payload = _decode_replay_window_payload(replay_window_id)
+    mission = normalize_mission_id(mission_id)
+    if str(payload.get("mission_id") or "").strip() != mission:
+        raise ValueError("replay_window_id does not belong to this mission")
+    event_keys = [str(item).strip() for item in payload.get("event_keys", []) if str(item).strip()]
+    if not event_keys:
+        raise ValueError("replay_window_id contains no events")
+    event_map = {
+        str(item.get("event_key") or "").strip(): item
+        for item in _expedition_replay_truth_events(mission)
+        if isinstance(item, dict)
+    }
+    window_events = [event_map[key] for key in event_keys if key in event_map]
+    if not window_events:
+        raise ValueError("replay window events are no longer available from mission-local truth")
+    for index, item in enumerate(window_events):
+        item["window_index"] = index
+    return payload, window_events
+
+
+def _resolve_replay_cursor_index(
+    events: list[dict[str, Any]],
+    *,
+    cursor_index: Any = None,
+    cursor_time: str = "",
+    direction: str = "forward",
+) -> int:
+    if not events:
+        raise ValueError("replay window contains no events")
+    if cursor_index is not None and cursor_index != "":
+        index = int(cursor_index)
+        if index < 0 or index >= len(events):
+            raise ValueError("cursor_index is outside the replay window")
+        return index
+    if cursor_time:
+        for index, item in enumerate(events):
+            if str(item.get("created_at") or "").strip() == cursor_time:
+                return index
+        raise ValueError("cursor_time is outside the replay window")
+    return len(events) - 1 if str(direction or "").strip().lower() == "reverse" else 0
+
+
+def _normalize_replay_direction(direction: str, *, default: str = "forward") -> str:
+    normalized = str(direction or "").strip().lower() or default
+    if normalized not in {"forward", "reverse"}:
+        raise ValueError("direction must be one of: forward, reverse")
+    return normalized
+
+
+def _normalize_replay_speed(value: Any) -> float:
+    if value in (None, ""):
+        return 1.0
+    speed = float(value)
+    if speed <= 0:
+        raise ValueError("speed must be greater than zero")
+    return speed
+
+
+def _build_replay_cursor_state(
+    mission_id: str,
+    replay_window_id: str,
+    action: str,
+    *,
+    cursor_position: Any = None,
+    cursor_time: str = "",
+    direction: str = "",
+    speed: Any = None,
+) -> dict[str, Any]:
+    _payload, events = _replay_window_events(mission_id, replay_window_id)
+    normalized_action = str(action or "").strip().lower()
+    if normalized_action not in {"play", "pause", "reverse", "step_forward", "step_backward", "jump"}:
+        raise ValueError("action must be one of: play, pause, reverse, step_forward, step_backward, jump")
+
+    effective_direction = _normalize_replay_direction(direction, default="forward")
+    index = _resolve_replay_cursor_index(events, cursor_index=cursor_position, cursor_time=cursor_time, direction=effective_direction)
+    paused = normalized_action == "pause"
+    effective_speed = _normalize_replay_speed(speed)
+
+    if normalized_action == "play":
+        paused = False
+    elif normalized_action == "reverse":
+        paused = False
+        effective_direction = "reverse"
+    elif normalized_action == "step_forward":
+        effective_direction = "forward"
+        paused = True
+        index = min(len(events) - 1, index + 1)
+    elif normalized_action == "step_backward":
+        effective_direction = "reverse"
+        paused = True
+        index = max(0, index - 1)
+    elif normalized_action == "jump":
+        paused = True
+
+    current = events[index]
+    return {
+        "replay_window_id": replay_window_id,
+        "cursor_time": str(current.get("created_at") or "").strip(),
+        "cursor_index": index,
+        "direction": effective_direction,
+        "speed": effective_speed,
+        "paused": paused,
+    }
+
+
+def _replay_activity_signal(event: dict[str, Any]) -> dict[str, Any]:
+    role = str(event.get("role") or "").strip()
+    summary = str(event.get("summary") or "").strip()
+    kind = str(event.get("kind") or "").strip()
+    return {
+        "status": "active",
+        "kind": kind,
+        "role": role,
+        "summary": summary,
+        "created_at": str(event.get("created_at") or "").strip(),
+    }
+
+
+def _replay_mirror_observation(event: dict[str, Any], interpretation: dict[str, Any] | None, signals: dict[str, Any], direction: str) -> str:
+    summary = str(event.get("summary") or "").strip() or str(event.get("kind") or "").strip()
+    role = str(event.get("role") or "").strip() or "mission-local activity"
+    contradiction = (signals.get("contradiction") or {}) if isinstance(signals.get("contradiction"), dict) else {}
+    blocked = (signals.get("blocked") or {}) if isinstance(signals.get("blocked"), dict) else {}
+    mirror_summary = str((interpretation or {}).get("summary") or "").strip()
+
+    clauses = [f"Mirror observes: {role} is visible as {summary}."]
+    if contradiction.get("present"):
+        clauses.append(f"Mirror detects: contradiction remains present ({str(contradiction.get('summary') or '').strip()}).")
+    elif blocked.get("present"):
+        clauses.append(f"Mirror notes: the mission remains blocked ({str(blocked.get('reason') or '').strip()}).")
+    elif mirror_summary:
+        clauses.append(f"Mirror notes: {mirror_summary}")
+    if direction == "reverse":
+        clauses.append("Mirror notes: reverse traversal changes view order, not causality.")
+    return " ".join(clause for clause in clauses if clause)
+
+
+def _replay_observer_note(direction: str) -> str:
+    if direction == "reverse":
+        return "Direction reversed. Truth is unchanged; interpretation is current."
+    return "Truth is unchanged; interpretation is current."
+
+
+def _replay_frame_context(events: list[dict[str, Any]], index: int) -> dict[str, Any]:
+    current = events[index]
+    previous_event = events[index - 1] if index > 0 else None
+    next_event = events[index + 1] if index + 1 < len(events) else None
+    nearby_events = events[max(0, index - 1): min(len(events), index + 2)]
+    return {
+        "window_start": str(events[0].get("created_at") or "").strip(),
+        "window_end": str(events[-1].get("created_at") or "").strip(),
+        "event_count": len(events),
+        "current_event": current,
+        "previous_event": previous_event,
+        "next_event": next_event,
+        "nearby_events": nearby_events,
+    }
+
+
+def _build_replay_frame(
+    mission_id: str,
+    replay_window_id: str,
+    *,
+    cursor_index: Any = None,
+    cursor_time: str = "",
+    direction: str = "",
+    lens: str = "",
+) -> dict[str, Any]:
+    _payload, events = _replay_window_events(mission_id, replay_window_id)
+    effective_direction = _normalize_replay_direction(direction, default="forward")
+    index = _resolve_replay_cursor_index(events, cursor_index=cursor_index, cursor_time=cursor_time, direction=effective_direction)
+    current = events[index]
+
+    signals = _expedition_signals_api_item(mission_id)
+    signals["activity"] = _replay_activity_signal(current)
+    interpretation = _expedition_interpretation_api_item(mission_id)
+
+    return {
+        "mission_id": normalize_mission_id(mission_id),
+        "replay_window_id": replay_window_id,
+        "cursor_time": str(current.get("created_at") or "").strip(),
+        "cursor_index": index,
+        "direction": effective_direction,
+        "lens": str(lens or "").strip() or None,
+        "frame_context": _replay_frame_context(events, index),
+        "active_signals": signals,
+        "mirror_observation": _replay_mirror_observation(current, interpretation, signals, effective_direction),
+        "observer_note": _replay_observer_note(effective_direction),
+        "artifact_fidelity": {
+            "chat_output_unchanged": True,
+            "mission_state_unchanged": True,
+            "artifacts_unchanged": True,
+        },
+    }
+
+
 def _normalize_mission_objective(objective: str) -> str:
     text = re.sub(r"[^\w\s]+", " ", str(objective or "").lower().strip())
     text = re.sub(r"\s+", " ", text).strip()
@@ -5361,6 +5726,80 @@ def api_expedition_signals(mission_id: str):
         return jsonify({"ok": False, "error": "mission not found"}), 404
     try:
         item = _expedition_signals_api_item(mission_id)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "item": item})
+
+
+@app.post("/api/expeditions/<mission_id>/replay/window")
+def api_expedition_replay_window(mission_id: str):
+    try:
+        exists = _mission_exists(mission_id)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    if not exists:
+        return jsonify({"ok": False, "error": "mission not found"}), 404
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        item = _build_replay_window(mission_id, payload.get("mode"), payload.get("value"))
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "item": item})
+
+
+@app.post("/api/expeditions/<mission_id>/replay/cursor")
+def api_expedition_replay_cursor(mission_id: str):
+    try:
+        exists = _mission_exists(mission_id)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    if not exists:
+        return jsonify({"ok": False, "error": "mission not found"}), 404
+
+    payload = request.get_json(silent=True) or {}
+    replay_window_id = str(payload.get("replay_window_id") or "").strip()
+    if not replay_window_id:
+        return jsonify({"ok": False, "error": "replay_window_id is required"}), 400
+    try:
+        item = _build_replay_cursor_state(
+            mission_id,
+            replay_window_id,
+            payload.get("action"),
+            cursor_position=payload.get("cursor_position"),
+            cursor_time=str(payload.get("cursor_time") or "").strip(),
+            direction=str(payload.get("direction") or "").strip(),
+            speed=payload.get("speed"),
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "item": item})
+
+
+@app.get("/api/expeditions/<mission_id>/replay/frame")
+def api_expedition_replay_frame(mission_id: str):
+    try:
+        exists = _mission_exists(mission_id)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    if not exists:
+        return jsonify({"ok": False, "error": "mission not found"}), 404
+
+    replay_window_id = str(request.args.get("replay_window_id", "")).strip()
+    if not replay_window_id:
+        return jsonify({"ok": False, "error": "replay_window_id is required"}), 400
+
+    cursor_index = request.args.get("cursor_index")
+    cursor_time = str(request.args.get("cursor_time", "")).strip()
+    try:
+        item = _build_replay_frame(
+            mission_id,
+            replay_window_id,
+            cursor_index=cursor_index,
+            cursor_time=cursor_time,
+            direction=str(request.args.get("direction", "")).strip(),
+            lens=str(request.args.get("lens", "")).strip(),
+        )
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     return jsonify({"ok": True, "item": item})

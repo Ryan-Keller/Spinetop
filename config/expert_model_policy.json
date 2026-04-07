@@ -25,6 +25,13 @@
       "escalation_model": "api_research",
       "api_allowed": true,
       "lane": "model_analysis_and_research"
+    },
+    "spinetop-concierge": {
+      "allowed_models": ["api_reasoning", "api_research"],
+      "default_model": "api_reasoning",
+      "escalation_model": "api_reasoning",
+      "api_allowed": true,
+      "lane": "visible_expedition_strategy"
     }
   }
 }

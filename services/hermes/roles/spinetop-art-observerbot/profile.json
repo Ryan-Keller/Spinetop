@@ -1,0 +1,11 @@
+{
+  "profile_name": "spinetop-art-observerbot",
+  "display_name": "Spinetop-Art-Observerbot",
+  "role_purpose": "Visible observer seam for signal relevance, expression overlays, and ghost wake cueing.",
+  "role_config_ref": "config/art_observerbot_role.json",
+  "memory_ref": "config/art_observerbot_role.json#memory_refs",
+  "soul_path": "services/hermes/roles/spinetop-art-observerbot/SOUL.md",
+  "activation_control_ref": "config/helper_model_registry.json#roles.spinetop-art-observerbot.active",
+  "model_provider_slot_ref": "config/helper_model_registry.json#roles.spinetop-art-observerbot.default_model_key",
+  "shared_identity_allowed": false
+}

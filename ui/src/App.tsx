@@ -1,10 +1,31 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Dashboard from "./pages/Dashboard";
 import HonchoItemWorld from "./pages/HonchoItemWorld";
 import AgentMemoryTriadPage from "./pages/AgentMemoryTriadPage";
 import EmissaryReturnGatePage from "./pages/EmissaryReturnGatePage";
+import ExpressionConsolePage from "./pages/ExpressionConsolePage";
+import VisibleExpressionConsolePage from "./pages/VisibleExpressionConsolePage";
 
-type Page = "dashboard" | "honcho" | "triad" | "emissary";
+type Page = "dashboard" | "console" | "visibleConsole" | "honcho" | "triad" | "emissary";
+
+const pageHashes: Record<Page, string> = {
+  dashboard: "#/dashboard",
+  console: "#/console",
+  visibleConsole: "#/visible-console",
+  honcho: "#/honcho",
+  triad: "#/triad",
+  emissary: "#/emissary",
+};
+
+const hashToPage = (hash: string): Page => {
+  const normalized = hash.trim().toLowerCase();
+  if (normalized === "#/visible-console") return "visibleConsole";
+  if (normalized === "#/console") return "console";
+  if (normalized === "#/honcho") return "honcho";
+  if (normalized === "#/triad") return "triad";
+  if (normalized === "#/emissary") return "emissary";
+  return "dashboard";
+};
 
 const styles = {
   app: {
@@ -60,7 +81,25 @@ const styles = {
 };
 
 function App() {
-  const [page, setPage] = useState<Page>("dashboard");
+  const [page, setPage] = useState<Page>(() => hashToPage(window.location.hash));
+
+  useEffect(() => {
+    const applyHash = () => setPage(hashToPage(window.location.hash));
+    window.addEventListener("hashchange", applyHash);
+    if (!window.location.hash) {
+      window.location.hash = pageHashes.dashboard;
+    }
+    return () => window.removeEventListener("hashchange", applyHash);
+  }, []);
+
+  const navigate = (nextPage: Page) => {
+    const nextHash = pageHashes[nextPage];
+    if (window.location.hash !== nextHash) {
+      window.location.hash = nextHash;
+      return;
+    }
+    setPage(nextPage);
+  };
 
   return (
     <div style={styles.app}>
@@ -70,7 +109,7 @@ function App() {
           <div style={styles.navButtons}>
             <button
               type="button"
-              onClick={() => setPage("dashboard")}
+              onClick={() => navigate("dashboard")}
               style={{
                 ...styles.button,
                 ...(page === "dashboard" ? styles.buttonActive : null),
@@ -80,7 +119,27 @@ function App() {
             </button>
             <button
               type="button"
-              onClick={() => setPage("honcho")}
+              onClick={() => navigate("visibleConsole")}
+              style={{
+                ...styles.button,
+                ...(page === "visibleConsole" ? styles.buttonActive : null),
+              }}
+            >
+              Visible Console
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate("console")}
+              style={{
+                ...styles.button,
+                ...(page === "console" ? styles.buttonActive : null),
+              }}
+            >
+              Expression Console V1
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate("honcho")}
               style={{
                 ...styles.button,
                 ...(page === "honcho" ? styles.buttonActive : null),
@@ -90,7 +149,7 @@ function App() {
             </button>
             <button
               type="button"
-              onClick={() => setPage("triad")}
+              onClick={() => navigate("triad")}
               style={{
                 ...styles.button,
                 ...(page === "triad" ? styles.buttonActive : null),
@@ -100,7 +159,7 @@ function App() {
             </button>
             <button
               type="button"
-              onClick={() => setPage("emissary")}
+              onClick={() => navigate("emissary")}
               style={{
                 ...styles.button,
                 ...(page === "emissary" ? styles.buttonActive : null),
@@ -114,6 +173,10 @@ function App() {
 
       {page === "dashboard" ? (
         <Dashboard />
+      ) : page === "visibleConsole" ? (
+        <VisibleExpressionConsolePage />
+      ) : page === "console" ? (
+        <ExpressionConsolePage />
       ) : page === "honcho" ? (
         <HonchoItemWorld />
       ) : page === "triad" ? (
