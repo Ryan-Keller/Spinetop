@@ -3407,6 +3407,9 @@ def _build_control_tower_summary(
     *,
     mission_id: str,
     manifest: dict[str, Any] | None,
+    latest_draft: dict[str, Any] | None,
+    latest_packet: dict[str, Any] | None,
+    prompt_translation_count: int,
     summary_preview: dict[str, Any],
     autonomy_status: dict[str, Any],
     latest_trigger: dict[str, Any] | None,
@@ -3421,6 +3424,9 @@ def _build_control_tower_summary(
     return mission_read_model._build_control_tower_summary(
         mission_id=mission_id,
         manifest=manifest,
+        latest_draft=latest_draft,
+        latest_packet=latest_packet,
+        prompt_translation_count=prompt_translation_count,
         summary_preview=summary_preview,
         autonomy_status=autonomy_status,
         latest_trigger=latest_trigger,
@@ -3675,6 +3681,280 @@ def _apply_control_tower_intervention(
 def _mission_exists(mission_id: str) -> bool:
     mission = normalize_mission_id(mission_id)
     return _mission_root(mission).exists() or _workbench_root(mission).exists()
+
+
+def _project_latest_meaningful_activity(detail: dict[str, Any]) -> dict[str, Any] | None:
+    control_tower = detail.get("control_tower_summary") if isinstance(detail.get("control_tower_summary"), dict) else {}
+    latest_role_activity = control_tower.get("latest_role_activity") if isinstance(control_tower.get("latest_role_activity"), dict) else {}
+    if latest_role_activity:
+        return {
+            "kind": str(latest_role_activity.get("kind") or "").strip(),
+            "role": str(latest_role_activity.get("role") or "").strip(),
+            "summary": str(latest_role_activity.get("summary") or "").strip(),
+            "created_at": str(latest_role_activity.get("created_at") or "").strip(),
+            "artifact_ref": str(latest_role_activity.get("source_ref") or "").strip(),
+        }
+
+    latest_trigger = detail.get("latest_trigger") if isinstance(detail.get("latest_trigger"), dict) else {}
+    if latest_trigger:
+        return {
+            "kind": "trigger",
+            "role": str(latest_trigger.get("target_role") or "").strip(),
+            "summary": str(latest_trigger.get("reason") or latest_trigger.get("trigger_kind") or "").strip(),
+            "created_at": str(latest_trigger.get("created_at") or "").strip(),
+            "artifact_ref": str(latest_trigger.get("path") or "").strip(),
+        }
+    return None
+
+
+def _expedition_state_api_item(detail: dict[str, Any]) -> dict[str, Any]:
+    mission_summary = detail.get("mission_summary") if isinstance(detail.get("mission_summary"), dict) else {}
+    control_tower = detail.get("control_tower_summary") if isinstance(detail.get("control_tower_summary"), dict) else {}
+    return {
+        "mission_id": str(detail.get("mission_id") or "").strip(),
+        "objective": str(detail.get("objective") or "").strip(),
+        "current_state": str(detail.get("current_state") or "").strip(),
+        "operator_posture": str(detail.get("operator_posture") or mission_summary.get("operator_posture") or "").strip(),
+        "autonomy_state": str(control_tower.get("autonomy_state") or "").strip(),
+        "blocked_reason": str(mission_summary.get("blocked_reason") or "").strip() or None,
+        "latest_meaningful_activity": _project_latest_meaningful_activity(detail),
+        "recommended_next_step": str(mission_summary.get("recommended_next_step") or "").strip(),
+    }
+
+
+def _timeline_agent_run_item(run: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "run_id": str(run.get("run_id") or "").strip(),
+        "role": str(run.get("role_label") or run.get("role") or "").strip(),
+        "status": str(run.get("status") or "").strip(),
+        "summary": str(run.get("summary") or "").strip(),
+        "trigger_reason": str(run.get("trigger_reason") or "").strip(),
+        "created_at": str(run.get("created_at") or "").strip(),
+        "artifact_ref": str(run.get("path") or "").strip(),
+    }
+
+
+def _timeline_trigger_item(trigger: dict[str, Any]) -> dict[str, Any]:
+    evaluation = trigger.get("evaluation") if isinstance(trigger.get("evaluation"), dict) else {}
+    return {
+        "trigger_id": str(trigger.get("trigger_id") or "").strip(),
+        "trigger_kind": str(trigger.get("trigger_kind") or "").strip(),
+        "status": str(trigger.get("status") or "").strip(),
+        "reason": str(trigger.get("reason") or "").strip(),
+        "target_role": str(trigger.get("target_role") or "").strip(),
+        "allowed_action": str(trigger.get("allowed_action") or "").strip(),
+        "created_at": str(trigger.get("created_at") or "").strip(),
+        "blocked_reason": str(evaluation.get("blocked_reason") or trigger.get("blocked_reason") or "").strip() or None,
+        "artifact_ref": str(trigger.get("path") or "").strip(),
+    }
+
+
+def _timeline_intervention_item(intervention: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "intervention_id": str(intervention.get("intervention_id") or "").strip(),
+        "action": str(intervention.get("action") or "").strip(),
+        "status": str(intervention.get("status") or "").strip(),
+        "reason": str(intervention.get("reason") or "").strip(),
+        "blocked_reason": str(intervention.get("blocked_reason") or "").strip() or None,
+        "created_at": str(intervention.get("created_at") or "").strip(),
+        "artifact_refs": [str(item).strip() for item in intervention.get("changed_paths", []) if str(item).strip()],
+    }
+
+
+def _expedition_timeline_api_item(mission_id: str) -> dict[str, Any]:
+    _sync_mission_storage()
+    mission = normalize_mission_id(mission_id)
+    agent_runs = sorted(
+        _read_agent_runs(mission),
+        key=lambda item: (str(item.get("created_at") or ""), str(item.get("path") or "")),
+        reverse=True,
+    )[:10]
+    triggers = sorted(
+        _read_trigger_records(mission),
+        key=lambda item: (str(item.get("created_at") or ""), str(item.get("path") or "")),
+        reverse=True,
+    )[:10]
+    interventions = sorted(
+        _read_operator_interventions(mission),
+        key=lambda item: (str(item.get("created_at") or ""), str(item.get("intervention_id") or "")),
+        reverse=True,
+    )[:10]
+    retry_ledger = _read_retry_ledger(mission)
+    timestamps = {
+        "latest_agent_run_at": str(agent_runs[0].get("created_at") or "").strip() if agent_runs else "",
+        "latest_trigger_at": str(triggers[0].get("created_at") or "").strip() if triggers else "",
+        "latest_intervention_at": str(interventions[0].get("created_at") or "").strip() if interventions else "",
+        "last_retry_at": str(retry_ledger.get("last_retry_at") or "").strip(),
+        "updated_at": _latest_mtime([
+            _agent_runs_dir(mission),
+            _triggers_dir(mission),
+            _interventions_dir(mission),
+            _retry_ledger_path(mission),
+        ]),
+    }
+
+    artifact_refs: list[dict[str, Any]] = []
+    seen_refs: set[str] = set()
+    for kind, rows in (("agent_run", agent_runs), ("trigger", triggers)):
+        for row in rows:
+            ref = str(row.get("path") or "").strip()
+            if not ref or ref in seen_refs:
+                continue
+            seen_refs.add(ref)
+            artifact_refs.append({
+                "kind": kind,
+                "artifact_ref": ref,
+                "created_at": str(row.get("created_at") or "").strip(),
+            })
+    for row in interventions:
+        for ref in [str(item).strip() for item in row.get("changed_paths", []) if str(item).strip()]:
+            if ref in seen_refs:
+                continue
+            seen_refs.add(ref)
+            artifact_refs.append({
+                "kind": "intervention_change",
+                "artifact_ref": ref,
+                "created_at": str(row.get("created_at") or "").strip(),
+            })
+
+    return {
+        "mission_id": mission,
+        "recent_agent_runs": [_timeline_agent_run_item(item) for item in agent_runs],
+        "recent_triggers": [_timeline_trigger_item(item) for item in triggers],
+        "recent_interventions": [_timeline_intervention_item(item) for item in interventions],
+        "retries_summary": {
+            "retry_budget_total": int(retry_ledger.get("retry_budget_total") or 0),
+            "retry_budget_used": int(retry_ledger.get("retry_budget_used") or 0),
+            "last_retry_at": str(retry_ledger.get("last_retry_at") or "").strip(),
+            "last_failure_reason": str(retry_ledger.get("last_failure_reason") or "").strip(),
+            "stop_reason": str(retry_ledger.get("stop_reason") or "").strip(),
+            "recent_decisions": [
+                {
+                    "decided_at": str(item.get("decided_at") or "").strip(),
+                    "decision": str(item.get("decision") or "").strip(),
+                    "retry_reason": str(item.get("retry_reason") or item.get("why_retried") or "").strip(),
+                    "why_blocked": str(item.get("why_blocked") or "").strip() or None,
+                }
+                for item in list(retry_ledger.get("decision_log") or [])[-5:]
+                if isinstance(item, dict)
+            ],
+        },
+        "timestamps": timestamps,
+        "artifact_refs": artifact_refs[:20],
+    }
+
+
+def _latest_mirror_reflection(mission_id: str) -> tuple[dict[str, Any] | None, str]:
+    _sync_mission_storage()
+    mission = normalize_mission_id(mission_id)
+    mirror_notes = _read_mirror_notes(mission)
+    latest_note = mirror_notes[0] if mirror_notes else None
+    if not isinstance(latest_note, dict):
+        return None, ""
+    path_text = str(latest_note.get("path") or "").strip()
+    if not path_text:
+        return None, ""
+    payload = _load_json(_relative_or_absolute(path_text))
+    if not isinstance(payload, dict):
+        return None, ""
+    return payload, path_text
+
+
+def _expedition_interpretation_api_item(mission_id: str) -> dict[str, Any] | None:
+    reflection, _path_text = _latest_mirror_reflection(mission_id)
+    if not isinstance(reflection, dict):
+        return None
+    return {
+        "summary": str(reflection.get("summary") or "").strip(),
+        "patterns": [str(item).strip() for item in reflection.get("patterns", []) if str(item).strip()],
+        "contradictions": [str(item).strip() for item in reflection.get("contradictions", []) if str(item).strip()],
+        "suggested_focus": [str(item).strip() for item in reflection.get("suggested_focus", []) if str(item).strip()],
+    }
+
+
+def _interpretation_mode_error(mode: str) -> str:
+    normalized = str(mode or "").strip().lower()
+    if not normalized:
+        return ""
+    if normalized in {"strict", "interpretive"}:
+        return "mode parameter is deferred because only one existing Mirror-derived interpretation surface is available"
+    return "mode must be one of: strict, interpretive"
+
+
+def _expedition_signals_api_item(mission_id: str) -> dict[str, Any]:
+    detail = _build_expedition_detail(mission_id)
+    mission_summary = detail.get("mission_summary") if isinstance(detail.get("mission_summary"), dict) else {}
+    control_tower = detail.get("control_tower_summary") if isinstance(detail.get("control_tower_summary"), dict) else {}
+    queue_hygiene = detail.get("queue_hygiene") if isinstance(detail.get("queue_hygiene"), dict) else {}
+    interpretation, _path_text = _latest_mirror_reflection(mission_id)
+    contradictions = [
+        str(item).strip()
+        for item in ((interpretation or {}).get("contradictions") or [])
+        if str(item).strip()
+    ]
+
+    latest_activity = _project_latest_meaningful_activity(detail)
+    activity = None
+    if isinstance(latest_activity, dict):
+        activity = {
+            "status": "active",
+            "kind": str(latest_activity.get("kind") or "").strip(),
+            "role": str(latest_activity.get("role") or "").strip(),
+            "summary": str(latest_activity.get("summary") or "").strip(),
+            "created_at": str(latest_activity.get("created_at") or "").strip(),
+        }
+
+    blocked_reason = (
+        str(mission_summary.get("blocked_reason") or "").strip()
+        or str(control_tower.get("last_blocked_reason") or "").strip()
+    )
+    blocked = None
+    if blocked_reason or str(control_tower.get("autonomy_state") or "").strip() == "blocked":
+        blocked = {
+            "present": True,
+            "reason": blocked_reason or str(control_tower.get("operator_attention_reason") or "").strip(),
+            "operator_posture": str(detail.get("operator_posture") or "").strip(),
+            "autonomy_state": str(control_tower.get("autonomy_state") or "").strip(),
+        }
+
+    contradiction = None
+    if contradictions:
+        contradiction = {
+            "present": True,
+            "count": len(contradictions),
+            "summary": contradictions[0],
+        }
+
+    stall = None
+    if bool(queue_hygiene.get("stale_candidate")) or bool(queue_hygiene.get("blocked_candidate")):
+        signals = [str(item).strip() for item in queue_hygiene.get("signals", []) if str(item).strip()]
+        stall = {
+            "present": True,
+            "summary": signals[0] if signals else str(queue_hygiene.get("recommendation_reason") or "").strip(),
+            "last_activity_at": str(queue_hygiene.get("last_activity_at") or "").strip(),
+            "last_activity_age_days": queue_hygiene.get("last_activity_age_days"),
+        }
+
+    handoff = None
+    active_handoff = control_tower.get("active_role_handoff") if isinstance(control_tower.get("active_role_handoff"), dict) else {}
+    if active_handoff:
+        handoff = {
+            "present": True,
+            "status": str(active_handoff.get("status") or "").strip(),
+            "target_role": str(active_handoff.get("target_role") or "").strip(),
+            "allowed_action": str(active_handoff.get("allowed_action") or "").strip(),
+            "reason": str(active_handoff.get("reason") or "").strip(),
+            "updated_at": str(active_handoff.get("updated_at") or "").strip(),
+        }
+
+    return {
+        "mission_id": str(detail.get("mission_id") or "").strip(),
+        "activity": activity,
+        "blocked": blocked,
+        "contradiction": contradiction,
+        "stall": stall,
+        "handoff": handoff,
+    }
 
 
 def _normalize_mission_objective(objective: str) -> str:
@@ -5014,6 +5294,78 @@ def api_expedition_detail(mission_id: str):
     })
 
 
+@app.get("/api/expeditions/<mission_id>/state")
+def api_expedition_state(mission_id: str):
+    try:
+        exists = _mission_exists(mission_id)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    if not exists:
+        return jsonify({"ok": False, "error": "mission not found"}), 404
+    try:
+        item = _expedition_state_api_item(_build_expedition_detail(mission_id))
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "item": item})
+
+
+@app.get("/api/expeditions/<mission_id>/timeline")
+def api_expedition_timeline(mission_id: str):
+    try:
+        exists = _mission_exists(mission_id)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    if not exists:
+        return jsonify({"ok": False, "error": "mission not found"}), 404
+    try:
+        item = _expedition_timeline_api_item(mission_id)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "item": item})
+
+
+@app.get("/api/expeditions/<mission_id>/interpretation")
+def api_expedition_interpretation(mission_id: str):
+    try:
+        exists = _mission_exists(mission_id)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    if not exists:
+        return jsonify({"ok": False, "error": "mission not found"}), 404
+
+    mode_error = _interpretation_mode_error(request.args.get("mode", ""))
+    if mode_error:
+        return jsonify({"ok": False, "error": mode_error}), 400
+
+    try:
+        item = _expedition_interpretation_api_item(mission_id)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    if item is None:
+        return jsonify({
+            "ok": True,
+            "available": False,
+            "reason": "no existing Mirror-derived interpretation artifact is available for this mission",
+            "item": None,
+        })
+    return jsonify({"ok": True, "available": True, "item": item})
+
+
+@app.get("/api/expeditions/<mission_id>/signals")
+def api_expedition_signals(mission_id: str):
+    try:
+        exists = _mission_exists(mission_id)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    if not exists:
+        return jsonify({"ok": False, "error": "mission not found"}), 404
+    try:
+        item = _expedition_signals_api_item(mission_id)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "item": item})
+
+
 @app.post("/api/expeditions/<mission_id>/sync-runner-returns")
 def api_expedition_sync_runner_returns(mission_id: str):
     try:
@@ -5076,13 +5428,17 @@ def api_expedition_invoke_role(mission_id: str):
             "success" if result.get("ok") else str(result.get("status") or "created"),
             str(((result.get("output") or {}) if isinstance(result.get("output"), dict) else {}).get("result") or "").strip(),
         )
-        item = _build_expedition_detail(mission)
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
+    record = result.get("record") if isinstance(result.get("record"), dict) else {}
     return jsonify({
         "ok": True,
-        "invocation": result,
-        "item": item,
+        "mission_id": mission,
+        "role": str(result.get("role") or "").strip(),
+        "status": str(result.get("status") or "").strip(),
+        "runtime_active": bool(record.get("runtime_active")),
+        "artifact_path": str(result.get("artifact_path") or "").strip(),
+        "output": result.get("output") if isinstance(result.get("output"), dict) else {},
     })
 
 
