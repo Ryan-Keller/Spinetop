@@ -234,7 +234,7 @@ def main() -> int:
         forbidden_guardrail = autonomy_guardrails.evaluate_autonomy_guardrails(
             mission_id=mission,
             trigger_kind="operator_refresh_requested",
-            target_role="spinetop_expeditioner",
+            target_role="spinetop-expeditioner",
             allowed_action="retry_expedition_refresh",
             policy_basis="operator_requested_refresh",
             trigger_reason="test forbidden write target",

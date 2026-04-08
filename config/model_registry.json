@@ -1,47 +1,38 @@
 {
   "notes": [
     "Registry only; no runtime execution.",
-    "Model names may require operator confirmation in the current environment."
+    "Active runtime paths are local-only.",
+    "Roles must bind only to configured local models that are inspectable in this registry."
   ],
   "models": {
-    "local_onboarding_gemma4_e4b_4k": {
+    "local_granite3_3_2b_q2k": {
+      "provider": "ollama",
+      "model": "hf.co/ibm-granite/granite-3.3-2b-instruct-GGUF:Q2_K",
+      "class": "production_local",
+      "intended_use": [
+        "Sentinel gate-only review",
+        "bounded helper reasoning",
+        "Mirror mission-local reflections"
+      ]
+    },
+    "local_gemma4_e4b_4k": {
       "provider": "ollama",
       "model": "gemma4:e4b-4k",
-      "class": "onboarding_local",
-      "intended_use": ["triage", "summaries", "light analysis", "onboarding validation"]
-    },
-    "local_production_qwen2_5_coder_14b": {
-      "provider": "ollama",
-      "model": "qwen2.5-coder:14b",
-      "ollama_options": {
-        "num_ctx": 8192
-      },
       "class": "production_local",
-      "intended_use": ["deeper reasoning", "repair analysis", "complex summaries", "default Sentinel runs"]
+      "intended_use": [
+        "Expeditioner first-pass work",
+        "Concierge visible advisory",
+        "local general mission support"
+      ]
     },
-    "api_reasoning": {
-      "provider": "api",
-      "model": "gpt-5-reasoning",
-      "class": "deep_api",
-      "intended_use": ["high-stakes planning", "multi-step reasoning"]
-    },
-    "api_research": {
-      "provider": "api",
-      "model": "gpt-5-research",
-      "class": "research_api",
-      "intended_use": ["comparative research", "model scouting", "market scan"]
-    },
-    "local_helper_granite3_3_2b": {
+    "local_deepseek_r1_8b": {
       "provider": "ollama",
-      "model": "granite3.3:2b",
+      "model": "deepseek-r1:8b",
       "class": "production_local",
-      "intended_use": ["short-horizon support", "bounded helper reasoning", "helper_2b tactical summaries"]
-    },
-    "local_mirror_gemma4_e4b": {
-      "provider": "ollama",
-      "model": "gemma4:e4b",
-      "class": "production_local",
-      "intended_use": ["memory interpretation", "mission-local reflection", "Mirror read-only summaries"]
+      "intended_use": [
+        "Ghosts role when explicitly wired later",
+        "deferred local-only reasoning seam"
+      ]
     }
   }
 }

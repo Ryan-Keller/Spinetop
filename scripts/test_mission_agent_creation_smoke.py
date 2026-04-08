@@ -92,7 +92,7 @@ def main() -> int:
         expected_agent_id = f"mission_agent_{mission_id}_expeditioner"
         _assert(str(mission_agent.get("agent_id") or "") == expected_agent_id, f"unexpected mission agent id: {mission_agent}")
         _assert(str(mission_agent.get("mission_id") or "") == mission_id, f"mission agent should be tied to mission_id: {mission_agent}")
-        _assert(str(mission_agent.get("role_id") or "") == "spinetop_expeditioner", f"unexpected role binding: {mission_agent}")
+        _assert(str(mission_agent.get("role_id") or "") == "spinetop-expeditioner", f"unexpected role binding: {mission_agent}")
         _assert(bool(mission_agent.get("operator_chat_required")) is False, "operator should stay on the main shell")
 
         scope = mission_agent.get("scope")

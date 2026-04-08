@@ -5,7 +5,7 @@
   "role_config_ref": "config/expeditioner_role.json",
   "memory_ref": "config/expeditioner_role.json#memory_refs",
   "soul_path": "services/hermes/roles/spinetop-expeditioner/SOUL.md",
-  "activation_control_ref": "config/helper_model_registry.json#roles.spinetop_expeditioner.active",
-  "model_provider_slot_ref": "config/helper_model_registry.json#roles.spinetop_expeditioner.default_model_key",
+  "activation_control_ref": "config/helper_model_registry.json#roles.spinetop-expeditioner.active",
+  "model_provider_slot_ref": "config/helper_model_registry.json#roles.spinetop-expeditioner.default_model_key",
   "shared_identity_allowed": false
 }

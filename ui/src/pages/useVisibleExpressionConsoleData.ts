@@ -1,7 +1,9 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { MissionChatMessage } from "./dashboardTypes";
 import { useExpressionConsoleData } from "./useExpressionConsoleData";
+
+const API_BASE = (import.meta.env.VITE_SPINETOP_API_BASE as string | undefined)?.trim() || "/api";
 
 export type MirrorExpressionSpec = {
   expression_mode: "art" | "signal_field" | "tension_map";
@@ -31,6 +33,19 @@ export type AdvisorySurface = {
   strength: "low" | "high";
   created_at?: string;
   source: string;
+};
+
+export type MirrorNote = {
+  artifact_id: string;
+  text: string;
+  created_at: string;
+  artifact_kind: string;
+};
+
+type MirrorNotesResponse = {
+  ok: boolean;
+  items?: MirrorNote[];
+  error?: string;
 };
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
@@ -82,12 +97,54 @@ const advisoryFromMessage = (message: MissionChatMessage): AdvisorySurface | nul
 
 export function useVisibleExpressionConsoleData() {
   const data = useExpressionConsoleData();
+  const [mirrorNotes, setMirrorNotes] = useState<MirrorNote[]>([]);
+
+  useEffect(() => {
+    if (!data.selectedMissionId) {
+      setMirrorNotes([]);
+      return;
+    }
+
+    let cancelled = false;
+    const controller = new AbortController();
+
+    const run = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/expeditions/${data.selectedMissionId}/mirror-notes`, { signal: controller.signal });
+        const payload = (await response.json().catch(() => ({}))) as MirrorNotesResponse;
+        if (!response.ok) {
+          throw new Error(payload.error || `HTTP ${response.status}`);
+        }
+        if (cancelled) return;
+        const items = Array.isArray(payload.items)
+          ? payload.items.map((item) => ({
+              artifact_id: typeof item?.artifact_id === "string" ? item.artifact_id : "",
+              text: typeof item?.text === "string" ? item.text : "",
+              created_at: typeof item?.created_at === "string" ? item.created_at : "",
+              artifact_kind: typeof item?.artifact_kind === "string" ? item.artifact_kind : "",
+            }))
+          : [];
+        setMirrorNotes(items);
+      } catch (err) {
+        if (cancelled || (err instanceof DOMException && err.name === "AbortError")) return;
+        setMirrorNotes([]);
+      }
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [data.refreshTick, data.selectedMissionId]);
 
   return useMemo(() => {
+    const latestMirrorNote = mirrorNotes[0] || null;
     const confidence = clamp(data.mission?.mission_summary?.confidence ?? 0.18, 0, 1);
     const currentState = firstString(data.mission?.current_state, data.state.item?.current_state, "planning");
     const blocked = Boolean(data.signals.item?.blocked?.present || data.signals.item?.blocked?.reason);
-    const interpretationReady = Boolean(data.interpretation.available || data.mission?.mirror_notes?.length);
+    const interpretationReady = Boolean(data.interpretation.available || mirrorNotes.length);
     const handoff = Boolean(data.signals.item?.handoff?.present || data.signals.item?.handoff?.target_role);
     const phase = derivePhase(currentState, blocked, handoff, interpretationReady);
 
@@ -104,6 +161,7 @@ export function useVisibleExpressionConsoleData() {
       data.timeline.item?.recent_agent_runs?.[0]?.created_at,
       data.timeline.item?.recent_triggers?.[0]?.created_at,
       data.timeline.item?.recent_interventions?.[0]?.created_at,
+      latestMirrorNote?.created_at,
       data.mission?.last_updated,
     ]);
 
@@ -173,6 +231,7 @@ export function useVisibleExpressionConsoleData() {
       summary:
         firstString(
           data.interpretation.item?.summary,
+          latestMirrorNote?.text,
           data.signals.item?.contradiction?.summary,
           data.signals.item?.activity?.summary,
           data.state.item?.recommended_next_step,
@@ -181,9 +240,10 @@ export function useVisibleExpressionConsoleData() {
 
     return {
       ...data,
+      mirrorNotes,
       progress,
       expressionSpec,
       advisories: advisories.slice(0, 4),
     };
-  }, [data]);
+  }, [data, mirrorNotes]);
 }

@@ -1,363 +1,358 @@
 {
-    "notes":  [
-                  "Runtime seam for helper roles only; helper execution remains scripted unless explicitly switched.",
-                  "Default helper policy is local-only and inert until a role is moved from scripted to model_backed.",
-                  "Authority boundaries in this registry describe bounded helper permissions only; they do not authorize truth writes, approval, submission, or canonical state mutation."
-              ],
-    "roles":  {
-                  "spinetop_expeditioner":  {
-                                                "role_description":  "Spinetop-Expeditioner is the mission-doing worker for useful first-pass derived outputs inside mission-local and workbench lanes.",
-                                                "active":  true,
-                                                "execution_backend":  "model_backed",
-                                                "allowed_model_keys":  [
-                                                                           "local_onboarding_gemma4_e4b_4k",
-                                                                           "local_production_qwen2_5_coder_14b"
-                                                                       ],
-                                                "default_model_key":  "local_production_qwen2_5_coder_14b",
-                                                "fallback_model_key":  "local_production_qwen2_5_coder_14b",
-                                                "provider_requirement":  "local_only",
-                                                "mapped_helpers":  [
-                                                                       "retrieval_helper_2b",
-                                                                       "runner_helper_2b"
-                                                                   ],
-                                                "context_refs":  [
-                                                                     "expeditions/active/ mission briefs and mission inputs",
-                                                                     "workbench/missions/ notes and mission-local artifacts",
-                                                                     "workbench/missions/*/notes/runner_returns/",
-                                                                     "workbench/missions/*/notes/assumptions/",
-                                                                     "clarification packets and other mission-local derived artifacts"
-                                                                 ],
-                                                "config_refs":  [
-                                                                    "config/expeditioner_role.json",
-                                                                    "config/helper_model_registry.json",
-                                                                    "config/model_registry.json",
-                                                                    "docs/helper_catalog_v1.md",
-                                                                    "docs/support_orchestration_contract_v1.md"
-                                                                ],
-                                                "support_write_scope":  [
-                                                                            "workbench/missions/",
-                                                                            "logs/support/",
-                                                                            "memory/drafts/ only when explicitly allowed"
-                                                                        ],
-                                                "inactive_behavior":  "disabled_safe",
-                                                "behavior_contract":  {
-                                                                          "thinking_style":  [
-                                                                                                 "first-pass mission execution",
-                                                                                                 "bounded assumptions",
-                                                                                                 "useful-now delivery"
-                                                                                             ],
-                                                                          "output_structure":  [
-                                                                                                   "first-pass answer",
-                                                                                                   "assumptions used",
-                                                                                                   "next steps"
-                                                                                               ],
-                                                                          "must_do":  [
-                                                                                          "produce something useful now with the context in hand",
-                                                                                          "use the labels \u0027First-pass answer:\u0027, \u0027Assumptions:\u0027, and \u0027Next steps:\u0027 when emitting Expeditioner-style responses",
-                                                                                          "omit the assumptions section when no assumptions were used",
-                                                                                          "omit the next steps section when it would not help",
-                                                                                          "refine later if new mission-local constraints appear instead of defaulting to blocking"
-                                                                                      ],
-                                                                          "must_not":  [
-                                                                                           "default to broad defer language when a bounded first pass is possible",
-                                                                                           "act like Sentinel",
-                                                                                           "write truth",
-                                                                                           "replace scripted runner returns"
-                                                                                       ],
-                                                                          "separation_rule":  "Expeditioner mission-doing output stays structured, human-readable, and distinct from governance, review, and scripted external receipts"
-                                                                      },
-                                                "authority_boundary":  {
-                                                                           "may_read":  [
-                                                                                            "mission briefs and mission inputs under expeditions/active/",
-                                                                                            "mission-local context under workbench/missions/",
-                                                                                            "workbench notes, runner returns, active assumptions, and clarification packets",
-                                                                                            "approved support inputs and mission-local artifacts"
-                                                                                        ],
-                                                                           "may_write_only":  [
-                                                                                                  "mission-local outputs and workbench artifacts under workbench/missions/",
-                                                                                                  "support artifacts under logs/support/",
-                                                                                                  "derived overlays under memory/drafts/ when the request explicitly allows them"
-                                                                                              ],
-                                                                           "derived_outputs_only":  true,
-                                                                           "returns_must_remain_structured":  true,
-                                                                           "may_not":  [
-                                                                                           "write truth",
-                                                                                           "approve",
-                                                                                           "promote",
-                                                                                           "submit",
-                                                                                           "mutate canonical mission state",
-                                                                                           "write to memory/collective",
-                                                                                           "write to memory/dispatch/approved",
-                                                                                           "write to Honcho",
-                                                                                           "submit directly to bridge",
-                                                                                           "replace scripted runner-return receipts",
-                                                                                           "bypass governance",
-                                                                                           "create hidden loops"
-                                                                                       ]
-                                                                       },
-                                                "notes":  [
-                                                              "Distinct Hermes-backed Spinetop role for mission-doing work.",
-                                                              "Expeditioner is not Sentinel, not the mirror, not Spinetop-helper_2b, and not governance.",
-                                                              "Expeditioner should attempt a bounded first pass with the context in hand instead of defaulting to clarification.",
-                                                              "If the mission is sufficient to proceed, Expeditioner should move forward under explicit assumptions and refine later only if needed.",
-                                                              "Expeditioner outputs should stay lightweight and human-readable: first-pass answer first, assumptions only if any, and next steps only when helpful.",
-                                                              "Execution backend is operator-approved for bounded first-pass mission answers through the existing local model seam.",
-                                                              "If runtime is inactive, Expeditioner stays disabled-safe and falls back to scripted bounded receipts only.",
-                                                              "Scripted return packets remain the mirror-visible path even if a helper later reasons with a local model internally."
-                                                          ]
-                                            },
-                  "spinetop-helper_2b":  {
-                                             "role_description":  "Spinetop-helper_2b is the field-side mini brain for short-horizon expedition support and bounded runner-return preparation.",
-                                             "active":  true,
-                                             "execution_backend":  "model_backed",
-                                             "allowed_model_keys":  [
-                                                                        "local_onboarding_gemma4_e4b_4k",
-                                                                        "local_helper_granite3_3_2b"
-                                                                    ],
-                                             "default_model_key":  "local_helper_granite3_3_2b",
-                                             "fallback_model_key":  "local_helper_granite3_3_2b",
-                                             "provider_requirement":  "local_only",
-                                             "mapped_helpers":  [
-                                                                    "retrieval_helper_2b",
-                                                                    "runner_helper_2b"
-                                                                ],
-                                             "context_refs":  [
-                                                                  "expeditions/active/ mission-local artifacts",
-                                                                  "workbench/missions/ notes and mission-local helper context",
-                                                                  "workbench/missions/*/notes/runner_returns/",
-                                                                  "workbench/missions/*/notes/assumptions/ only when explicitly allowed",
-                                                                  "logs/support/ helper-local artifacts"
-                                                              ],
-                                             "config_refs":  [
-                                                                 "config/helper_model_registry.json",
-                                                                 "config/helper_role.json",
-                                                                 "config/model_registry.json",
-                                                                 "docs/helper_catalog_v1.md",
-                                                                 "docs/support_orchestration_contract_v1.md"
-                                                             ],
-                                             "support_write_scope":  [
-                                                                         "workbench/missions/ helper-local notes only",
-                                                                         "logs/support/",
-                                                                         "memory/drafts/ only when explicitly allowed"
-                                                                     ],
-                                             "inactive_behavior":  "disabled_safe",
-                                             "behavior_contract":  {
-                                                                       "thinking_style":  [
-                                                                                              "short horizon",
-                                                                                              "local context",
-                                                                                              "tactical suggestions"
-                                                                                          ],
-                                                                       "output_structure":  [
-                                                                                                "current context",
-                                                                                                "key observations",
-                                                                                                "possible next steps",
-                                                                                                "open questions"
-                                                                                            ],
-                                                                       "must_do":  [
-                                                                                       "summarize local findings",
-                                                                                       "track short-term context",
-                                                                                       "suggest next checks",
-                                                                                       "highlight contradictions without inventing a resolution"
-                                                                                   ],
-                                                                       "must_not":  [
-                                                                                        "act like Expeditioner",
-                                                                                        "act like Sentinel",
-                                                                                        "write truth",
-                                                                                        "replace runner returns"
-                                                                                    ],
-                                                                       "separation_rule":  "helper_2b internal reasoning stays separate from runner-return external receipts"
-                                                                   },
-                                             "authority_boundary":  {
-                                                                        "may_read":  [
-                                                                                         "mission-local context under workbench/missions/",
-                                                                                         "expedition-local context under expeditions/active/",
-                                                                                         "workbench notes where allowed",
-                                                                                         "assumptions when explicitly allowed",
-                                                                                         "approved helper-local artifacts under logs/support/"
-                                                                                     ],
-                                                                        "may_write_only":  [
-                                                                                               "helper-local support artifacts under logs/support/",
-                                                                                               "helper-local notes under workbench/missions/ when allowed",
-                                                                                               "derived overlays under memory/drafts/ when the request explicitly allows them"
-                                                                                           ],
-                                                                        "derived_outputs_only":  true,
-                                                                        "returns_must_remain_structured":  true,
-                                                                        "may_not":  [
-                                                                                        "write truth",
-                                                                                        "approve",
-                                                                                        "promote",
-                                                                                        "submit",
-                                                                                        "mutate canonical mission state",
-                                                                                        "write to memory/collective",
-                                                                                        "write to memory/dispatch/approved",
-                                                                                        "write to Honcho",
-                                                                                        "submit directly to bridge",
-                                                                                        "replace scripted runner-return receipts",
-                                                                                        "bypass governance",
-                                                                                        "create hidden loops"
-                                                                                    ]
-                                                                    },
-                                             "notes":  [
-                                                           "Distinct Hermes-backed Spinetop helper role for field-side tactical support.",
-                                                           "Spinetop-helper_2b is not Sentinel, not Expeditioner, not the mirror, and not governance.",
-                                                           "Model-backed helper reasoning is limited to internal tactical thinking through the existing local model seam.",
-                                                           "If runtime is inactive, Spinetop-helper_2b stays disabled-safe and falls back to scripted bounded receipts only.",
-                                                           "Scripted runner-return packets remain the external return path even if helper-local reasoning is enabled later.",
-                                                           "When helper-local reasoning is emitted, it should use the small tactical structure and remain a separate internal artifact."
-                                                       ]
-                                         },
-                  "spinetop-mirror":  {
-                                          "role_description":  "Spinetop-Mirror is the read-only memory interpretation role for Honcho-backed inspection and mission-local reflection.",
-                                          "active":  false,
-                                          "execution_backend":  "model_backed",
-                                          "allowed_model_keys":  [
-                                                                     "local_onboarding_gemma4_e4b_4k",
-                                                                     "local_mirror_gemma4_e4b"
-                                                                 ],
-                                          "default_model_key":  "local_mirror_gemma4_e4b",
-                                          "fallback_model_key":  "local_mirror_gemma4_e4b",
-                                          "provider_requirement":  "local_only",
-                                          "mapped_helpers":  [
-
-                                                             ],
-                                          "context_refs":  [
-                                                               "Honcho query interfaces and Honcho-backed read results",
-                                                               "workbench/missions/ mission-local notes and context",
-                                                               "workbench/missions/*/notes/mirror/",
-                                                               "workbench/missions/*/notes/runner_returns/ when useful for interpretation",
-                                                               "workbench/missions/*/notes/assumptions/ when useful for contradiction checks"
-                                                           ],
-                                          "config_refs":  [
-                                                              "config/helper_model_registry.json",
-                                                              "config/mirror_role.json",
-                                                              "config/model_registry.json",
-                                                              "docs/mirror_contract_v1.md",
-                                                              "docs/artifact_kind_convention_v1.md"
-                                                          ],
-                                          "support_write_scope":  [
-                                                                      "workbench/missions/*/notes/mirror/"
-                                                                  ],
-                                          "inactive_behavior":  "disabled_safe",
-                                          "authority_boundary":  {
-                                                                     "may_read":  [
-                                                                                      "Honcho query interfaces and Honcho-backed read results only",
-                                                                                      "mission-local context under workbench/missions/",
-                                                                                      "runner returns and assumption ledgers when needed for memory interpretation"
-                                                                                  ],
-                                                                     "may_write_only":  [
-                                                                                            "mission-local mirror artifacts under workbench/missions/*/notes/mirror/"
-                                                                                        ],
-                                                                     "derived_outputs_only":  true,
-                                                                     "returns_must_remain_structured":  true,
-                                                                     "may_not":  [
-                                                                                     "write truth",
-                                                                                     "approve",
-                                                                                     "promote",
-                                                                                     "submit",
-                                                                                     "mutate canonical mission state",
-                                                                                     "write to memory/collective",
-                                                                                     "write to memory/dispatch/approved",
-                                                                                     "write to Honcho",
-                                                                                     "mutate Honcho sessions",
-                                                                                     "mutate Honcho messages",
-                                                                                     "mutate Honcho peers",
-                                                                                     "submit directly to bridge",
-                                                                                     "bypass governance",
-                                                                                     "create hidden loops",
-                                                                                     "run background memory sweeps"
-                                                                                 ]
-                                                                 },
-                                          "notes":  [
-                                                        "Distinct Hermes-backed Spinetop role for memory interpretation rather than review, task work, or field support.",
-                                                        "Spinetop-Mirror is not Sentinel, not Expeditioner, not Spinetop-helper_2b, and not governance.",
-                                                        "Mirror reads Honcho or Honcho-backed query surfaces in read-only mode and writes only mission-local derived reflections.",
-                                                        "If runtime is inactive, Mirror stays disabled-safe and emits status only."
-                                                    ]
-                                      },
-                  "spinetop-art-observerbot":  {
-                                                    "role_description":  "Spinetop-Art-Observerbot is a visible signal observer for stage relevance, ghost wake cueing, and expression overlays.",
-                                                    "active":  false,
-                                                    "execution_backend":  "model_backed",
-                                                    "allowed_model_keys":  [
-                                                                               "local_helper_granite3_3_2b",
-                                                                               "local_production_qwen2_5_coder_14b"
-                                                                           ],
-                                                    "default_model_key":  "local_helper_granite3_3_2b",
-                                                    "fallback_model_key":  "local_production_qwen2_5_coder_14b",
-                                                    "provider_requirement":  "local_only",
-                                                    "mapped_helpers":  [],
-                                                    "context_refs":  [
-                                                                         "expedition state, timeline, interpretation, and signals",
-                                                                         "mission-local mirror notes",
-                                                                         "artifact-backed replay metadata when present"
-                                                                     ],
-                                                    "config_refs":  [
-                                                                        "config/helper_model_registry.json",
-                                                                        "config/art_observerbot_role.json",
-                                                                        "config/model_registry.json",
-                                                                        "docs/mirror_contract_v1.md"
-                                                                    ],
-                                                    "support_write_scope":  [
-                                                                                "workbench/missions/*/notes/mirror/",
-                                                                                "logs/support/"
-                                                                            ],
-                                                    "inactive_behavior":  "disabled_safe",
-                                                    "behavior_contract":  {
-                                                                              "thinking_style":  [
-                                                                                                     "observe before interpreting",
-                                                                                                     "relevance detection",
-                                                                                                     "bounded expression cueing"
-                                                                                                 ],
-                                                                              "output_structure":  [
-                                                                                                       "visible signals",
-                                                                                                       "relevance note",
-                                                                                                       "ghost wake cue if any"
-                                                                                                   ],
-                                                                              "must_do":  [
-                                                                                              "report only visible or artifact-backed evidence",
-                                                                                              "surface ghost wake as a cue rather than control",
-                                                                                              "stay read-heavy and non-executing"
-                                                                                          ],
-                                                                              "must_not":  [
-                                                                                               "execute mission work",
-                                                                                               "plan deeply",
-                                                                                               "act like concierge",
-                                                                                               "write truth",
-                                                                                               "create hidden loops",
-                                                                                               "control roles silently"
-                                                                                           ]
-                                                                          },
-                                                    "authority_boundary":  {
-                                                                               "may_read":  [
-                                                                                                "mission and system-local visible expression surfaces",
-                                                                                                "artifact-backed replay or frame metadata when present",
-                                                                                                "mission-local mirror notes and signals"
-                                                                                            ],
-                                                                               "may_write_only":  [
-                                                                                                      "mission-local observer overlays under workbench/missions/*/notes/mirror/",
-                                                                                                      "support observations under logs/support/"
-                                                                                                  ],
-                                                                               "derived_outputs_only":  true,
-                                                                               "returns_must_remain_structured":  true,
-                                                                               "may_not":  [
-                                                                                               "write truth",
-                                                                                               "approve",
-                                                                                               "promote",
-                                                                                               "submit",
-                                                                                               "mutate canonical mission state",
-                                                                                               "write to memory/collective",
-                                                                                               "write to memory/dispatch/approved",
-                                                                                               "write to Honcho",
-                                                                                               "trigger execution directly",
-                                                                                               "bypass governance",
-                                                                                               "create hidden loops"
-                                                                                           ]
-                                                                           },
-                                                    "notes":  [
-                                                                  "Distinct Hermes-backed observer seam for stage-facing relevance and visual expression support.",
-                                                                  "Art Observerbot is not Mirror, not Concierge, not Expeditioner, and not governance.",
-                                                                  "Ghost wake support remains cue-only and visible until a later explicit implementation."
-                                                              ]
-                                      }
-              }
+  "notes": [
+    "Runtime seam for helper and mission-local bounded roles only; execution remains explicit and one-shot.",
+    "Default helper policy is local-only and inert until a role is explicitly active.",
+    "Authority boundaries in this registry describe bounded helper permissions only; they do not authorize truth writes, approval, submission, or canonical state mutation."
+  ],
+  "roles": {
+    "spinetop-expeditioner": {
+      "role_description": "Spinetop-Expeditioner is the mission-doing worker for useful first-pass derived outputs inside mission-local and workbench lanes.",
+      "active": true,
+      "execution_backend": "model_backed",
+      "allowed_model_keys": [
+        "local_gemma4_e4b_4k"
+      ],
+      "default_model_key": "local_gemma4_e4b_4k",
+      "fallback_model_key": "local_gemma4_e4b_4k",
+      "provider_requirement": "local_only",
+      "mapped_helpers": [
+        "retrieval_helper_2b",
+        "runner_helper_2b"
+      ],
+      "context_refs": [
+        "expeditions/active/ mission briefs and mission inputs",
+        "workbench/missions/ notes and mission-local artifacts",
+        "workbench/missions/*/notes/runner_returns/",
+        "workbench/missions/*/notes/assumptions/",
+        "clarification packets and other mission-local derived artifacts"
+      ],
+      "config_refs": [
+        "config/expeditioner_role.json",
+        "config/helper_model_registry.json",
+        "config/model_registry.json",
+        "docs/helper_catalog_v1.md",
+        "docs/support_orchestration_contract_v1.md"
+      ],
+      "support_write_scope": [
+        "workbench/missions/",
+        "logs/support/",
+        "memory/drafts/ only when explicitly allowed"
+      ],
+      "inactive_behavior": "disabled_safe",
+      "behavior_contract": {
+        "thinking_style": [
+          "first-pass mission execution",
+          "bounded assumptions",
+          "useful-now delivery"
+        ],
+        "output_structure": [
+          "first-pass answer",
+          "assumptions used",
+          "next steps"
+        ],
+        "must_do": [
+          "produce something useful now with the context in hand",
+          "use the labels 'First-pass answer:', 'Assumptions:', and 'Next steps:' when emitting Expeditioner-style responses",
+          "omit the assumptions section when no assumptions were used",
+          "omit the next steps section when it would not help",
+          "refine later if new mission-local constraints appear instead of defaulting to blocking"
+        ],
+        "must_not": [
+          "default to broad defer language when a bounded first pass is possible",
+          "act like Sentinel",
+          "write truth",
+          "replace scripted runner returns"
+        ],
+        "separation_rule": "Expeditioner mission-doing output stays structured, human-readable, and distinct from governance, review, and scripted external receipts"
+      },
+      "authority_boundary": {
+        "may_read": [
+          "mission briefs and mission inputs under expeditions/active/",
+          "mission-local context under workbench/missions/",
+          "workbench notes, runner returns, active assumptions, and clarification packets",
+          "approved support inputs and mission-local artifacts"
+        ],
+        "may_write_only": [
+          "mission-local outputs and workbench artifacts under workbench/missions/",
+          "support artifacts under logs/support/",
+          "derived overlays under memory/drafts/ when the request explicitly allows them"
+        ],
+        "derived_outputs_only": true,
+        "returns_must_remain_structured": true,
+        "may_not": [
+          "write truth",
+          "approve",
+          "promote",
+          "submit",
+          "mutate canonical mission state",
+          "write to memory/collective",
+          "write to memory/dispatch/approved",
+          "write to Honcho",
+          "submit directly to bridge",
+          "replace scripted runner-return receipts",
+          "bypass governance",
+          "create hidden loops"
+        ]
+      },
+      "notes": [
+        "Distinct Hermes-backed Spinetop role for mission-doing work.",
+        "Expeditioner is not Sentinel, not the mirror, not Spinetop-helper_2b, and not governance.",
+        "Expeditioner should attempt a bounded first pass with the context in hand instead of defaulting to clarification.",
+        "If the mission is sufficient to proceed, Expeditioner should move forward under explicit assumptions and refine later only if needed.",
+        "Expeditioner outputs should stay lightweight and human-readable: first-pass answer first, assumptions only if any, and next steps only when helpful.",
+        "Execution backend is operator-approved for bounded first-pass mission answers through the existing local model seam.",
+        "If runtime is inactive, Expeditioner stays disabled-safe and falls back to scripted bounded receipts only.",
+        "Scripted return packets remain the mirror-visible path even if a helper later reasons with a local model internally."
+      ]
+    },
+    "spinetop-helper-2b": {
+      "role_description": "Spinetop-helper_2b is the field-side mini brain for short-horizon expedition support and bounded runner-return preparation.",
+      "active": true,
+      "execution_backend": "model_backed",
+      "allowed_model_keys": [
+        "local_granite3_3_2b_q2k"
+      ],
+      "default_model_key": "local_granite3_3_2b_q2k",
+      "fallback_model_key": "local_granite3_3_2b_q2k",
+      "provider_requirement": "local_only",
+      "mapped_helpers": [
+        "retrieval_helper_2b",
+        "runner_helper_2b"
+      ],
+      "context_refs": [
+        "expeditions/active/ mission-local artifacts",
+        "workbench/missions/ notes and mission-local helper context",
+        "workbench/missions/*/notes/runner_returns/",
+        "workbench/missions/*/notes/assumptions/ only when explicitly allowed",
+        "logs/support/ helper-local artifacts"
+      ],
+      "config_refs": [
+        "config/helper_model_registry.json",
+        "config/helper_role.json",
+        "config/model_registry.json",
+        "docs/helper_catalog_v1.md",
+        "docs/support_orchestration_contract_v1.md"
+      ],
+      "support_write_scope": [
+        "workbench/missions/ helper-local notes only",
+        "logs/support/",
+        "memory/drafts/ only when explicitly allowed"
+      ],
+      "inactive_behavior": "disabled_safe",
+      "behavior_contract": {
+        "thinking_style": [
+          "short horizon",
+          "local context",
+          "tactical suggestions"
+        ],
+        "output_structure": [
+          "current context",
+          "key observations",
+          "possible next steps",
+          "open questions"
+        ],
+        "must_do": [
+          "summarize local findings",
+          "track short-term context",
+          "suggest next checks",
+          "highlight contradictions without inventing a resolution"
+        ],
+        "must_not": [
+          "act like Expeditioner",
+          "act like Sentinel",
+          "write truth",
+          "replace runner returns"
+        ],
+        "separation_rule": "helper_2b internal reasoning stays separate from runner-return external receipts"
+      },
+      "authority_boundary": {
+        "may_read": [
+          "mission-local context under workbench/missions/",
+          "expedition-local context under expeditions/active/",
+          "workbench notes where allowed",
+          "assumptions when explicitly allowed",
+          "approved helper-local artifacts under logs/support/"
+        ],
+        "may_write_only": [
+          "helper-local support artifacts under logs/support/",
+          "helper-local notes under workbench/missions/ when allowed",
+          "derived overlays under memory/drafts/ when the request explicitly allows them"
+        ],
+        "derived_outputs_only": true,
+        "returns_must_remain_structured": true,
+        "may_not": [
+          "write truth",
+          "approve",
+          "promote",
+          "submit",
+          "mutate canonical mission state",
+          "write to memory/collective",
+          "write to memory/dispatch/approved",
+          "write to Honcho",
+          "submit directly to bridge",
+          "replace scripted runner-return receipts",
+          "bypass governance",
+          "create hidden loops"
+        ]
+      },
+      "notes": [
+        "Distinct Hermes-backed Spinetop helper role for field-side tactical support.",
+        "Spinetop-helper_2b is not Sentinel, not Expeditioner, not the mirror, and not governance.",
+        "Model-backed helper reasoning is limited to internal tactical thinking through the existing local model seam.",
+        "If runtime is inactive, Spinetop-helper_2b stays disabled-safe and falls back to scripted bounded receipts only.",
+        "Scripted runner-return packets remain the external return path even if helper-local reasoning is enabled later.",
+        "When helper-local reasoning is emitted, it should use the small tactical structure and remain a separate internal artifact."
+      ]
+    },
+    "spinetop-mirror": {
+      "role_description": "Spinetop-Mirror is the read-only memory interpretation role for Honcho-backed inspection and mission-local reflection.",
+      "active": false,
+      "execution_backend": "model_backed",
+      "allowed_model_keys": [
+        "local_granite3_3_2b_q2k"
+      ],
+      "default_model_key": "local_granite3_3_2b_q2k",
+      "fallback_model_key": "local_granite3_3_2b_q2k",
+      "provider_requirement": "local_only",
+      "mapped_helpers": [],
+      "context_refs": [
+        "Honcho query interfaces and Honcho-backed read results",
+        "workbench/missions/ mission-local notes and context",
+        "workbench/missions/*/notes/mirror/",
+        "workbench/missions/*/notes/runner_returns/ when useful for interpretation",
+        "workbench/missions/*/notes/assumptions/ when useful for contradiction checks"
+      ],
+      "config_refs": [
+        "config/helper_model_registry.json",
+        "config/mirror_role.json",
+        "config/model_registry.json",
+        "docs/mirror_contract_v1.md",
+        "docs/artifact_kind_convention_v1.md"
+      ],
+      "support_write_scope": [
+        "workbench/missions/*/notes/mirror/"
+      ],
+      "inactive_behavior": "disabled_safe",
+      "authority_boundary": {
+        "may_read": [
+          "Honcho query interfaces and Honcho-backed read results only",
+          "mission-local context under workbench/missions/",
+          "runner returns and assumption ledgers when needed for memory interpretation"
+        ],
+        "may_write_only": [
+          "mission-local mirror artifacts under workbench/missions/*/notes/mirror/"
+        ],
+        "derived_outputs_only": true,
+        "returns_must_remain_structured": true,
+        "may_not": [
+          "write truth",
+          "approve",
+          "promote",
+          "submit",
+          "mutate canonical mission state",
+          "write to memory/collective",
+          "write to memory/dispatch/approved",
+          "write to Honcho",
+          "mutate Honcho sessions",
+          "mutate Honcho messages",
+          "mutate Honcho peers",
+          "submit directly to bridge",
+          "bypass governance",
+          "create hidden loops",
+          "run background memory sweeps"
+        ]
+      },
+      "notes": [
+        "Distinct Hermes-backed Spinetop role for memory interpretation rather than review, task work, or field support.",
+        "Spinetop-Mirror is not Sentinel, not Expeditioner, not Spinetop-helper_2b, and not governance.",
+        "Mirror reads Honcho or Honcho-backed query surfaces in read-only mode and writes only mission-local derived reflections.",
+        "If runtime is inactive, Mirror stays disabled-safe and emits status only."
+      ]
+    },
+    "spinetop-art-observerbot": {
+      "role_description": "Spinetop-Art-Observerbot is a visible signal observer for stage relevance, ghost wake cueing, and expression overlays.",
+      "active": false,
+      "execution_backend": "model_backed",
+      "allowed_model_keys": [
+        "local_granite3_3_2b_q2k",
+        "local_deepseek_r1_8b"
+      ],
+      "default_model_key": "local_granite3_3_2b_q2k",
+      "fallback_model_key": "local_granite3_3_2b_q2k",
+      "provider_requirement": "local_only",
+      "mapped_helpers": [],
+      "context_refs": [
+        "expedition state, timeline, interpretation, and signals",
+        "mission-local mirror notes",
+        "artifact-backed replay metadata when present"
+      ],
+      "config_refs": [
+        "config/helper_model_registry.json",
+        "config/art_observerbot_role.json",
+        "config/model_registry.json",
+        "docs/mirror_contract_v1.md"
+      ],
+      "support_write_scope": [
+        "workbench/missions/*/notes/mirror/",
+        "logs/support/"
+      ],
+      "inactive_behavior": "disabled_safe",
+      "behavior_contract": {
+        "thinking_style": [
+          "observe before interpreting",
+          "relevance detection",
+          "bounded expression cueing"
+        ],
+        "output_structure": [
+          "visible signals",
+          "relevance note",
+          "ghost wake cue if any"
+        ],
+        "must_do": [
+          "report only visible or artifact-backed evidence",
+          "surface ghost wake as a cue rather than control",
+          "stay read-heavy and non-executing"
+        ],
+        "must_not": [
+          "execute mission work",
+          "plan deeply",
+          "act like concierge",
+          "write truth",
+          "create hidden loops",
+          "control roles silently"
+        ]
+      },
+      "authority_boundary": {
+        "may_read": [
+          "mission and system-local visible expression surfaces",
+          "artifact-backed replay or frame metadata when present",
+          "mission-local mirror notes and signals"
+        ],
+        "may_write_only": [
+          "mission-local observer overlays under workbench/missions/*/notes/mirror/",
+          "support observations under logs/support/"
+        ],
+        "derived_outputs_only": true,
+        "returns_must_remain_structured": true,
+        "may_not": [
+          "write truth",
+          "approve",
+          "promote",
+          "submit",
+          "mutate canonical mission state",
+          "write to memory/collective",
+          "write to memory/dispatch/approved",
+          "write to Honcho",
+          "trigger execution directly",
+          "bypass governance",
+          "create hidden loops"
+        ]
+      },
+      "notes": [
+        "Distinct Hermes-backed observer seam for stage-facing relevance and visual expression support.",
+        "Art Observerbot is not Mirror, not Concierge, not Expeditioner, and not governance.",
+        "Ghost wake support remains cue-only and visible until a later explicit implementation."
+      ]
+    }
+  }
 }

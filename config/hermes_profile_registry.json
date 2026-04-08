@@ -54,13 +54,13 @@
       "soul_path": "services/hermes/roles/spinetop-expeditioner/SOUL.md",
       "activation": {
         "default_state": "inactive",
-        "control_ref": "config/helper_model_registry.json#roles.spinetop_expeditioner.active",
+        "control_ref": "config/helper_model_registry.json#roles.spinetop-expeditioner.active",
         "inactive_mode_ref": "config/expeditioner_role.json#runtime_behavior.inactive_mode",
         "disabled_safe_contract_ref": "config/expeditioner_role.json#runtime_behavior.inactive_behavior"
       },
       "model_provider_slot": {
         "provider_ref": "config/model_registry.json",
-        "model_key_ref": "config/helper_model_registry.json#roles.spinetop_expeditioner.default_model_key",
+        "model_key_ref": "config/helper_model_registry.json#roles.spinetop-expeditioner.default_model_key",
         "provider_requirement": "local_only"
       },
       "separation": {
@@ -82,13 +82,13 @@
       "soul_path": "services/hermes/roles/spinetop-helper-2b/SOUL.md",
       "activation": {
         "default_state": "inactive",
-        "control_ref": "config/helper_model_registry.json#roles.spinetop-helper_2b.active",
+        "control_ref": "config/helper_model_registry.json#roles.spinetop-helper-2b.active",
         "inactive_mode_ref": "config/helper_role.json#runtime_behavior.inactive_mode",
         "disabled_safe_contract_ref": "config/helper_role.json#runtime_behavior.inactive_behavior"
       },
       "model_provider_slot": {
         "provider_ref": "config/model_registry.json",
-        "model_key_ref": "config/helper_model_registry.json#roles.spinetop-helper_2b.default_model_key",
+        "model_key_ref": "config/helper_model_registry.json#roles.spinetop-helper-2b.default_model_key",
         "provider_requirement": "local_only"
       },
       "separation": {
@@ -166,14 +166,14 @@
       "soul_path": "services/hermes/roles/spinetop-concierge/SOUL.md",
       "activation": {
         "default_state": "inactive",
-        "control_ref": "config/expert_model_policy.json#experts.spinetop-concierge.api_allowed",
+        "control_ref": "config/concierge_role.json#runtime_behavior.active_by_default",
         "inactive_mode_ref": "config/concierge_role.json#runtime_behavior.inactive_mode",
         "disabled_safe_contract_ref": "config/concierge_role.json#runtime_behavior.inactive_behavior"
       },
       "model_provider_slot": {
         "provider_ref": "config/model_registry.json",
         "model_key_ref": "config/expert_model_policy.json#experts.spinetop-concierge.default_model",
-        "provider_requirement": "api_allowed_only"
+        "provider_requirement": "local_only"
       },
       "separation": {
         "shared_identity_allowed": false,
@@ -185,7 +185,7 @@
   "deferred_profiles": [
     {
       "profile_name": "spinetop-nanny",
-      "reason": "Deferred on purpose until a bounded external Hermes role is requested for nanny behavior."
+      "reason": "Disabled on purpose for now; no Hermes nanny runtime should participate in current plumbing."
     },
     {
       "profile_name": "spinetop-concierge-expeditioner",

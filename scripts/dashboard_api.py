@@ -91,11 +91,12 @@ KNOWN_PEERS = [
 ]
 
 app = Flask(__name__)
+PROMPT_TRANSLATOR_ACTIVE = False
 
 
 ALLOWED_TRIGGER_KINDS: dict[str, dict[str, Any]] = {
     "sufficiency_unblocked_on_input": {
-        "target_role": "spinetop_expeditioner",
+        "target_role": "spinetop-expeditioner",
         "allowed_action": "start_first_pass_expedition",
         "write_targets": ["workbench/missions/", "logs/support/"],
         "policy_basis": "explicit_input_sufficiency_flip",
@@ -104,7 +105,7 @@ ALLOWED_TRIGGER_KINDS: dict[str, dict[str, Any]] = {
         "counts_against_retry_budget": False,
     },
     "operator_refresh_requested": {
-        "target_role": "spinetop_expeditioner",
+        "target_role": "spinetop-expeditioner",
         "allowed_action": "retry_expedition_refresh",
         "write_targets": ["workbench/missions/", "logs/support/"],
         "policy_basis": "operator_requested_refresh",
@@ -113,7 +114,7 @@ ALLOWED_TRIGGER_KINDS: dict[str, dict[str, Any]] = {
         "counts_against_retry_budget": True,
     },
     "mission_resumed": {
-        "target_role": "spinetop_expeditioner",
+        "target_role": "spinetop-expeditioner",
         "allowed_action": "resume_expedition",
         "write_targets": ["workbench/missions/"],
         "policy_basis": "operator_explicit_resume",
@@ -122,7 +123,7 @@ ALLOWED_TRIGGER_KINDS: dict[str, dict[str, Any]] = {
         "counts_against_retry_budget": False,
     },
     "do_now_first_pass_requested": {
-        "target_role": "spinetop_expeditioner",
+        "target_role": "spinetop-expeditioner",
         "allowed_action": "start_first_pass_expedition",
         "write_targets": ["workbench/missions/", "logs/support/"],
         "policy_basis": "operator_marked_do_now_first_pass",
@@ -140,7 +141,7 @@ ALLOWED_TRIGGER_ACTIONS = {
 TRIGGER_RETRY_BUDGET = 1
 RETRY_BUDGET_TOTAL = 2
 RETRY_LOG_LIMIT = 40
-EXPEDITIONER_ROLE_ID = "spinetop_expeditioner"
+EXPEDITIONER_ROLE_ID = "spinetop-expeditioner"
 
 
 @app.after_request
@@ -809,6 +810,8 @@ def _read_agent_runs(mission_id: str) -> list[dict[str, Any]]:
 
 
 def _read_prompt_translations(mission_id: str) -> list[dict[str, Any]]:
+    if not PROMPT_TRANSLATOR_ACTIVE:
+        return []
     return read_prompt_translations(normalize_mission_id(mission_id))
 
 
@@ -2763,6 +2766,62 @@ def _fallback_expeditioner_output(detail: dict[str, Any], message: str, quick_re
     return _format_expeditioner_output(reply, assumptions=assumptions, next_steps=[next_step] if next_step else [])
 
 
+def _operator_invoke_role_text(message: str, quick_reply: str | None = None) -> str | None:
+    quick = str(quick_reply or "").strip().lower()
+    if quick == "invoke-role":
+        return quick
+    raw_message = str(message or "").strip()
+    lowered = raw_message.lower()
+    if lowered.startswith("invoke-role:"):
+        return raw_message[len("invoke-role:"):].strip()
+    if lowered.startswith("/invoke-role"):
+        return raw_message[len("/invoke-role"):].strip()
+    return None
+
+
+def _blocking_chat_fallback_reply(detail: dict[str, Any]) -> str:
+    summary = detail.get("mission_summary") if isinstance(detail.get("mission_summary"), dict) else {}
+    working_memory = detail.get("working_memory") if isinstance(detail.get("working_memory"), dict) else {}
+    can_continue_without_input = bool(summary.get("can_continue_without_input", True))
+    blocked_reason = str(
+        working_memory.get("blocked_reason")
+        or summary.get("blocked_reason")
+        or ""
+    ).strip()
+    if blocked_reason and not can_continue_without_input:
+        return f"Blocked: {blocked_reason}"
+
+    blocking_questions = [str(item or "").strip() for item in list(summary.get("blocking_questions") or detail.get("blocking_questions") or []) if str(item or "").strip()]
+    next_question = str(summary.get("next_question") or "").strip()
+    clarification_reason = str(summary.get("clarification_reason") or "").strip()
+    operator_posture = str(summary.get("operator_posture") or detail.get("operator_posture") or "").strip()
+
+    if blocking_questions and not can_continue_without_input:
+        return f"Blocked: {blocking_questions[0]}"
+
+    if operator_posture == "needs_operator_answer" or not can_continue_without_input:
+        followup = blocking_questions[0] if blocking_questions else next_question or clarification_reason
+        if followup:
+            return f"Blocked: {followup}"
+    return ""
+
+
+def _quiet_chat_fallback_reply(message: str, quick_reply: str | None, detail: dict[str, Any]) -> str:
+    if str(quick_reply or "").strip():
+        return ""
+    if _operator_save_text(message) is not None:
+        return ""
+    if _operator_invoke_role_text(message, quick_reply) is not None:
+        return ""
+    has_structured_action, _ = _expeditioner_trigger_context(detail, quick_reply)
+    if has_structured_action:
+        return ""
+    blocker_reply = _blocking_chat_fallback_reply(detail)
+    if blocker_reply:
+        return blocker_reply
+    return "Recorded."
+
+
 def _expeditioner_runtime_binding() -> dict[str, Any]:
     profile = load_helper_runtime_profile(EXPEDITIONER_ROLE_ID)
     binding: dict[str, Any] = {
@@ -3099,11 +3158,65 @@ def _chat_reply(message: str, quick_reply: str | None, detail: dict[str, Any]) -
             "message": model_reply,
         }
 
+    quiet_fallback = _quiet_chat_fallback_reply(message, quick_reply, detail)
+    if quiet_fallback:
+        return {
+            "role": "assistant",
+            "tone": "good",
+            "message": quiet_fallback,
+        }
+
     reply, tone = _clarification_reply_text(message, quick_reply, detail)
     return {
         "role": "assistant",
         "tone": tone,
-        "message": _fallback_expeditioner_output(detail, message, quick_reply),
+        "message": _fallback_expeditioner_output(detail, message, quick_reply) if _expeditioner_trigger_context(detail, quick_reply)[0] else reply,
+    }
+
+
+def _operator_raw_text(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("text", "message", "content"):
+        value = payload.get(key)
+        if value is None:
+            continue
+        text = str(value)
+        if text:
+            return text
+    return ""
+
+
+def _operator_save_text(message: str) -> str | None:
+    raw_message = str(message or "").strip()
+    if not raw_message.lower().startswith("save:"):
+        return None
+    return raw_message[len("save:"):].strip()
+
+
+def _operator_save_response(artifact: dict[str, Any]) -> dict[str, Any]:
+    artifact_path = str(artifact.get("path") or "").strip()
+    status_message = "Saved to mirror."
+    return {
+        "kind": "operator_save",
+        "save_detected": True,
+        "mirror_artifact_written": True,
+        "artifact_path": artifact_path,
+        "message": status_message,
+        "mirror_artifact": artifact,
+    }
+
+
+def _operator_save_empty_response() -> dict[str, Any]:
+    status_message = "Nothing to save. Nothing was written."
+    return {
+        "ok": False,
+        "kind": "operator_save",
+        "save_detected": True,
+        "mirror_artifact_written": False,
+        "artifact_path": "",
+        "message": status_message,
+        "error": status_message,
     }
 
 
@@ -4370,7 +4483,7 @@ def _mission_agent_soul_text(mission_id: str, objective: str, agent_id: str) -> 
         "## Identity\n"
         f"- Mission agent id: `{agent_id}`\n"
         f"- Mission id: `{mission}`\n"
-        "- Runtime role: `spinetop_expeditioner`\n"
+        "- Runtime role: `spinetop-expeditioner`\n"
         f"- Objective: {objective}\n\n"
         "## Bounded Scope\n"
         f"- You operate only for mission `{mission}`.\n"
@@ -5483,13 +5596,13 @@ def read_mirror_door_test_status() -> dict[str, Any]:
 
 def read_helper_2b_runtime_status() -> dict[str, Any]:
     try:
-        profile = load_helper_runtime_profile("spinetop-helper_2b")
+        profile = load_helper_runtime_profile("spinetop-helper-2b")
     except Exception as exc:
         return {
             "available": False,
             "configured": False,
             "enabled": False,
-            "role_id": "spinetop-helper_2b",
+            "role_id": "spinetop-helper-2b",
             "role_description": "Spinetop-helper_2b is the mission-local field helper for tactical support.",
             "liveness": "unavailable",
             "error": str(exc),
@@ -5714,6 +5827,31 @@ def api_expedition_interpretation(mission_id: str):
             "item": None,
         })
     return jsonify({"ok": True, "available": True, "item": item})
+
+
+@app.get("/api/expeditions/<mission_id>/mirror-notes")
+def api_expedition_mirror_notes(mission_id: str):
+    try:
+        mission = normalize_mission_id(mission_id)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    if not _mission_exists(mission):
+        return jsonify({"ok": False, "error": "mission not found"}), 404
+    try:
+        _sync_mission_storage()
+        items = [
+            {
+                "artifact_id": str(item.get("artifact_id") or item.get("note_id") or "").strip(),
+                "text": str(item.get("text") or item.get("summary") or "").strip(),
+                "created_at": str(item.get("created_at") or "").strip(),
+                "artifact_kind": str(item.get("artifact_kind") or item.get("kind") or "").strip(),
+            }
+            for item in _read_mirror_notes(mission)
+            if isinstance(item, dict)
+        ]
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "items": items})
 
 
 @app.get("/api/expeditions/<mission_id>/signals")
@@ -6043,11 +6181,33 @@ def api_expedition_input(mission_id: str):
             "error": "mission not found",
         }), 404
     try:
-        payload = request.get_json(force=True) or {}
+        data = request.get_json(force=True) or {}
     except Exception:
-        payload = {}
+        data = {}
 
-    content = str(payload.get("content") or payload.get("text") or "").strip()
+    raw_text = str(data.get("text") or data.get("message") or data.get("content") or "").strip()
+    if raw_text.lower().startswith("save:"):
+        content = raw_text[len("save:"):].strip()
+        if not content:
+            return jsonify({
+                "ok": False,
+                "kind": "operator_save",
+                "message": "Empty save. Nothing written.",
+            }), 400
+        from mission_storage import write_operator_save_artifact
+
+        artifact_path = write_operator_save_artifact(
+            mission_id=mission,
+            text=content,
+        )
+        return jsonify({
+            "ok": True,
+            "kind": "operator_save",
+            "artifact_path": artifact_path,
+            "message": "Saved to mirror.",
+        })
+
+    content = raw_text
     if not content:
         return jsonify({
             "ok": False,
@@ -6066,7 +6226,9 @@ def api_expedition_input(mission_id: str):
         latest_packet,
     )
     item = _write_mission_input(mission, content)
-    translation = translate_and_store_prompt(content, mission_id=mission)
+    translation = None
+    if PROMPT_TRANSLATOR_ACTIVE:
+        translation = translate_and_store_prompt(content, mission_id=mission)
     _refresh_working_memory(mission, operator_text=content, operator_reply_at=str(item.get("created_at") or ""), source="mission intake")
     after_sufficient, _ = _is_sufficient_to_proceed(
         objective,
@@ -6112,6 +6274,11 @@ def api_expedition_translate_prompt(mission_id: str):
             "error": "content is required",
         }), 400
 
+    if not PROMPT_TRANSLATOR_ACTIVE:
+        return jsonify({
+            "ok": False,
+            "error": "prompt translator is disabled for now",
+        }), 409
     translation = translate_and_store_prompt(content, mission_id=mission)
     return jsonify({
         "ok": True,
@@ -6268,18 +6435,40 @@ def api_expedition_chat(mission_id: str):
             "error": "mission not found",
         }), 404
     try:
-        payload = request.get_json(force=True) or {}
+        data = request.get_json(force=True) or {}
     except Exception:
-        payload = {}
+        data = {}
 
-    content = str(payload.get("content") or payload.get("text") or "").strip()
+    raw_text = str(data.get("text") or data.get("message") or data.get("content") or "").strip()
+    if raw_text.lower().startswith("save:"):
+        content = raw_text[len("save:"):].strip()
+        if not content:
+            return jsonify({
+                "ok": False,
+                "kind": "operator_save",
+                "message": "Empty save. Nothing written.",
+            }), 400
+        from mission_storage import write_operator_save_artifact
+
+        artifact_path = write_operator_save_artifact(
+            mission_id=mission,
+            text=content,
+        )
+        return jsonify({
+            "ok": True,
+            "kind": "operator_save",
+            "artifact_path": artifact_path,
+            "message": "Saved to mirror.",
+        })
+
+    content = raw_text
     if not content:
         return jsonify({
             "ok": False,
             "error": "content is required",
         }), 400
 
-    quick_reply = str(payload.get("quick_reply") or payload.get("preset") or "").strip() or None
+    quick_reply = str(data.get("quick_reply") or data.get("preset") or "").strip() or None
     exchange = _append_chat_exchange(mission, content, quick_reply=quick_reply)
     assistant_message = ""
     assistant_tone = "info"
@@ -6380,6 +6569,7 @@ _read_trigger_handoff = mission_storage._read_trigger_handoff
 _write_trigger_handoff = mission_storage._write_trigger_handoff
 _read_trigger_records = mission_storage._read_trigger_records
 _write_mission_input = mission_storage._write_mission_input
+_write_operator_save_artifact = mission_storage._write_operator_save_artifact
 
 
 def _mission_root(mission_id: str) -> Path:
@@ -6428,6 +6618,11 @@ def _write_parking_status(
 def _write_mission_input(mission: str, content: str) -> dict[str, Any]:
     _sync_mission_storage()
     return mission_storage._write_mission_input(mission, content)
+
+
+def _write_operator_save_artifact(mission: str, text: str) -> dict[str, Any]:
+    _sync_mission_storage()
+    return mission_storage._write_operator_save_artifact(mission, text)
 
 
 if __name__ == "__main__":

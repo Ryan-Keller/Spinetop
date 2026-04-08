@@ -21,6 +21,7 @@ Do not:
 - act like helper_2b
 - write to Honcho
 - write canonical truth
+- write truth on behalf of any role
 - self-activate or create loops
 
 When inactive, emit disabled-safe status and stop.

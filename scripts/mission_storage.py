@@ -468,15 +468,53 @@ def _read_mirror_notes(mission_id: str) -> list[dict[str, Any]]:
             or payload.get("body")
             or ""
         ).strip()
+        artifact_id = str(payload.get("artifact_id") or payload.get("note_id") or payload.get("reflection_id") or path.stem).strip()
+        artifact_kind = str(payload.get("artifact_kind") or payload.get("kind") or "mirror_reflection").strip() or "mirror_reflection"
         rows.append({
-            "note_id": str(payload.get("note_id") or payload.get("reflection_id") or path.stem).strip(),
-            "role": str(payload.get("role") or "spinetop-mirror").strip() or "spinetop-mirror",
-            "kind": str(payload.get("kind") or "mirror_reflection").strip() or "mirror_reflection",
+            "artifact_id": artifact_id,
+            "note_id": artifact_id,
+            "role": str(payload.get("role") or payload.get("source") or "spinetop-mirror").strip() or "spinetop-mirror",
+            "artifact_kind": artifact_kind,
+            "kind": artifact_kind,
+            "text": summary,
             "summary": summary,
             "created_at": str(payload.get("created_at") or payload.get("updated_at") or "").strip(),
             "path": path.relative_to(ROOT).as_posix(),
         })
+    rows.sort(key=lambda item: str(item.get("created_at") or item.get("path") or ""), reverse=True)
     return rows
+
+
+def _write_operator_save_artifact(mission_id: str, text: str) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    text_value = str(text or "")
+    if not text_value.strip():
+        raise ValueError("save detected but no content remained after `save:`; nothing was written")
+    created_at = iso_now()
+    artifact_id = (
+        f"operator_save_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_"
+        f"{_short_digest(f'{mission}|{text_value}|{created_at}')}"
+    )
+    artifact_path = _mirror_dir(mission, ensure=True) / f"{artifact_id}.json"
+    record = {
+        "artifact_id": artifact_id,
+        "artifact_kind": "operator_save",
+        "source": "operator",
+        "text": text_value,
+        "created_at": created_at,
+        "mission_id": mission,
+        "derived_only": False,
+    }
+    _write_json(artifact_path, record)
+    return {
+        **record,
+        "path": artifact_path.relative_to(ROOT).as_posix(),
+    }
+
+
+def write_operator_save_artifact(mission_id: str, text: str) -> str:
+    artifact = _write_operator_save_artifact(mission_id, text)
+    return str(artifact.get("path") or "").strip()
 
 
 def _read_agent_runs(mission_id: str) -> list[dict[str, Any]]:

@@ -121,7 +121,56 @@ def _enable_first_pass_trigger(client, mission_id: str) -> None:
     )
 
 
+def _test_quiet_fallback_and_blocker_copy() -> None:
+    detail = {
+        "mission_id": "mission_fallback_test",
+        "objective": "trace the bounded blocker",
+        "current_state": "MISSION_DEFINED",
+        "mission_summary": {
+            "operator_posture": "observe",
+            "can_continue_without_input": True,
+        },
+        "parking_status": {"status": "active"},
+        "working_memory": {},
+        "assumptions": [],
+        "mission_inputs": [],
+    }
+    blocked_detail = {
+        "mission_id": "mission_blocked_test",
+        "objective": "trace the bounded blocker",
+        "current_state": "CLARIFICATION_NEEDED",
+        "mission_summary": {
+            "operator_posture": "needs_operator_answer",
+            "can_continue_without_input": False,
+            "blocking_questions": ["please provide the mission objective"],
+            "next_question": "please provide the mission objective",
+        },
+        "parking_status": {"status": "active"},
+        "working_memory": {"blocked_reason": "please provide the mission objective"},
+        "assumptions": [],
+        "mission_inputs": [],
+    }
+
+    with _patched_attr(dashboard_api, "_try_expeditioner_model_reply", lambda *args, **kwargs: None):
+        quiet_reply = dashboard_api._chat_reply("just noting this", None, detail)
+        _assert(str(quiet_reply.get("message") or "") == "Recorded.", f"generic fallback should stay quiet: {quiet_reply}")
+
+        blocked_reply = dashboard_api._chat_reply("just noting this", None, blocked_detail)
+        _assert(
+            str(blocked_reply.get("message") or "") == "Blocked: please provide the mission objective",
+            f"blocked fallback should surface the real blocker: {blocked_reply}",
+        )
+
+        quick_reply = dashboard_api._chat_reply("", "answer blockers", blocked_detail)
+        _assert(
+            str(quick_reply.get("message") or "") == "The top blocker is: please provide the mission objective",
+            f"explicit quick replies should bypass the quiet fallback: {quick_reply}",
+        )
+
+
 def main() -> int:
+    _test_quiet_fallback_and_blocker_copy()
+
     success_root = Path(tempfile.mkdtemp(prefix="expeditioner_model_success_"))
     with _patched_roots(success_root):
         dashboard_api.app.config["TESTING"] = True
@@ -159,7 +208,7 @@ def main() -> int:
         _assert("Use a treat lure" in answer, "model-backed answer should surface the model result")
         model_logs = _read_jsonl(dashboard_api.EXPEDITIONER_MODEL_LOG)
         _assert(len(model_logs) == 1, f"expected one model invocation log entry, got {model_logs}")
-        _assert(str(model_logs[0].get("role") or "") == "spinetop_expeditioner", f"unexpected log role: {model_logs[0]}")
+        _assert(str(model_logs[0].get("role") or "") == str(dashboard_api.EXPEDITIONER_ROLE_ID), f"unexpected log role: {model_logs[0]}")
         _assert(str(model_logs[0].get("status") or "") == "success", f"model success should log success: {model_logs[0]}")
         _assert(str(model_logs[0].get("trigger_reason") or ""), f"trigger reason should be logged: {model_logs[0]}")
         _assert_no_truth_writes(success_root)
@@ -184,8 +233,8 @@ def main() -> int:
 
         response = result.get("response") if isinstance(result.get("response"), dict) else {}
         answer = str(response.get("answer") or "")
-        _assert("First-pass answer:" in answer, "chat without trigger should still preserve the output structure")
-        _assert("use a treat to guide the dog into a sit" in answer.lower(), "chat without trigger should use the current scripted first pass")
+        _assert(answer == "Recorded.", f"chat without trigger should now stay minimal and quiet: {response}")
+        _assert("next steps" not in answer.lower(), f"chat without trigger should not include next-step guidance: {response}")
         _assert(not dashboard_api.EXPEDITIONER_MODEL_LOG.exists(), "chat without trigger should not log a model invocation")
         _assert_no_truth_writes(no_trigger_root)
 
@@ -209,8 +258,8 @@ def main() -> int:
 
         response = result.get("response") if isinstance(result.get("response"), dict) else {}
         answer = str(response.get("answer") or "")
-        _assert("First-pass answer:" in answer, "inactive fallback should still preserve the output structure")
-        _assert("use a treat to guide the dog into a sit" in answer.lower(), "inactive fallback should use the current scripted first pass")
+        _assert(answer == "Recorded.", f"inactive no-trigger chat should now stay minimal and quiet: {response}")
+        _assert("next steps" not in answer.lower(), f"inactive no-trigger chat should not include next-step guidance: {response}")
         _assert(not dashboard_api.EXPEDITIONER_MODEL_LOG.exists(), "disabled-safe fallback should not log a model invocation")
         _assert_no_truth_writes(disabled_root)
 

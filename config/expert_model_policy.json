@@ -2,35 +2,35 @@
   "notes": {
     "allowed_models": "Hard boundary; models outside this list are not permitted.",
     "default_model": "Routine work model.",
-    "escalation_model": "Bounded upgrade path; requires explicit policy approval."
+    "escalation_model": "Bounded upgrade path within the same local-only set."
   },
   "experts": {
     "hermes-spinetop": {
-      "allowed_models": ["local_production_qwen2_5_coder_14b", "local_onboarding_gemma4_e4b_4k"],
-      "default_model": "local_production_qwen2_5_coder_14b",
-      "escalation_model": "local_production_qwen2_5_coder_14b",
+      "allowed_models": ["local_granite3_3_2b_q2k"],
+      "default_model": "local_granite3_3_2b_q2k",
+      "escalation_model": "local_granite3_3_2b_q2k",
       "api_allowed": false,
       "lane": "operational_stewardship"
     },
     "hermes-spinelab": {
-      "allowed_models": ["local_onboarding_gemma4_e4b_4k", "local_production_qwen2_5_coder_14b", "api_reasoning"],
-      "default_model": "local_onboarding_gemma4_e4b_4k",
-      "escalation_model": "api_reasoning",
-      "api_allowed": true,
+      "allowed_models": ["local_gemma4_e4b_4k"],
+      "default_model": "local_gemma4_e4b_4k",
+      "escalation_model": "local_gemma4_e4b_4k",
+      "api_allowed": false,
       "lane": "exploration_and_control"
     },
     "linguist": {
-      "allowed_models": ["local_onboarding_gemma4_e4b_4k", "local_production_qwen2_5_coder_14b", "api_research"],
-      "default_model": "local_production_qwen2_5_coder_14b",
-      "escalation_model": "api_research",
-      "api_allowed": true,
+      "allowed_models": ["local_gemma4_e4b_4k"],
+      "default_model": "local_gemma4_e4b_4k",
+      "escalation_model": "local_gemma4_e4b_4k",
+      "api_allowed": false,
       "lane": "model_analysis_and_research"
     },
     "spinetop-concierge": {
-      "allowed_models": ["api_reasoning", "api_research"],
-      "default_model": "api_reasoning",
-      "escalation_model": "api_reasoning",
-      "api_allowed": true,
+      "allowed_models": ["local_gemma4_e4b_4k"],
+      "default_model": "local_gemma4_e4b_4k",
+      "escalation_model": "local_gemma4_e4b_4k",
+      "api_allowed": false,
       "lane": "visible_expedition_strategy"
     }
   }

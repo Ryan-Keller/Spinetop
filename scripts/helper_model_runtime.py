@@ -176,6 +176,11 @@ def _validate_role(role_id: str, role: dict[str, Any], models: dict[str, dict[st
 
 
 def load_helper_runtime_profile(role_id: str) -> HelperRuntimeProfile:
+    aliases = {
+        "spinetop_expeditioner": "spinetop-expeditioner",
+        "spinetop-helper_2b": "spinetop-helper-2b",
+    }
+    role_id = aliases.get(role_id, role_id)
     models = _load_model_registry()
     registry = _load_json(HELPER_MODEL_REGISTRY_PATH)
     roles = registry.get("roles", {})

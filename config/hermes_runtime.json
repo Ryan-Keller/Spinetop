@@ -1,41 +1,27 @@
 {
   "profile": "local",
   "role_identity_ref": "config/sentinel_role.json",
-  "production_model_key": "local_production_qwen2_5_coder_14b",
-  "default_model_key": "local_production_qwen2_5_coder_14b",
-  "onboarding_model_keys": [
-    "local_onboarding_gemma4_e4b_4k"
-  ],
-  "selected_onboarding_model_key": "local_onboarding_gemma4_e4b_4k",
+  "production_model_key": "local_granite3_3_2b_q2k",
+  "default_model_key": "local_granite3_3_2b_q2k",
+  "onboarding_model_keys": [],
+  "selected_onboarding_model_key": "",
   "runtime_state": {
     "active": true,
     "inactive_mode": "disabled_safe_noop",
     "inactive_note": "When inactive, Sentinel emits disabled status only and performs no model run, bridge submission, approval action, or truth write."
   },
   "model_profiles": {
-    "local_production_qwen2_5_coder_14b": {
-      "model_key": "local_production_qwen2_5_coder_14b",
+    "local_granite3_3_2b_q2k": {
+      "model_key": "local_granite3_3_2b_q2k",
       "role": "production_default",
       "readiness": "ready",
       "promotion_ready": true,
       "promotion_criteria": [
         "passes strict Sentinel schema validation",
-        "does not emit forbidden fields",
-        "stays within the governed manual runner contract"
+        "stays within provenance, lane, and structure gate scope",
+        "emits bounded yes/no gate results without truth claims"
       ],
-      "intended_use": "default local Sentinel model for the internal reviewer/watch/anomaly role"
-    },
-    "local_onboarding_gemma4_e4b_4k": {
-      "model_key": "local_onboarding_gemma4_e4b_4k",
-      "role": "onboarding_candidate",
-      "readiness": "needs_validation",
-      "promotion_ready": false,
-      "promotion_criteria": [
-        "passes strict Sentinel schema validation",
-        "returns valid JSON without hidden automation",
-        "stays repeatable across manual test runs"
-      ],
-      "intended_use": "operator-selected onboarding runs for the internal reviewer/watch/anomaly role"
+      "intended_use": "default local Sentinel model for bounded provenance, policy, and structure gate decisions"
     }
   },
   "provider_profiles": {

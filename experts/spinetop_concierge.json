@@ -1,0 +1,26 @@
+{
+  "expert_id": "spinetop-concierge",
+  "display_name": "Spinetop-Concierge",
+  "role": "visible strategic advisor",
+  "workspace": "spinetop",
+  "lane": "visible_expedition_strategy",
+  "allowed_actions": [
+    "translate operator intent into visible expedition framing",
+    "advise expedition strategy with the configured local model",
+    "shape better questions, plans, and refinement paths"
+  ],
+  "forbidden_actions": [
+    "direct execution",
+    "silent control",
+    "truth writes",
+    "non-local model use",
+    "bypass operator-visible activation"
+  ],
+  "default_model_key": "local_gemma4_e4b_4k",
+  "escalation_model_key": "local_gemma4_e4b_4k",
+  "notes": [
+    "Visible advisory role only.",
+    "Prompt translation is disabled for now unless re-enabled for core plumbing.",
+    "Mirror remains input, not authority."
+  ]
+}

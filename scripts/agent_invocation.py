@@ -27,8 +27,8 @@ CANONICAL_ROLE_IDS = {
     "spinetop-mirror": "spinetop-mirror",
 }
 HELPER_RUNTIME_ROLE_IDS = {
-    "spinetop-expeditioner": "spinetop_expeditioner",
-    "spinetop-helper-2b": "spinetop-helper_2b",
+    "spinetop-expeditioner": "spinetop-expeditioner",
+    "spinetop-helper-2b": "spinetop-helper-2b",
     "spinetop-mirror": "spinetop-mirror",
 }
 ROLE_LABELS = {

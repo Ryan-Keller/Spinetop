@@ -322,14 +322,30 @@ export function useMissionActions(args: UseMissionActionsArgs) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: message, quick_reply: quickReply || undefined }),
       });
-      const payload = (await res.json()) as { ok?: boolean; item?: ExpeditionDetail; messages?: MissionChatMessage[]; exchange?: Record<string, unknown>; error?: string };
+      const payload = (await res.json()) as {
+        ok?: boolean;
+        kind?: string;
+        item?: ExpeditionDetail;
+        messages?: MissionChatMessage[];
+        exchange?: Record<string, unknown>;
+        response?: { kind?: string; artifact_path?: string };
+        save_detected?: boolean;
+        mirror_artifact?: { path?: string };
+        artifact_path?: string;
+        message?: string;
+        error?: string;
+      };
       if (!res.ok || !payload.ok) throw new Error(payload.error || `HTTP ${res.status}`);
       args.clearMissionChatDraft(missionId);
       if (payload.item) args.setSelectedMission(payload.item);
+      const isOperatorSave = payload.kind === "operator_save" || payload.save_detected;
+      const saveArtifactPath = payload.artifact_path || payload.mirror_artifact?.path || payload.response?.artifact_path || "";
       args.setUiNotice({
         tone: "good",
-        title: "Mission chat updated",
-        detail: quickReply ? `Quick reply sent once: ${quickReply}` : "Your message was accepted and added once to the mission chat.",
+        title: isOperatorSave ? "Mirror note saved" : "Mission chat updated",
+        detail: isOperatorSave
+          ? (saveArtifactPath ? `Saved once to ${saveArtifactPath}.` : (payload.message || "Saved once to the mission-local mirror lane."))
+          : (quickReply ? `Quick reply sent once: ${quickReply}` : "Your message was accepted and added once to the mission chat."),
       });
       await args.load();
     } catch (error) {

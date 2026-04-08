@@ -24,6 +24,7 @@
     "autonomy_allowed": false,
     "background_self_activation": false,
     "direct_truth_writes": false,
+    "semantic_truth_arbitration": false,
     "honcho_read_only": true
   },
   "config_refs": {
@@ -89,6 +90,7 @@
   "notes": [
     "This role card formalizes Spinetop-Mirror as a read-only memory interpretation role.",
     "Mirror reads Honcho or Honcho-backed query surfaces but never writes back into Honcho.",
-    "Mirror outputs stay mission-local under workbench mirror notes rather than canonical memory."
+    "Mirror outputs stay mission-local under workbench mirror notes rather than canonical memory.",
+    "Mirror does not determine truth and must not write truth-adjacent state."
   ]
 }

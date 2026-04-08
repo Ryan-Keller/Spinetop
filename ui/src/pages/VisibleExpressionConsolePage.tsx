@@ -17,17 +17,14 @@ export default function VisibleExpressionConsolePage() {
     <main className="visible-expression-console-page">
       <div className="visible-expression-console-shell">
         <header className="visible-expression-console-topbar">
-          <div>
-            <span className="console-kicker">New Surface</span>
-            <h1>Expression Console: visible intelligence</h1>
-            <p>
-              A separate page for Mirror-directed mission expression, visible observer and concierge seams, and expedition advisory surfaces without changing governance or hidden runtime behavior.
-            </p>
+          <div className="visible-expression-console-topbar__brand">
+            <span className="console-kicker">Expression Console</span>
+            <h1>Visible intelligence</h1>
           </div>
           <div className="visible-expression-console-topbar__status">
-            <span className="console-badge console-badge--soft">state / timeline / interpretation / signals</span>
-            <span className="console-badge">refreshed {relativeTime(consoleData.refreshTick)}</span>
-            <span className="console-badge console-badge--ghost">replay seam reserved</span>
+            <span className="console-badge console-badge--soft">live surfaces</span>
+            <span className="console-badge">{relativeTime(consoleData.refreshTick)}</span>
+            <span className="console-badge console-badge--ghost">replay</span>
             {consoleData.error ? <span className="console-badge console-badge--warning">{consoleData.error}</span> : null}
           </div>
         </header>
@@ -38,6 +35,7 @@ export default function VisibleExpressionConsolePage() {
             selectedMissionId={consoleData.selectedMissionId}
             onMissionChange={consoleData.setSelectedMissionId}
             mission={consoleData.mission}
+            mirrorNotes={consoleData.mirrorNotes}
             state={consoleData.state}
             timeline={consoleData.timeline}
             interpretation={consoleData.interpretation}

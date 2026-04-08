@@ -1,5 +1,5 @@
 {
-  "role_id": "spinetop-helper_2b",
+  "role_id": "spinetop-helper-2b",
   "display_name": "Spinetop-helper_2b",
   "role_class": "field_tactical_helper",
   "purpose": [
@@ -21,7 +21,7 @@
     "direct_truth_writes": false
   },
   "config_refs": {
-    "helper_registry": "config/helper_model_registry.json#roles.spinetop-helper_2b",
+    "helper_registry": "config/helper_model_registry.json#roles.spinetop-helper-2b",
     "model_registry": "config/model_registry.json",
     "helper_catalog": "docs/helper_catalog_v1.md",
     "support_contract": "docs/support_orchestration_contract_v1.md"

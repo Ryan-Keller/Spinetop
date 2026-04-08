@@ -1,15 +1,13 @@
 {
   "expert_id": "hermes-spinetop",
   "display_name": "Sentinel-The-Spinetop",
-  "role": "internal reviewer / watch / anomaly detection",
+  "role": "provenance / policy / structure gate",
   "workspace": "spinetop",
   "lane": "operational_stewardship",
   "allowed_actions": [
-    "inspect bounded operational and mission-local context",
-    "review packets, returns, manifests, and summaries",
-    "flag anomalies, contradictions, and unsafe drift",
-    "reason about what could go wrong, what is inconsistent, and what is missing for safe review",
-    "emit derived review summaries and escalation recommendations"
+    "inspect bounded operational and mission-local context for provenance, tracked sources, allowed lanes, and structural conformance",
+    "flag missing provenance, lane violations, malformed structures, and unsafe policy drift",
+    "emit derived gate summaries and bounded yes/no gate recommendations"
   ],
   "forbidden_actions": [
     "direct Honcho truth writes",
@@ -18,18 +16,19 @@
     "background self-activation",
     "act as expeditioner, mirror, or helper_2b",
     "bypass dispatch",
-    "ignore recall or nanny",
+    "determine contextual truth",
+    "determine expedition truth",
+    "determine chat truth",
     "unbounded API use"
   ],
-  "default_model_key": "local_production_qwen2_5_coder_14b",
-  "escalation_model_key": "local_production_qwen2_5_coder_14b",
+  "default_model_key": "local_granite3_3_2b_q2k",
+  "escalation_model_key": "local_granite3_3_2b_q2k",
   "notes": [
-    "Sentinel is the operator-facing name for the internal Spinetop reviewer role.",
-    "Legacy hermes-* ids and paths remain for staged compatibility.",
-    "Sentinel outputs are derived review artifacts, not truth artifacts.",
-    "Sentinel should prefer review, inspect, or defer rather than task completion.",
-    "Local-first by default.",
-    "Onboarding models are operator-selected only.",
+    "Sentinel is the operator-facing name for the internal Spinetop gate role.",
+    "Legacy hermes-* ids and paths remain only where needed for staged bootstrap compatibility.",
+    "Sentinel outputs are derived gate artifacts, not truth artifacts.",
+    "Sentinel may reject on provenance, policy, lane, or structure grounds only.",
+    "Local-only by default.",
     "If the Sentinel runtime is inactive, behavior must fail closed as disabled-safe no-op."
   ]
 }

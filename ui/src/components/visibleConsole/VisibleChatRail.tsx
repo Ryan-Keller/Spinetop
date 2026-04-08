@@ -88,10 +88,9 @@ export default function VisibleChatRail(props: VisibleChatRailProps) {
   return (
     <aside className="visible-chat-rail">
       <header className="visible-chat-rail__header">
-        <div>
-          <span className="console-kicker">Chat Rail</span>
+        <div className="visible-chat-rail__heading">
+          <span className="console-kicker">Command</span>
           <h2>{composerMode}</h2>
-          <p>Concierge stays strategic rather than generic, advisories stay structured, and nothing here directly controls Expeditioner.</p>
         </div>
         <div className="visible-chat-rail__mode-row">
           {modes.map((mode) => (
@@ -109,8 +108,8 @@ export default function VisibleChatRail(props: VisibleChatRailProps) {
 
       <section className="visible-chat-rail__advisories">
         <div className="visible-chat-rail__section-header">
-          <h3>Advisory / Interjection</h3>
-          <span className="console-badge console-badge--soft">visible objects</span>
+          <h3>Active objects</h3>
+          <span className="console-badge console-badge--soft">visible</span>
         </div>
         <div className="visible-chat-rail__advisory-list">
           {props.advisories.length ? (
@@ -122,14 +121,14 @@ export default function VisibleChatRail(props: VisibleChatRailProps) {
                 <strong>{item.kind === "expedition_intervention" ? "Intervention" : "Advisory"}</strong>
                 <p>{item.kind === "expedition_intervention" ? item.instruction : item.suggestion}</p>
                 <small>
-                  {item.reason} · {item.source}
+                  {item.reason} | {item.source}
                 </small>
               </article>
             ))
           ) : (
             <article className="advisory-card advisory-card--empty">
-              <strong>No active advisory artifact</strong>
-              <p>Structured concierge advice and visible interjections will appear here only when the read surfaces already contain them.</p>
+              <strong>Quiet</strong>
+              <p>No advisory surface is active.</p>
             </article>
           )}
         </div>
@@ -148,8 +147,8 @@ export default function VisibleChatRail(props: VisibleChatRailProps) {
           ))
         ) : (
           <div className="chat-message chat-message--empty">
-            <strong>Visible conversation staging area</strong>
-            <p>Mission chat history will appear here once this expedition has exchanged messages.</p>
+            <strong>No thread yet</strong>
+            <p>The rail wakes when the mission speaks.</p>
           </div>
         )}
       </div>
@@ -164,16 +163,16 @@ export default function VisibleChatRail(props: VisibleChatRailProps) {
 
       <div className="visible-chat-rail__composer">
         <label className="chat-rail__input-wrap">
-          <span>{composerMode} prompt</span>
+          <span>{composerMode}</span>
           <textarea
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
-            placeholder={`Send a visible ${composerMode.toLowerCase()} message through the mission chat API`}
+            placeholder={`Visible ${composerMode.toLowerCase()} message`}
             rows={5}
           />
         </label>
         <div className="chat-rail__composer-row">
-          <small>Visible path only: sending writes one inspectable chat artifact through `/api/expeditions/:id/chat`.</small>
+          <small>Explicit only</small>
           <button type="button" className="chat-send" onClick={() => void handleSubmit()} disabled={props.sending || !draft.trim()}>
             {props.sending ? "Sending..." : "Send"}
           </button>

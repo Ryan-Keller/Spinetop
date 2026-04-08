@@ -1,5 +1,5 @@
 {
-  "role_id": "spinetop_expeditioner",
+  "role_id": "spinetop-expeditioner",
   "display_name": "Spinetop-Expeditioner",
   "role_class": "mission_task_worker",
   "purpose": [
@@ -27,7 +27,7 @@
     "direct_truth_writes": false
   },
   "config_refs": {
-    "helper_registry": "config/helper_model_registry.json#roles.spinetop_expeditioner",
+    "helper_registry": "config/helper_model_registry.json#roles.spinetop-expeditioner",
     "model_registry": "config/model_registry.json",
     "helper_catalog": "docs/helper_catalog_v1.md",
     "support_contract": "docs/support_orchestration_contract_v1.md"

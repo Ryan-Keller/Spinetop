@@ -11,8 +11,8 @@ from repo_paths import repo_root
 ROOT = repo_root()
 CONFIG_DIR = ROOT / "config"
 ROLE_CARD_BY_ID = {
-    "spinetop_expeditioner": CONFIG_DIR / "expeditioner_role.json",
-    "spinetop-helper_2b": CONFIG_DIR / "helper_role.json",
+    "spinetop-expeditioner": CONFIG_DIR / "expeditioner_role.json",
+    "spinetop-helper-2b": CONFIG_DIR / "helper_role.json",
     "spinetop-mirror": CONFIG_DIR / "mirror_role.json",
 }
 FORBIDDEN_WRITE_PREFIXES = (
@@ -22,7 +22,7 @@ FORBIDDEN_WRITE_PREFIXES = (
     "services/honcho/",
 )
 ROLE_ALLOWED_ACTIONS = {
-    "spinetop_expeditioner": {
+    "spinetop-expeditioner": {
         "start_first_pass_expedition",
         "retry_expedition_refresh",
         "resume_expedition",

@@ -14,8 +14,8 @@
     "deploy model assignments",
     "bypass operator approval"
   ],
-  "default_model_key": "local_production_qwen2_5_coder_14b",
-  "escalation_model_key": "api_research",
+  "default_model_key": "local_gemma4_e4b_4k",
+  "escalation_model_key": "local_gemma4_e4b_4k",
   "notes": [
     "Advisory only.",
     "Operator approval required for changes."

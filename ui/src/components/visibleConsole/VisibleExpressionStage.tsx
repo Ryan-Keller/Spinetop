@@ -1,8 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 
 import type { ExpeditionSummary } from "../../pages/dashboardTypes";
-import type { AdvisorySurface, DerivedExpeditionProgress, MirrorExpressionSpec } from "../../pages/useVisibleExpressionConsoleData";
+import type { AdvisorySurface, DerivedExpeditionProgress, MirrorExpressionSpec, MirrorNote } from "../../pages/useVisibleExpressionConsoleData";
 
 type VisibleExpressionStageProps = {
   expeditions: ExpeditionSummary[];
@@ -18,6 +18,7 @@ type VisibleExpressionStageProps = {
       summary?: string;
     };
   } | null;
+  mirrorNotes: MirrorNote[];
   state: {
     item: {
       operator_posture?: string;
@@ -96,15 +97,23 @@ const compactTime = (value?: string) => {
 const percent = (value: number) => `${Math.round(value * 100)}%`;
 
 const lensTitle: Record<MirrorExpressionSpec["lens"], string> = {
-  contradictions: "Contradictions foregrounded",
-  activity: "Activity channels foregrounded",
-  memory_tension: "Memory tension foregrounded",
-  handoff: "Handoff edges foregrounded",
+  contradictions: "Contradictions",
+  activity: "Activity",
+  memory_tension: "Tension",
+  handoff: "Handoff",
+};
+
+const mirrorKindLabel = (value?: string) => {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return "echo";
+  if (normalized === "operator_save") return "saved";
+  return normalized.replace(/_/g, " ");
 };
 
 export default function VisibleExpressionStage(props: VisibleExpressionStageProps) {
   const contradictions = props.interpretation.item?.contradictions || [];
   const patterns = props.interpretation.item?.patterns || [];
+  const visibleMirrorNotes = useMemo(() => props.mirrorNotes.slice(0, 5), [props.mirrorNotes]);
   const hasGhostPressure = props.expressionSpec.overlay_hints.includes("ghost_pressure");
   const hasActivityEmphasis = props.expressionSpec.emphasis.includes("activity");
   const hasContradictionEmphasis = props.expressionSpec.emphasis.includes("contradiction");
@@ -115,6 +124,17 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
     "--contradiction-prominence": hasContradictionEmphasis ? "1" : "0.35",
     "--tension-prominence": hasMemoryTension ? "1" : "0.4",
   } as CSSProperties;
+  const [selectedMirrorNoteId, setSelectedMirrorNoteId] = useState<string>("");
+  useEffect(() => {
+    if (!visibleMirrorNotes.length) {
+      setSelectedMirrorNoteId("");
+      return;
+    }
+    setSelectedMirrorNoteId((current) => (
+      current && visibleMirrorNotes.some((item) => item.artifact_id === current) ? current : visibleMirrorNotes[0].artifact_id
+    ));
+  }, [visibleMirrorNotes]);
+  const activeMirrorNote = visibleMirrorNotes.find((item) => item.artifact_id === selectedMirrorNoteId) || visibleMirrorNotes[0] || null;
   const focusItems = useMemo(
     () => ({
       mirror: {
@@ -123,7 +143,19 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
         related: [
           ...patterns.slice(0, 2),
           ...contradictions.slice(0, 2),
+          activeMirrorNote?.text || "",
           props.signals.item?.activity?.summary || "",
+        ].filter(Boolean),
+      },
+      echoes: {
+        title: "Written echo",
+        summary: activeMirrorNote?.text || "Saved mission-local mirror notes will settle here when present.",
+        related: [
+          activeMirrorNote ? `${mirrorKindLabel(activeMirrorNote.artifact_kind)} · ${compactTime(activeMirrorNote.created_at)}` : "",
+          ...visibleMirrorNotes
+            .filter((item) => item.artifact_id !== activeMirrorNote?.artifact_id)
+            .slice(0, 3)
+            .map((item) => item.text),
         ].filter(Boolean),
       },
       progress: {
@@ -161,7 +193,7 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
         ].filter(Boolean),
       },
     }),
-    [contradictions, hasGhostPressure, patterns, props.expressionSpec.overlay_hints, props.expressionSpec.summary, props.progress.confidence, props.progress.phase, props.progress.status, props.signals.item?.activity?.kind, props.signals.item?.activity?.summary, props.signals.item?.blocked?.reason, props.signals.item?.contradiction?.summary, props.signals.item?.handoff?.reason, props.signals.item?.handoff?.target_role, props.timeline.item?.recent_agent_runs, props.timeline.item?.recent_triggers],
+    [activeMirrorNote, contradictions, hasGhostPressure, patterns, props.expressionSpec.overlay_hints, props.expressionSpec.summary, props.progress.confidence, props.progress.phase, props.progress.status, props.signals.item?.activity?.kind, props.signals.item?.activity?.summary, props.signals.item?.blocked?.reason, props.signals.item?.contradiction?.summary, props.signals.item?.handoff?.reason, props.signals.item?.handoff?.target_role, props.timeline.item?.recent_agent_runs, props.timeline.item?.recent_triggers, visibleMirrorNotes],
   );
   const [focusKey, setFocusKey] = useState<keyof typeof focusItems>("mirror");
   const focus = focusItems[focusKey];
@@ -171,11 +203,8 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
     <section className={`visible-expression-stage visible-expression-stage--${props.expressionSpec.mood}`} style={visualStyle}>
       <header className="visible-expression-stage__header">
         <div className="visible-expression-stage__heading">
-          <span className="console-kicker">Visible Intelligence System</span>
-          <h1>{props.mission?.objective || "Select a mission to open the expression stage"}</h1>
-          <p>
-            Mirror directs the stage from inspectable state, timeline, interpretation, and signals. The UI shifts by lens, mood, intensity, and emphasis rather than showing Mirror as text alone.
-          </p>
+          <span className="console-kicker">Live field</span>
+          <h1>{props.mission?.objective || "Select a mission"}</h1>
         </div>
 
         <div className="visible-expression-stage__controls">
@@ -191,13 +220,13 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
             </select>
           </label>
           <div className="visible-expression-stage__badges">
-            <span className="console-badge console-badge--soft">mission {props.mission?.mission_id || "none"}</span>
+            <span className="console-badge console-badge--soft">{props.mission?.mission_id || "none"}</span>
             <span className="console-badge">{props.mission?.current_state || "idle"}</span>
             <span className="console-badge console-badge--accent">{props.state.item?.operator_posture || props.mission?.operator_posture || "observe"}</span>
-            <span className="console-badge console-badge--ghost">lens {props.expressionSpec.lens}</span>
-            <span className="console-badge console-badge--soft">Mirror director</span>
-            <span className="console-badge console-badge--soft">Observerbot seam</span>
-            <span className="console-badge console-badge--soft">Concierge seam</span>
+            <span className="console-badge console-badge--ghost">{props.expressionSpec.lens}</span>
+            <span className="console-badge console-badge--soft">mirror</span>
+            <span className="console-badge console-badge--soft">observer</span>
+            <span className="console-badge console-badge--soft">concierge</span>
           </div>
         </div>
       </header>
@@ -213,18 +242,17 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
         {hasGhostPressure ? <div className="stage-visual__ghost-pressure" aria-hidden="true" /> : null}
 
         <div className="stage-visual__header">
-          <div>
-            <span className="console-kicker">Expression Header</span>
+          <div className="stage-visual__identity">
             <div className="stage-visual__title-row">
               <strong>{props.mission?.mission_id || "mission-pending"}</strong>
               <span className="console-badge">{props.mission?.status_badge || props.progress.status}</span>
             </div>
-            <p>{props.mission?.mission_summary?.summary || "The stage sharpens only when mission-local evidence exists."}</p>
+            <p>{props.mission?.mission_summary?.summary || "Awaiting clearer signal."}</p>
           </div>
 
           <div className="stage-visual__header-meta">
             <div>
-              <span>active lens</span>
+              <span>lens</span>
               <strong>{lensTitle[props.expressionSpec.lens]}</strong>
             </div>
             <div>
@@ -232,39 +260,72 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
               <strong>{props.state.item?.operator_posture || props.mission?.operator_posture || "observe"}</strong>
             </div>
             <div>
-              <span>autonomy</span>
+              <span>runtime</span>
               <strong>{props.state.item?.autonomy_state || "guarded"}</strong>
             </div>
             <div>
-              <span>ghost seam</span>
-              <strong>{hasGhostPressure ? "pressure visible" : "placeholder only"}</strong>
+              <span>ghost</span>
+              <strong>{hasGhostPressure ? "pressure" : "idle"}</strong>
             </div>
           </div>
         </div>
 
         <div className="stage-visual__body">
-          <button type="button" className={`stage-visual__summary ${focusClass("mirror")}`} onClick={() => setFocusKey("mirror")}>
-            <span className="console-kicker">Mirror Summary</span>
-            <h2>{props.expressionSpec.summary}</h2>
-            <div className="stage-visual__chips">
-              {props.expressionSpec.emphasis.map((item) => (
-                <span key={item} className="expression-chip">
-                  {item}
-                </span>
-              ))}
-              {props.expressionSpec.overlay_hints.map((item) => (
-                <span key={item} className="expression-chip expression-chip--ghost">
-                  {item}
-                </span>
-              ))}
-            </div>
-          </button>
+          <div className="stage-visual__summary-column">
+            <button type="button" className={`stage-visual__summary ${focusClass("mirror")}`} onClick={() => setFocusKey("mirror")}>
+              <h2>{props.expressionSpec.summary}</h2>
+              <div className="stage-visual__chips">
+                {props.expressionSpec.emphasis.map((item) => (
+                  <span key={item} className="expression-chip">
+                    {item}
+                  </span>
+                ))}
+                {props.expressionSpec.overlay_hints.map((item) => (
+                  <span key={item} className="expression-chip expression-chip--ghost">
+                    {item}
+                  </span>
+                ))}
+              </div>
+            </button>
+
+            {visibleMirrorNotes.length ? (
+              <section className="stage-echoes" aria-label="Mirror notes">
+                <div className="stage-echoes__header">
+                  <span>written echoes</span>
+                  <span>{visibleMirrorNotes.length}</span>
+                </div>
+                <div className="stage-echoes__list">
+                  {visibleMirrorNotes.map((item, index) => {
+                    const isSelected = item.artifact_id === activeMirrorNote?.artifact_id;
+                    return (
+                      <button
+                        key={item.artifact_id || `${item.created_at}-${index}`}
+                        type="button"
+                        className={`stage-echo ${focusClass("echoes")}${isSelected ? " stage-echo--selected" : ""}${index === 0 ? " stage-echo--latest" : ""}`}
+                        style={{ opacity: Math.max(0.54, 1 - index * 0.12) }}
+                        onClick={() => {
+                          setSelectedMirrorNoteId(item.artifact_id);
+                          setFocusKey("echoes");
+                        }}
+                      >
+                        <div className="stage-echo__meta">
+                          <span>{compactTime(item.created_at)}</span>
+                          <span className="stage-echo__kind">{mirrorKindLabel(item.artifact_kind)}</span>
+                        </div>
+                        <p className="stage-echo__text">{item.text}</p>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            ) : null}
+          </div>
 
           <div className="stage-visual__right-stack">
             <article className="stage-spec-card">
               <div className="stage-spec-card__header">
-                <h3>Derived Mirror expression spec</h3>
-                <span className="console-badge console-badge--soft">inspectable</span>
+                <h3>Mirror</h3>
+                <span className="console-badge console-badge--soft">spec</span>
               </div>
               <dl className="stage-spec-card__grid">
                 <div>
@@ -288,7 +349,7 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
 
             <button type="button" className={`stage-progress-card ${focusClass("progress")}`} onClick={() => setFocusKey("progress")}>
               <div className="stage-progress-card__header">
-                <h3>Real expedition progress</h3>
+                <h3>Expedition</h3>
                 <span className="console-badge console-badge--accent">{props.progress.phase}</span>
               </div>
               <div className="stage-progress-card__bar" aria-label="Expedition progress">
@@ -307,13 +368,13 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
                   <strong>{percent(props.progress.confidence)}</strong>
                 </div>
                 <div>
-                  <span>evidence steps</span>
+                  <span>steps</span>
                   <strong>
                     {props.progress.steps_completed}/{props.progress.steps_total}
                   </strong>
                 </div>
                 <div>
-                  <span>last update</span>
+                  <span>update</span>
                   <strong>{compactTime(props.progress.last_update)}</strong>
                   </div>
                 </div>
@@ -322,11 +383,7 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
         </div>
 
         <div className={`stage-visual__lower-rail stage-visual__lower-rail--${props.expressionSpec.lens}`}>
-          <section className="stage-rail-section">
-            <div className="stage-rail-section__header">
-              <h3>Recent signals</h3>
-              <span className="console-badge console-badge--soft">state + signals</span>
-            </div>
+          <section className="stage-rail-section stage-rail-section--dock">
             <div className="stage-note-list">
               <button type="button" className={`stage-note ${focusClass("activity")}`} onClick={() => setFocusKey("activity")}>
                 {props.signals.item?.activity?.summary || "No live activity artifact is visible right now."}
@@ -348,11 +405,7 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
             </div>
           </section>
 
-          <section className="stage-rail-section">
-            <div className="stage-rail-section__header">
-              <h3>Interpretation snippets</h3>
-              <span className="console-badge console-badge--ghost">Mirror</span>
-            </div>
+          <section className="stage-rail-section stage-rail-section--dock">
             <div className="stage-note-list">
               {patterns.slice(0, 3).map((item) => (
                 <button key={item} type="button" className={`stage-note ${focusClass("mirror")}`} onClick={() => setFocusKey("mirror")}>
@@ -372,11 +425,7 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
             </div>
           </section>
 
-          <section className="stage-rail-section">
-            <div className="stage-rail-section__header">
-              <h3>Timeline hints</h3>
-              <span className="console-badge">timeline</span>
-            </div>
+          <section className="stage-rail-section stage-rail-section--dock">
             <div className="stage-note-list">
               {props.timeline.item?.recent_agent_runs.slice(0, 2).map((item) => (
                 <button key={item.run_id} type="button" className={`stage-note ${focusClass("progress")}`} onClick={() => setFocusKey("progress")}>
@@ -391,20 +440,14 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
             </div>
           </section>
 
-          <section className="stage-rail-section">
-            <div className="stage-rail-section__header">
-              <h3>Ghost / advisory seams</h3>
-              <span className="console-badge console-badge--soft">visible only</span>
-            </div>
+          <section className="stage-rail-section stage-rail-section--dock">
             <div className="stage-note-list">
               <button
                 type="button"
                 className={`stage-note ${focusClass("ghost")}${hasGhostPressure ? " stage-note--ghost" : " stage-note--muted"}`}
                 onClick={() => setFocusKey("ghost")}
               >
-                {hasGhostPressure
-                  ? "Ghost pressure indicator is visible as a placeholder seam for future wake and expectation surfaces."
-                  : "Ghost seam is reserved without active pressure right now."}
+                {hasGhostPressure ? "Ghost pressure seam is visible." : "Ghost seam is quiet."}
               </button>
               {props.advisories.slice(0, 2).map((item, index) => (
                 <button
@@ -422,7 +465,7 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
 
         <section className="stage-focus-panel">
           <div className="stage-focus-panel__header">
-            <h3>Focus mode</h3>
+            <h3>Focus</h3>
             <span className="console-badge console-badge--soft">{focus.title}</span>
           </div>
           <p className="stage-focus-panel__summary">{focus.summary}</p>
