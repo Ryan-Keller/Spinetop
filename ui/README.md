@@ -15,3 +15,4 @@ This package contains the operator dashboard, visible mission console, and legac
 - `npm run lint`
 
 Legacy demo pages may still exist for reference, but the primary UI entry points are the dashboard and visible console.
+See `ui/src/pages/ARCHIVE_NOTES.md` for the current archive-candidate page list.

@@ -11,6 +11,7 @@ Start here:
 - [Record Schemas](record_schemas.md)
 - [Artifact Kind Convention](artifact_kind_convention_v1.md)
 - [Mission Artifact Manifest Schema](mission_artifact_manifest_schema_v1.md)
+- [Archive Notes](ARCHIVE_NOTES.md)
 
 Current live doctrine:
 
