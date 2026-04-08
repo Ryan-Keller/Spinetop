@@ -2779,6 +2779,235 @@ def _operator_invoke_role_text(message: str, quick_reply: str | None = None) -> 
     return None
 
 
+def _chat_semantic_text(message: str) -> str:
+    text = str(message or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"^\[(observer|concierge|mirror|system|expedition)\]\s*", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"^(observer|concierge|mirror|system|expedition)\s*[:,\-]\s*", "", text, flags=re.IGNORECASE).strip()
+    return text
+
+
+def _clean_mirror_query_text(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"^[\"'`\s]+|[\"'`\s\.\!\?]+$", "", text).strip()
+    text = re.sub(r"\b(?:in this mission|from this mission|mirror notes?|saved notes?)\b$", "", text, flags=re.IGNORECASE).strip(" ,.;:!?")
+    return " ".join(text.split())
+
+
+def _mirror_retrieval_plan(message: str, quick_reply: str | None = None) -> dict[str, Any]:
+    text = _chat_semantic_text(message)
+    normalized = _normalize_question_text(text)
+    if not text or str(quick_reply or "").strip():
+        return {"is_mirror_retrieval": False, "query_text": "", "mode": "all"}
+    if _operator_save_text(text) is not None or _operator_invoke_role_text(text, quick_reply) is not None:
+        return {"is_mirror_retrieval": False, "query_text": "", "mode": "all"}
+
+    retrieval_markers = (
+        "what have i saved",
+        "what did i save",
+        "show what i saved",
+        "show me what i saved",
+        "show my saved notes",
+        "what have i written",
+        "what did i write",
+        "what have i wrote",
+        "saved notes",
+        "mirror notes",
+    )
+    if not any(marker in normalized for marker in retrieval_markers):
+        return {"is_mirror_retrieval": False, "query_text": "", "mode": "all"}
+
+    if any(marker in normalized for marker in ("saved recently", "save recently", "written recently", "wrote recently", "recent saved", "latest saved")):
+        return {"is_mirror_retrieval": True, "query_text": "", "mode": "recent"}
+
+    query_match = re.search(r"\b(?:about|regarding|on)\s+(.+)$", text, flags=re.IGNORECASE)
+    if query_match:
+        query_text = _clean_mirror_query_text(query_match.group(1))
+        if query_text:
+            return {"is_mirror_retrieval": True, "query_text": query_text, "mode": "semantic_match"}
+
+    if normalized in {
+        "what have i saved",
+        "what did i save",
+        "show what i saved",
+        "show me what i saved",
+        "show my saved notes",
+        "what have i written",
+        "what did i write",
+    }:
+        return {"is_mirror_retrieval": True, "query_text": "", "mode": "all"}
+
+    return {"is_mirror_retrieval": False, "query_text": "", "mode": "all"}
+
+
+def _mirror_token_forms(token: str) -> set[str]:
+    base = re.sub(r"[^a-z0-9]+", "", str(token or "").lower())
+    if not base:
+        return set()
+    forms = {base}
+    if len(base) > 4 and base.endswith("ies"):
+        forms.add(base[:-3] + "y")
+    if len(base) > 3 and base.endswith("es"):
+        forms.add(base[:-2])
+    if len(base) > 3 and base.endswith("s"):
+        forms.add(base[:-1])
+    if len(base) > 5 and base.endswith("ing"):
+        stem = base[:-3]
+        forms.add(stem)
+        if len(stem) > 2 and stem[-1] == stem[-2]:
+            forms.add(stem[:-1])
+    if len(base) > 4 and base.endswith("ed"):
+        forms.add(base[:-2])
+    return {item for item in forms if item}
+
+
+def _mirror_query_tokens(query_text: str) -> list[str]:
+    stopwords = {
+        "the",
+        "and",
+        "about",
+        "regarding",
+        "what",
+        "have",
+        "did",
+        "show",
+        "saved",
+        "save",
+        "notes",
+        "note",
+        "written",
+        "write",
+        "wrote",
+        "mirror",
+        "recent",
+        "latest",
+        "this",
+        "mission",
+        "that",
+        "with",
+        "from",
+        "into",
+        "your",
+        "my",
+    }
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for raw in _normalize_question_text(query_text).split():
+        for token in _mirror_token_forms(raw):
+            if len(token) < 2 or token in stopwords or token in seen:
+                continue
+            seen.add(token)
+            tokens.append(token)
+    return tokens
+
+
+def _mirror_note_match_score(note_text: str, query_text: str) -> int:
+    normalized_note = _normalize_question_text(note_text)
+    normalized_query = _normalize_question_text(query_text)
+    if not normalized_note or not normalized_query:
+        return 0
+    if normalized_query in normalized_note:
+        return 100 + len(normalized_query)
+    note_tokens: set[str] = set()
+    for raw in normalized_note.split():
+        note_tokens.update(_mirror_token_forms(raw))
+    query_tokens = _mirror_query_tokens(query_text)
+    if not query_tokens:
+        return 0
+    return sum(1 for token in query_tokens if token in note_tokens or token in normalized_note)
+
+
+def _compact_mirror_note_text(text: str, limit: int = 180) -> str:
+    value = " ".join(str(text or "").split())
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3].rstrip() + "..."
+
+
+def _display_mirror_timestamp(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        stamp = datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
+        return stamp.strftime("%b %d %H:%M UTC")
+    except Exception:
+        return text
+
+
+def _concierge_mirror_retrieval_result(mission_id: str, message: str, quick_reply: str | None = None) -> dict[str, Any] | None:
+    plan = _mirror_retrieval_plan(message, quick_reply)
+    if not bool(plan.get("is_mirror_retrieval")):
+        return None
+
+    mission = normalize_mission_id(mission_id)
+    _sync_mission_storage()
+    notes = [item for item in _read_mirror_notes(mission) if isinstance(item, dict)]
+    mode = str(plan.get("mode") or "all").strip() or "all"
+    query_text = str(plan.get("query_text") or "").strip()
+
+    if mode == "recent":
+        matches = notes[:5]
+    elif mode == "semantic_match":
+        scored: list[tuple[int, dict[str, Any]]] = []
+        for note in notes:
+            score = _mirror_note_match_score(str(note.get("text") or note.get("summary") or ""), query_text)
+            if score > 0:
+                scored.append((score, note))
+        scored.sort(key=lambda item: (item[0], str(item[1].get("created_at") or ""), str(item[1].get("artifact_id") or "")), reverse=True)
+        matches = [item for _, item in scored[:5]]
+    else:
+        matches = notes[:10]
+
+    normalized_matches = [
+        {
+            "artifact_id": str(item.get("artifact_id") or item.get("note_id") or "").strip(),
+            "text": str(item.get("text") or item.get("summary") or "").strip(),
+            "created_at": str(item.get("created_at") or "").strip(),
+            "artifact_kind": str(item.get("artifact_kind") or item.get("kind") or "").strip(),
+        }
+        for item in matches
+    ]
+
+    if mode == "recent":
+        if normalized_matches:
+            prefix = f"I found {len(normalized_matches)} recent saved mirror note{'s' if len(normalized_matches) != 1 else ''} in this mission."
+        else:
+            prefix = "I do not see any saved mirror notes in this mission."
+        query_label = "recent"
+    elif mode == "semantic_match":
+        if normalized_matches:
+            prefix = f"I found {len(normalized_matches)} saved mirror note{'s' if len(normalized_matches) != 1 else ''} about {query_text} in this mission."
+        else:
+            prefix = f"I do not see any saved mirror notes about {query_text} in this mission."
+        query_label = query_text
+    else:
+        if normalized_matches:
+            prefix = f"I found {len(normalized_matches)} saved mirror note{'s' if len(normalized_matches) != 1 else ''} in this mission."
+        else:
+            prefix = "I do not see any saved mirror notes in this mission."
+        query_label = "all"
+
+    detail_lines = [
+        f'- {_display_mirror_timestamp(str(item.get("created_at") or ""))}: "{_compact_mirror_note_text(str(item.get("text") or ""))}"'
+        for item in normalized_matches[:3]
+    ]
+    message_text = prefix if not detail_lines else prefix + "\n" + "\n".join(detail_lines)
+
+    return {
+        "ok": True,
+        "kind": "concierge_mirror_retrieval",
+        "mission_id": mission,
+        "query": query_label,
+        "mode": mode,
+        "matches": normalized_matches,
+        "message": message_text,
+    }
+
+
 def _blocking_chat_fallback_reply(detail: dict[str, Any]) -> str:
     summary = detail.get("mission_summary") if isinstance(detail.get("mission_summary"), dict) else {}
     working_memory = detail.get("working_memory") if isinstance(detail.get("working_memory"), dict) else {}
@@ -3220,32 +3449,39 @@ def _operator_save_empty_response() -> dict[str, Any]:
     }
 
 
-def _append_chat_exchange(mission_id: str, message: str, *, quick_reply: str | None = None) -> dict[str, Any]:
+def _build_chat_exchange_items(mission_id: str, message: str, assistant: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     mission = normalize_mission_id(mission_id)
-    detail = _build_expedition_detail(mission)
-    path = _mission_chat_path(mission, ensure=True)
+    created_at = iso_now()
     user_item = {
-        "message_id": f"chat_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{_short_digest(f'{mission}|user|{message}')}",
+        "message_id": f"chat_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{_short_digest(f'{mission}|user|{message}|{created_at}')}",
         "mission_id": mission,
         "sender": "user",
         "role": "user",
         "message": message,
         "tone": "info",
-        "created_at": iso_now(),
+        "created_at": created_at,
         "kind": "message",
     }
-    assistant = _chat_reply(message, quick_reply, detail)
-    assistant_digest_seed = f"{mission}|assistant|{assistant['message']}"
+    assistant_message = str(assistant.get("message") or "")
     assistant_item = {
-        "message_id": f"chat_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{_short_digest(assistant_digest_seed)}",
+        "message_id": f"chat_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{_short_digest(f'{mission}|assistant|{assistant_message}|{created_at}')}",
         "mission_id": mission,
-        "sender": assistant["role"],
-        "role": assistant["role"],
-        "message": assistant["message"],
-        "tone": assistant["tone"],
+        "sender": str(assistant.get("sender") or "assistant"),
+        "role": str(assistant.get("role") or "assistant"),
+        "message": assistant_message,
+        "tone": str(assistant.get("tone") or "info"),
         "created_at": iso_now(),
-        "kind": "reply",
+        "kind": str(assistant.get("kind") or "reply"),
     }
+    return user_item, assistant_item
+
+
+def _append_chat_exchange(mission_id: str, message: str, *, quick_reply: str | None = None) -> dict[str, Any]:
+    mission = normalize_mission_id(mission_id)
+    detail = _build_expedition_detail(mission)
+    path = _mission_chat_path(mission, ensure=True)
+    assistant = _chat_reply(message, quick_reply, detail)
+    user_item, assistant_item = _build_chat_exchange_items(mission, message, assistant)
     _append_jsonl(path, user_item)
     _append_jsonl(path, assistant_item)
     working_memory = _build_working_memory_payload(
@@ -6469,6 +6705,50 @@ def api_expedition_chat(mission_id: str):
         }), 400
 
     quick_reply = str(data.get("quick_reply") or data.get("preset") or "").strip() or None
+    retrieval = _concierge_mirror_retrieval_result(mission, content, quick_reply)
+    if retrieval:
+        detail = _build_expedition_detail(mission)
+        assistant = {
+            "sender": "assistant",
+            "role": "concierge",
+            "tone": "info",
+            "message": str(retrieval.get("message") or "").strip(),
+            "kind": "concierge_mirror_retrieval",
+        }
+        user_item, assistant_item = _build_chat_exchange_items(mission, content, assistant)
+        current_messages = _mission_chat_messages(mission)
+        return jsonify({
+            "ok": True,
+            "kind": "concierge_mirror_retrieval",
+            "mission_id": str(retrieval.get("mission_id") or "").strip(),
+            "query": str(retrieval.get("query") or "").strip(),
+            "mode": str(retrieval.get("mode") or "").strip(),
+            "matches": retrieval.get("matches") if isinstance(retrieval.get("matches"), list) else [],
+            "message": str(retrieval.get("message") or "").strip(),
+            "item": detail,
+            "messages": [*current_messages, user_item, assistant_item],
+            "exchange": {
+                "messages": [user_item, assistant_item],
+                "path": "",
+                "summary": "",
+                "persisted": False,
+                "retrieval": retrieval,
+            },
+            "response": {
+                "kind": "concierge_mirror_retrieval",
+                "summary": str(retrieval.get("message") or "").strip(),
+                "answer": str(retrieval.get("message") or "").strip(),
+                "message": str(retrieval.get("message") or "").strip(),
+                "tone": "info",
+                "questions": [],
+                "artifact": "mirror_retrieval",
+                "mission_id": str(retrieval.get("mission_id") or "").strip(),
+                "query": str(retrieval.get("query") or "").strip(),
+                "mode": str(retrieval.get("mode") or "").strip(),
+                "matches": retrieval.get("matches") if isinstance(retrieval.get("matches"), list) else [],
+            },
+        })
+
     exchange = _append_chat_exchange(mission, content, quick_reply=quick_reply)
     assistant_message = ""
     assistant_tone = "info"

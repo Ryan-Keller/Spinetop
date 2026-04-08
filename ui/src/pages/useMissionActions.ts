@@ -328,7 +328,7 @@ export function useMissionActions(args: UseMissionActionsArgs) {
         item?: ExpeditionDetail;
         messages?: MissionChatMessage[];
         exchange?: Record<string, unknown>;
-        response?: { kind?: string; artifact_path?: string };
+        response?: { kind?: string; artifact_path?: string; message?: string };
         save_detected?: boolean;
         mirror_artifact?: { path?: string };
         artifact_path?: string;
@@ -339,12 +339,15 @@ export function useMissionActions(args: UseMissionActionsArgs) {
       args.clearMissionChatDraft(missionId);
       if (payload.item) args.setSelectedMission(payload.item);
       const isOperatorSave = payload.kind === "operator_save" || payload.save_detected;
+      const isConciergeMirrorRetrieval = payload.kind === "concierge_mirror_retrieval" || payload.response?.kind === "concierge_mirror_retrieval";
       const saveArtifactPath = payload.artifact_path || payload.mirror_artifact?.path || payload.response?.artifact_path || "";
       args.setUiNotice({
         tone: "good",
-        title: isOperatorSave ? "Mirror note saved" : "Mission chat updated",
+        title: isOperatorSave ? "Mirror note saved" : isConciergeMirrorRetrieval ? "Concierge retrieval" : "Mission chat updated",
         detail: isOperatorSave
           ? (saveArtifactPath ? `Saved once to ${saveArtifactPath}.` : (payload.message || "Saved once to the mission-local mirror lane."))
+          : isConciergeMirrorRetrieval
+            ? (payload.response?.message || payload.message || "Mirror retrieval completed once for this mission.")
           : (quickReply ? `Quick reply sent once: ${quickReply}` : "Your message was accepted and added once to the mission chat."),
       });
       await args.load();
