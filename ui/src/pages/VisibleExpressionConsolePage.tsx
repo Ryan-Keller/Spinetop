@@ -24,7 +24,7 @@ export default function VisibleExpressionConsolePage() {
           <div className="visible-expression-console-topbar__status">
             <span className="console-badge console-badge--soft">live surfaces</span>
             <span className="console-badge">{relativeTime(consoleData.refreshTick)}</span>
-            <span className="console-badge console-badge--ghost">history</span>
+            <span className="console-badge console-badge--ghost">read only</span>
             {consoleData.error ? <span className="console-badge console-badge--warning">{consoleData.error}</span> : null}
           </div>
         </header>
@@ -59,8 +59,8 @@ export default function VisibleExpressionConsolePage() {
 
         {!consoleData.loading && !consoleData.expeditions.length ? (
           <section className="visible-console-empty-state">
-            <h2>No expeditions available</h2>
-            <p>The stage stays honest here. When a mission exists, the page binds to existing expedition APIs and derived-only UI overlays automatically.</p>
+            <h2>No visible missions</h2>
+            <p>The console wakes when a mission carries a mirror note, read-only retrieval, live role output, or a real blocker.</p>
           </section>
         ) : null}
       </div>

@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import re
+import sys
 import threading
 import urllib.request
 from collections import Counter
@@ -31,10 +32,13 @@ from state_machine import (
 )
 from governance_utils import can_bridge_to_honcho, read_nanny_state, read_return_all_state
 from helper_model_runtime import load_helper_runtime_profile
+import mirror_api as mirror_api_routes
+import mission_api as mission_api_routes
 import mission_read_model
 import mission_storage
 from prompt_translator import read_prompt_translations, translate_and_store_prompt
 from review_and_submit_petition import build_review_payload, validate_draft_petition
+import save_api as save_api_helpers
 from run_hermes_v1 import (
     extract_json_candidate,
     invoke_model,
@@ -92,6 +96,7 @@ KNOWN_PEERS = [
 
 app = Flask(__name__)
 PROMPT_TRANSLATOR_ACTIVE = False
+_ROUTE_API = sys.modules[__name__]
 
 
 ALLOWED_TRIGGER_KINDS: dict[str, dict[str, Any]] = {
@@ -2780,232 +2785,39 @@ def _operator_invoke_role_text(message: str, quick_reply: str | None = None) -> 
 
 
 def _chat_semantic_text(message: str) -> str:
-    text = str(message or "").strip()
-    if not text:
-        return ""
-    text = re.sub(r"^\[(observer|concierge|mirror|system|expedition)\]\s*", "", text, flags=re.IGNORECASE).strip()
-    text = re.sub(r"^(observer|concierge|mirror|system|expedition)\s*[:,\-]\s*", "", text, flags=re.IGNORECASE).strip()
-    return text
+    return mirror_api_routes._chat_semantic_text(message)
 
 
 def _clean_mirror_query_text(value: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    text = re.sub(r"^[\"'`\s]+|[\"'`\s\.\!\?]+$", "", text).strip()
-    text = re.sub(r"\b(?:in this mission|from this mission|mirror notes?|saved notes?)\b$", "", text, flags=re.IGNORECASE).strip(" ,.;:!?")
-    return " ".join(text.split())
+    return mirror_api_routes._clean_mirror_query_text(value)
 
 
 def _mirror_retrieval_plan(message: str, quick_reply: str | None = None) -> dict[str, Any]:
-    text = _chat_semantic_text(message)
-    normalized = _normalize_question_text(text)
-    if not text or str(quick_reply or "").strip():
-        return {"is_mirror_retrieval": False, "query_text": "", "mode": "all"}
-    if _operator_save_text(text) is not None or _operator_invoke_role_text(text, quick_reply) is not None:
-        return {"is_mirror_retrieval": False, "query_text": "", "mode": "all"}
-
-    retrieval_markers = (
-        "what have i saved",
-        "what did i save",
-        "show what i saved",
-        "show me what i saved",
-        "show my saved notes",
-        "what have i written",
-        "what did i write",
-        "what have i wrote",
-        "saved notes",
-        "mirror notes",
-    )
-    if not any(marker in normalized for marker in retrieval_markers):
-        return {"is_mirror_retrieval": False, "query_text": "", "mode": "all"}
-
-    if any(marker in normalized for marker in ("saved recently", "save recently", "written recently", "wrote recently", "recent saved", "latest saved")):
-        return {"is_mirror_retrieval": True, "query_text": "", "mode": "recent"}
-
-    query_match = re.search(r"\b(?:about|regarding|on)\s+(.+)$", text, flags=re.IGNORECASE)
-    if query_match:
-        query_text = _clean_mirror_query_text(query_match.group(1))
-        if query_text:
-            return {"is_mirror_retrieval": True, "query_text": query_text, "mode": "semantic_match"}
-
-    if normalized in {
-        "what have i saved",
-        "what did i save",
-        "show what i saved",
-        "show me what i saved",
-        "show my saved notes",
-        "what have i written",
-        "what did i write",
-    }:
-        return {"is_mirror_retrieval": True, "query_text": "", "mode": "all"}
-
-    return {"is_mirror_retrieval": False, "query_text": "", "mode": "all"}
+    return mirror_api_routes.build_mirror_retrieval_plan(_ROUTE_API, message, quick_reply)
 
 
 def _mirror_token_forms(token: str) -> set[str]:
-    base = re.sub(r"[^a-z0-9]+", "", str(token or "").lower())
-    if not base:
-        return set()
-    forms = {base}
-    if len(base) > 4 and base.endswith("ies"):
-        forms.add(base[:-3] + "y")
-    if len(base) > 3 and base.endswith("es"):
-        forms.add(base[:-2])
-    if len(base) > 3 and base.endswith("s"):
-        forms.add(base[:-1])
-    if len(base) > 5 and base.endswith("ing"):
-        stem = base[:-3]
-        forms.add(stem)
-        if len(stem) > 2 and stem[-1] == stem[-2]:
-            forms.add(stem[:-1])
-    if len(base) > 4 and base.endswith("ed"):
-        forms.add(base[:-2])
-    return {item for item in forms if item}
+    return mirror_api_routes._mirror_token_forms(token)
 
 
 def _mirror_query_tokens(query_text: str) -> list[str]:
-    stopwords = {
-        "the",
-        "and",
-        "about",
-        "regarding",
-        "what",
-        "have",
-        "did",
-        "show",
-        "saved",
-        "save",
-        "notes",
-        "note",
-        "written",
-        "write",
-        "wrote",
-        "mirror",
-        "recent",
-        "latest",
-        "this",
-        "mission",
-        "that",
-        "with",
-        "from",
-        "into",
-        "your",
-        "my",
-    }
-    tokens: list[str] = []
-    seen: set[str] = set()
-    for raw in _normalize_question_text(query_text).split():
-        for token in _mirror_token_forms(raw):
-            if len(token) < 2 or token in stopwords or token in seen:
-                continue
-            seen.add(token)
-            tokens.append(token)
-    return tokens
+    return mirror_api_routes._mirror_query_tokens(_ROUTE_API, query_text)
 
 
 def _mirror_note_match_score(note_text: str, query_text: str) -> int:
-    normalized_note = _normalize_question_text(note_text)
-    normalized_query = _normalize_question_text(query_text)
-    if not normalized_note or not normalized_query:
-        return 0
-    if normalized_query in normalized_note:
-        return 100 + len(normalized_query)
-    note_tokens: set[str] = set()
-    for raw in normalized_note.split():
-        note_tokens.update(_mirror_token_forms(raw))
-    query_tokens = _mirror_query_tokens(query_text)
-    if not query_tokens:
-        return 0
-    return sum(1 for token in query_tokens if token in note_tokens or token in normalized_note)
+    return mirror_api_routes._mirror_note_match_score(_ROUTE_API, note_text, query_text)
 
 
 def _compact_mirror_note_text(text: str, limit: int = 180) -> str:
-    value = " ".join(str(text or "").split())
-    if len(value) <= limit:
-        return value
-    return value[: limit - 3].rstrip() + "..."
+    return mirror_api_routes._compact_mirror_note_text(text, limit)
 
 
 def _display_mirror_timestamp(value: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    try:
-        stamp = datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
-        return stamp.strftime("%b %d %H:%M UTC")
-    except Exception:
-        return text
+    return mirror_api_routes._display_mirror_timestamp(value)
 
 
 def _concierge_mirror_retrieval_result(mission_id: str, message: str, quick_reply: str | None = None) -> dict[str, Any] | None:
-    plan = _mirror_retrieval_plan(message, quick_reply)
-    if not bool(plan.get("is_mirror_retrieval")):
-        return None
-
-    mission = normalize_mission_id(mission_id)
-    _sync_mission_storage()
-    notes = [item for item in _read_mirror_notes(mission) if isinstance(item, dict)]
-    mode = str(plan.get("mode") or "all").strip() or "all"
-    query_text = str(plan.get("query_text") or "").strip()
-
-    if mode == "recent":
-        matches = notes[:5]
-    elif mode == "semantic_match":
-        scored: list[tuple[int, dict[str, Any]]] = []
-        for note in notes:
-            score = _mirror_note_match_score(str(note.get("text") or note.get("summary") or ""), query_text)
-            if score > 0:
-                scored.append((score, note))
-        scored.sort(key=lambda item: (item[0], str(item[1].get("created_at") or ""), str(item[1].get("artifact_id") or "")), reverse=True)
-        matches = [item for _, item in scored[:5]]
-    else:
-        matches = notes[:10]
-
-    normalized_matches = [
-        {
-            "artifact_id": str(item.get("artifact_id") or item.get("note_id") or "").strip(),
-            "text": str(item.get("text") or item.get("summary") or "").strip(),
-            "created_at": str(item.get("created_at") or "").strip(),
-            "artifact_kind": str(item.get("artifact_kind") or item.get("kind") or "").strip(),
-        }
-        for item in matches
-    ]
-
-    if mode == "recent":
-        if normalized_matches:
-            prefix = f"I found {len(normalized_matches)} recent saved mirror note{'s' if len(normalized_matches) != 1 else ''} in this mission."
-        else:
-            prefix = "I do not see any saved mirror notes in this mission."
-        query_label = "recent"
-    elif mode == "semantic_match":
-        if normalized_matches:
-            prefix = f"I found {len(normalized_matches)} saved mirror note{'s' if len(normalized_matches) != 1 else ''} about {query_text} in this mission."
-        else:
-            prefix = f"I do not see any saved mirror notes about {query_text} in this mission."
-        query_label = query_text
-    else:
-        if normalized_matches:
-            prefix = f"I found {len(normalized_matches)} saved mirror note{'s' if len(normalized_matches) != 1 else ''} in this mission."
-        else:
-            prefix = "I do not see any saved mirror notes in this mission."
-        query_label = "all"
-
-    detail_lines = [
-        f'- {_display_mirror_timestamp(str(item.get("created_at") or ""))}: "{_compact_mirror_note_text(str(item.get("text") or ""))}"'
-        for item in normalized_matches[:3]
-    ]
-    message_text = prefix if not detail_lines else prefix + "\n" + "\n".join(detail_lines)
-
-    return {
-        "ok": True,
-        "kind": "concierge_mirror_retrieval",
-        "mission_id": mission,
-        "query": query_label,
-        "mode": mode,
-        "matches": normalized_matches,
-        "message": message_text,
-    }
+    return mirror_api_routes.concierge_mirror_retrieval_result(_ROUTE_API, mission_id, message, quick_reply)
 
 
 def _blocking_chat_fallback_reply(detail: dict[str, Any]) -> str:
@@ -3417,36 +3229,15 @@ def _operator_raw_text(payload: Any) -> str:
 
 
 def _operator_save_text(message: str) -> str | None:
-    raw_message = str(message or "").strip()
-    if not raw_message.lower().startswith("save:"):
-        return None
-    return raw_message[len("save:"):].strip()
+    return save_api_helpers.extract_save_text(message)
 
 
 def _operator_save_response(artifact: dict[str, Any]) -> dict[str, Any]:
-    artifact_path = str(artifact.get("path") or "").strip()
-    status_message = "Saved to mirror."
-    return {
-        "kind": "operator_save",
-        "save_detected": True,
-        "mirror_artifact_written": True,
-        "artifact_path": artifact_path,
-        "message": status_message,
-        "mirror_artifact": artifact,
-    }
+    return save_api_helpers.build_operator_save_response(artifact)
 
 
 def _operator_save_empty_response() -> dict[str, Any]:
-    status_message = "Nothing to save. Nothing was written."
-    return {
-        "ok": False,
-        "kind": "operator_save",
-        "save_detected": True,
-        "mirror_artifact_written": False,
-        "artifact_path": "",
-        "message": status_message,
-        "error": status_message,
-    }
+    return save_api_helpers.build_operator_save_empty_response()
 
 
 def _build_chat_exchange_items(mission_id: str, message: str, assistant: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -5964,818 +5755,122 @@ def api_mission_manifest_latest():
 
 @app.get("/api/expeditions")
 def api_expeditions_list():
-    items, grouped_counts = _list_expeditions()
-    return jsonify({
-        "ok": True,
-        "source_root": _safe_relative_path(EXPEDITIONS_ACTIVE_DIR),
-        "items": items,
-        "grouped_counts": grouped_counts,
-        "queue_summary": grouped_counts.get("queue_summary") if isinstance(grouped_counts, dict) else _queue_summary_from_items([]),
-    })
+    return mission_api_routes.handle_expeditions_list(_ROUTE_API)
 
 
 @app.get("/api/expeditions/<mission_id>")
 def api_expedition_detail(mission_id: str):
-    try:
-        exists = _mission_exists(mission_id)
-    except Exception as exc:
-        return jsonify({
-            "ok": False,
-            "available": False,
-            "error": str(exc),
-            "item": None,
-        }), 400
-    if not exists:
-        return jsonify({
-            "ok": False,
-            "available": False,
-            "error": "mission not found",
-            "item": None,
-        }), 404
-    try:
-        item = _build_expedition_detail(mission_id)
-    except Exception as exc:
-        return jsonify({
-            "ok": False,
-            "available": False,
-            "error": str(exc),
-            "item": None,
-        }), 400
-    return jsonify({
-        "ok": True,
-        "available": True,
-        "item": item,
-    })
+    return mission_api_routes.handle_expedition_detail(_ROUTE_API, mission_id)
 
 
 @app.get("/api/expeditions/<mission_id>/state")
 def api_expedition_state(mission_id: str):
-    try:
-        exists = _mission_exists(mission_id)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    if not exists:
-        return jsonify({"ok": False, "error": "mission not found"}), 404
-    try:
-        item = _expedition_state_api_item(_build_expedition_detail(mission_id))
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    return jsonify({"ok": True, "item": item})
+    return mission_api_routes.handle_expedition_state(_ROUTE_API, mission_id)
 
 
 @app.get("/api/expeditions/<mission_id>/timeline")
 def api_expedition_timeline(mission_id: str):
-    try:
-        exists = _mission_exists(mission_id)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    if not exists:
-        return jsonify({"ok": False, "error": "mission not found"}), 404
-    try:
-        item = _expedition_timeline_api_item(mission_id)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    return jsonify({"ok": True, "item": item})
+    return mission_api_routes.handle_expedition_timeline(_ROUTE_API, mission_id)
 
 
 @app.get("/api/expeditions/<mission_id>/interpretation")
 def api_expedition_interpretation(mission_id: str):
-    try:
-        exists = _mission_exists(mission_id)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    if not exists:
-        return jsonify({"ok": False, "error": "mission not found"}), 404
-
-    mode_error = _interpretation_mode_error(request.args.get("mode", ""))
-    if mode_error:
-        return jsonify({"ok": False, "error": mode_error}), 400
-
-    try:
-        item = _expedition_interpretation_api_item(mission_id)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    if item is None:
-        return jsonify({
-            "ok": True,
-            "available": False,
-            "reason": "no existing Mirror-derived interpretation artifact is available for this mission",
-            "item": None,
-        })
-    return jsonify({"ok": True, "available": True, "item": item})
+    return mirror_api_routes.handle_expedition_interpretation(_ROUTE_API, mission_id)
 
 
 @app.get("/api/expeditions/<mission_id>/mirror-notes")
 def api_expedition_mirror_notes(mission_id: str):
-    try:
-        mission = normalize_mission_id(mission_id)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    if not _mission_exists(mission):
-        return jsonify({"ok": False, "error": "mission not found"}), 404
-    try:
-        _sync_mission_storage()
-        items = [
-            {
-                "artifact_id": str(item.get("artifact_id") or item.get("note_id") or "").strip(),
-                "text": str(item.get("text") or item.get("summary") or "").strip(),
-                "created_at": str(item.get("created_at") or "").strip(),
-                "artifact_kind": str(item.get("artifact_kind") or item.get("kind") or "").strip(),
-            }
-            for item in _read_mirror_notes(mission)
-            if isinstance(item, dict)
-        ]
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    return jsonify({"ok": True, "items": items})
+    return mirror_api_routes.handle_expedition_mirror_notes(_ROUTE_API, mission_id)
 
 
 @app.get("/api/expeditions/<mission_id>/signals")
 def api_expedition_signals(mission_id: str):
-    try:
-        exists = _mission_exists(mission_id)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    if not exists:
-        return jsonify({"ok": False, "error": "mission not found"}), 404
-    try:
-        item = _expedition_signals_api_item(mission_id)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    return jsonify({"ok": True, "item": item})
+    return mirror_api_routes.handle_expedition_signals(_ROUTE_API, mission_id)
 
 
 @app.post("/api/expeditions/<mission_id>/replay/window")
 def api_expedition_replay_window(mission_id: str):
-    try:
-        exists = _mission_exists(mission_id)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    if not exists:
-        return jsonify({"ok": False, "error": "mission not found"}), 404
-
-    payload = request.get_json(silent=True) or {}
-    try:
-        item = _build_replay_window(mission_id, payload.get("mode"), payload.get("value"))
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    return jsonify({"ok": True, "item": item})
+    return mirror_api_routes.handle_expedition_replay_window(_ROUTE_API, mission_id)
 
 
 @app.post("/api/expeditions/<mission_id>/replay/cursor")
 def api_expedition_replay_cursor(mission_id: str):
-    try:
-        exists = _mission_exists(mission_id)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    if not exists:
-        return jsonify({"ok": False, "error": "mission not found"}), 404
-
-    payload = request.get_json(silent=True) or {}
-    replay_window_id = str(payload.get("replay_window_id") or "").strip()
-    if not replay_window_id:
-        return jsonify({"ok": False, "error": "replay_window_id is required"}), 400
-    try:
-        item = _build_replay_cursor_state(
-            mission_id,
-            replay_window_id,
-            payload.get("action"),
-            cursor_position=payload.get("cursor_position"),
-            cursor_time=str(payload.get("cursor_time") or "").strip(),
-            direction=str(payload.get("direction") or "").strip(),
-            speed=payload.get("speed"),
-        )
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    return jsonify({"ok": True, "item": item})
+    return mirror_api_routes.handle_expedition_replay_cursor(_ROUTE_API, mission_id)
 
 
 @app.get("/api/expeditions/<mission_id>/replay/frame")
 def api_expedition_replay_frame(mission_id: str):
-    try:
-        exists = _mission_exists(mission_id)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    if not exists:
-        return jsonify({"ok": False, "error": "mission not found"}), 404
-
-    replay_window_id = str(request.args.get("replay_window_id", "")).strip()
-    if not replay_window_id:
-        return jsonify({"ok": False, "error": "replay_window_id is required"}), 400
-
-    cursor_index = request.args.get("cursor_index")
-    cursor_time = str(request.args.get("cursor_time", "")).strip()
-    try:
-        item = _build_replay_frame(
-            mission_id,
-            replay_window_id,
-            cursor_index=cursor_index,
-            cursor_time=cursor_time,
-            direction=str(request.args.get("direction", "")).strip(),
-            lens=str(request.args.get("lens", "")).strip(),
-        )
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    return jsonify({"ok": True, "item": item})
+    return mirror_api_routes.handle_expedition_replay_frame(_ROUTE_API, mission_id)
 
 
 @app.post("/api/expeditions/<mission_id>/sync-runner-returns")
 def api_expedition_sync_runner_returns(mission_id: str):
-    try:
-        exists = _mission_exists(mission_id)
-    except Exception as exc:
-        return jsonify({
-            "ok": False,
-            "error": str(exc),
-        }), 400
-    if not exists:
-        return jsonify({
-            "ok": False,
-            "error": "mission not found",
-        }), 404
-    try:
-        sync = _sync_runner_returns_result(mission_id)
-        item = _build_expedition_detail(mission_id)
-    except Exception as exc:
-        return jsonify({
-            "ok": False,
-            "error": str(exc),
-        }), 400
-    return jsonify({
-        "ok": True,
-        "sync": sync,
-        "item": item,
-    })
+    return mission_api_routes.handle_expedition_sync_runner_returns(_ROUTE_API, mission_id)
 
 
 @app.post("/api/expeditions/<mission_id>/invoke-role")
 def api_expedition_invoke_role(mission_id: str):
-    try:
-        mission = normalize_mission_id(mission_id)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    if not _mission_exists(mission):
-        return jsonify({"ok": False, "error": "mission not found"}), 404
-    try:
-        payload = request.get_json(force=True) or {}
-    except Exception:
-        payload = {}
-
-    role_id = str(payload.get("role_id") or "").strip()
-    input_payload = payload.get("input_payload")
-    if not role_id:
-        return jsonify({"ok": False, "error": "role_id is required"}), 400
-    if input_payload is None:
-        input_payload = {}
-    if not isinstance(input_payload, dict):
-        return jsonify({"ok": False, "error": "input_payload must be an object"}), 400
-    if "trigger_reason" not in input_payload and payload.get("trigger_reason") is not None:
-        input_payload = dict(input_payload)
-        input_payload["trigger_reason"] = str(payload.get("trigger_reason") or "").strip()
-
-    try:
-        result = invoke_role(role_id, mission, input_payload)
-        log_topology_event(
-            "operator_intervention",
-            f"{result['role']}:{mission}",
-            "success" if result.get("ok") else str(result.get("status") or "created"),
-            str(((result.get("output") or {}) if isinstance(result.get("output"), dict) else {}).get("result") or "").strip(),
-        )
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    record = result.get("record") if isinstance(result.get("record"), dict) else {}
-    return jsonify({
-        "ok": True,
-        "mission_id": mission,
-        "role": str(result.get("role") or "").strip(),
-        "status": str(result.get("status") or "").strip(),
-        "runtime_active": bool(record.get("runtime_active")),
-        "artifact_path": str(result.get("artifact_path") or "").strip(),
-        "output": result.get("output") if isinstance(result.get("output"), dict) else {},
-    })
+    return mission_api_routes.handle_expedition_invoke_role(_ROUTE_API, mission_id)
 
 
 @app.post("/api/expeditions/<mission_id>/refresh-assumptions")
 def api_expedition_refresh_assumptions(mission_id: str):
-    try:
-        mission = normalize_mission_id(mission_id)
-    except Exception as exc:
-        return jsonify({
-            "ok": False,
-            "error": str(exc),
-        }), 400
-    if not _mission_exists(mission):
-        return jsonify({
-            "ok": False,
-            "error": "mission not found",
-        }), 404
-    try:
-        refresh = _refresh_assumption_ledger(mission)
-        item = _build_expedition_detail(mission)
-    except Exception as exc:
-        return jsonify({
-            "ok": False,
-            "error": str(exc),
-        }), 400
-    return jsonify({
-        "ok": True,
-        "refresh": refresh,
-        "item": item,
-    })
+    return mission_api_routes.handle_expedition_refresh_assumptions(_ROUTE_API, mission_id)
 
 
 @app.post("/api/expeditions/<mission_id>/assumptions/<assumption_id>/confirm")
 def api_expedition_confirm_assumption(mission_id: str, assumption_id: str):
-    try:
-        mission = normalize_mission_id(mission_id)
-    except Exception as exc:
-        return jsonify({
-            "ok": False,
-            "error": str(exc),
-        }), 400
-    if not _mission_exists(mission):
-        return jsonify({
-            "ok": False,
-            "error": "mission not found",
-        }), 404
-    try:
-        payload = request.get_json(force=True) or {}
-    except Exception:
-        payload = {}
-    operator_note = str(payload.get("operator_note") or payload.get("note") or "").strip()
-    try:
-        assumption = _update_assumption_confirmation(
-            mission,
-            assumption_id,
-            operator_status="accepted",
-            operator_note=operator_note,
-        )
-        item = _build_expedition_detail(mission)
-    except FileNotFoundError:
-        return jsonify({
-            "ok": False,
-            "error": "assumption not found",
-        }), 404
-    except Exception as exc:
-        return jsonify({
-            "ok": False,
-            "error": str(exc),
-        }), 400
-    return jsonify({
-        "ok": True,
-        "assumption": assumption,
-        "item": item,
-    })
+    return mission_api_routes.handle_expedition_confirm_assumption(_ROUTE_API, mission_id, assumption_id)
 
 
 @app.post("/api/expeditions/<mission_id>/assumptions/<assumption_id>/reject")
 def api_expedition_reject_assumption(mission_id: str, assumption_id: str):
-    try:
-        mission = normalize_mission_id(mission_id)
-    except Exception as exc:
-        return jsonify({
-            "ok": False,
-            "error": str(exc),
-        }), 400
-    if not _mission_exists(mission):
-        return jsonify({
-            "ok": False,
-            "error": "mission not found",
-        }), 404
-    try:
-        payload = request.get_json(force=True) or {}
-    except Exception:
-        payload = {}
-    operator_note = str(payload.get("operator_note") or payload.get("note") or "").strip()
-    try:
-        assumption = _update_assumption_confirmation(
-            mission,
-            assumption_id,
-            operator_status="rejected",
-            operator_note=operator_note,
-        )
-        item = _build_expedition_detail(mission)
-    except FileNotFoundError:
-        return jsonify({
-            "ok": False,
-            "error": "assumption not found",
-        }), 404
-    except Exception as exc:
-        return jsonify({
-            "ok": False,
-            "error": str(exc),
-        }), 400
-    return jsonify({
-        "ok": True,
-        "assumption": assumption,
-        "item": item,
-    })
+    return mission_api_routes.handle_expedition_reject_assumption(_ROUTE_API, mission_id, assumption_id)
 
 
 @app.post("/api/expeditions")
 def api_expeditions_create():
-    try:
-        payload = request.get_json(force=True) or {}
-    except Exception:
-        payload = {}
-
-    objective = str(payload.get("objective") or payload.get("task_text") or "").strip()
-    if not objective:
-        return jsonify({
-            "ok": False,
-            "error": "objective is required",
-        }), 400
-
-    mission_id = _generate_mission_id()
-    mission_dir = _mission_root(mission_id)
-    mission_dir.mkdir(parents=True, exist_ok=True)
-    _ensure_workbench_structure(mission_id)
-    write_state(mission_id, "MISSION_DEFINED")
-    _create_mission_brief(mission_id, objective)
-    _create_mission_agent_identity(mission_id, objective)
-    _refresh_working_memory(mission_id)
-
-    detail = _build_expedition_detail(mission_id)
-    return jsonify({
-        "ok": True,
-        "item": detail,
-    })
+    return mission_api_routes.handle_expeditions_create(_ROUTE_API)
 
 
 @app.post("/api/expeditions/<mission_id>/input")
 def api_expedition_input(mission_id: str):
-    try:
-        mission = normalize_mission_id(mission_id)
-    except Exception as exc:
-        return jsonify({
-            "ok": False,
-            "error": str(exc),
-        }), 400
-    if not _mission_exists(mission):
-        return jsonify({
-            "ok": False,
-            "error": "mission not found",
-        }), 404
-    try:
-        data = request.get_json(force=True) or {}
-    except Exception:
-        data = {}
-
-    raw_text = str(data.get("text") or data.get("message") or data.get("content") or "").strip()
-    if raw_text.lower().startswith("save:"):
-        content = raw_text[len("save:"):].strip()
-        if not content:
-            return jsonify({
-                "ok": False,
-                "kind": "operator_save",
-                "message": "Empty save. Nothing written.",
-            }), 400
-        from mission_storage import write_operator_save_artifact
-
-        artifact_path = write_operator_save_artifact(
-            mission_id=mission,
-            text=content,
-        )
-        return jsonify({
-            "ok": True,
-            "kind": "operator_save",
-            "artifact_path": artifact_path,
-            "message": "Saved to mirror.",
-        })
-
-    content = raw_text
-    if not content:
-        return jsonify({
-            "ok": False,
-            "error": "content is required",
-        }), 400
-
-    brief = read_mission_brief(mission) or {}
-    state = read_state(mission)
-    objective = str(brief.get("objective") or brief.get("task_text") or "").strip()
-    latest_packet = _latest_clarification_summary(mission)
-    before_inputs = _mission_inputs(mission)
-    before_sufficient, _ = _is_sufficient_to_proceed(
-        objective,
-        before_inputs,
-        str(state.get("current_state") or "MISSION_DEFINED"),
-        latest_packet,
-    )
-    item = _write_mission_input(mission, content)
-    translation = None
-    if PROMPT_TRANSLATOR_ACTIVE:
-        translation = translate_and_store_prompt(content, mission_id=mission)
-    _refresh_working_memory(mission, operator_text=content, operator_reply_at=str(item.get("created_at") or ""), source="mission intake")
-    after_sufficient, _ = _is_sufficient_to_proceed(
-        objective,
-        _mission_inputs(mission),
-        str(state.get("current_state") or "MISSION_DEFINED"),
-        latest_packet,
-    )
-    trigger = None
-    if not before_sufficient and after_sufficient:
-        trigger = _create_trigger_record(
-            mission,
-            trigger_kind="sufficiency_unblocked_on_input",
-            reason="mission input flipped the sufficiency gate from blocked to sufficient",
-            source=f"mission_input:{item['input_id']}",
-        )
-
-    return jsonify({
-        "ok": True,
-        "item": item,
-        "translation": translation,
-        "trigger": trigger,
-        "mission": _build_expedition_detail(mission),
-    })
+    return mission_api_routes.handle_expedition_input(_ROUTE_API, mission_id)
 
 
 @app.post("/api/expeditions/<mission_id>/translate-prompt")
 def api_expedition_translate_prompt(mission_id: str):
-    try:
-        mission = normalize_mission_id(mission_id)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    if not _mission_exists(mission):
-        return jsonify({"ok": False, "error": "mission not found"}), 404
-    try:
-        payload = request.get_json(force=True) or {}
-    except Exception:
-        payload = {}
-
-    content = str(payload.get("content") or payload.get("text") or "").strip()
-    if not content:
-        return jsonify({
-            "ok": False,
-            "error": "content is required",
-        }), 400
-
-    if not PROMPT_TRANSLATOR_ACTIVE:
-        return jsonify({
-            "ok": False,
-            "error": "prompt translator is disabled for now",
-        }), 409
-    translation = translate_and_store_prompt(content, mission_id=mission)
-    return jsonify({
-        "ok": True,
-        "translation": translation,
-        "mission": _build_expedition_detail(mission),
-    })
+    return mission_api_routes.handle_expedition_translate_prompt(_ROUTE_API, mission_id)
 
 
 @app.post("/api/expeditions/<mission_id>/parking")
 def api_expedition_parking(mission_id: str):
-    try:
-        mission = normalize_mission_id(mission_id)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    if not _mission_exists(mission):
-        return jsonify({"ok": False, "error": "mission not found"}), 404
-    try:
-        payload = request.get_json(force=True) or {}
-    except Exception:
-        payload = {}
-    status = str(payload.get("status") or "").strip().lower()
-    if status not in {"active", "parked"}:
-        return jsonify({"ok": False, "error": "status must be active or parked"}), 400
-    reason = str(payload.get("reason") or "").strip()
-    resume_hint = str(payload.get("resume_hint") or "").strip()
-    existing = _read_parking_status(mission)
-    record = _write_parking_status(mission, status=status, reason=reason, parked_by="operator", resume_hint=resume_hint)
-    if status == "parked":
-        _clear_parked_mission_handoff(mission, reason=reason or "mission parked by operator")
-    trigger = None
-    if str(existing.get("status") or "active") == "parked" and status == "active":
-        trigger = _create_trigger_record(
-            mission,
-            trigger_kind="mission_resumed",
-            reason=reason or "operator explicitly resumed the parked mission",
-            source="operator_resume",
-        )
-    return jsonify({"ok": True, "parking_status": record, "trigger": trigger, "item": _build_expedition_detail(mission)})
+    return mission_api_routes.handle_expedition_parking(_ROUTE_API, mission_id)
 
 
 @app.post("/api/expeditions/<mission_id>/triggers")
 def api_expedition_triggers_create(mission_id: str):
-    try:
-        mission = normalize_mission_id(mission_id)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    if not _mission_exists(mission):
-        return jsonify({"ok": False, "error": "mission not found"}), 404
-    try:
-        payload = request.get_json(force=True) or {}
-    except Exception:
-        payload = {}
-
-    trigger_kind = str(payload.get("trigger_kind") or "").strip()
-    reason = str(payload.get("reason") or "").strip()
-    if trigger_kind not in {"operator_refresh_requested", "do_now_first_pass_requested"}:
-        return jsonify({
-            "ok": False,
-            "error": "trigger_kind must be operator_refresh_requested or do_now_first_pass_requested",
-        }), 400
-    if not reason:
-        return jsonify({"ok": False, "error": "reason is required"}), 400
-
-    trigger = _create_trigger_record(
-        mission,
-        trigger_kind=trigger_kind,
-        reason=reason,
-        source="operator_action",
-    )
-    return jsonify({
-        "ok": True,
-        "trigger": trigger,
-        "item": _build_expedition_detail(mission),
-    })
+    return mission_api_routes.handle_expedition_triggers_create(_ROUTE_API, mission_id)
 
 
 @app.post("/api/expeditions/<mission_id>/interventions")
 def api_expedition_interventions(mission_id: str):
-    try:
-        mission = normalize_mission_id(mission_id)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    if not _mission_exists(mission):
-        return jsonify({"ok": False, "error": "mission not found"}), 404
-    try:
-        payload = request.get_json(force=True) or {}
-    except Exception:
-        payload = {}
-
-    action = str(payload.get("action") or "").strip()
-    reason = str(payload.get("reason") or "").strip()
-    note = str(payload.get("note") or "").strip()
-    if not action:
-        return jsonify({"ok": False, "error": "action is required"}), 400
-    try:
-        result = _apply_control_tower_intervention(mission, action=action, reason=reason, note=note)
-    except ValueError as exc:
-        return jsonify({
-            "ok": False,
-            "error": str(exc),
-            "allowed_actions": [
-                "resume_mission",
-                "retry_bounded_action",
-                "refresh_assumptions",
-                "sync_helper_returns",
-                "clear_stale_pending_handoff",
-                "mark_archive_candidate",
-            ],
-        }), 400
-    if not result["ok"]:
-        return jsonify(result), 409
-    return jsonify(result)
+    return mission_api_routes.handle_expedition_interventions(_ROUTE_API, mission_id)
 
 
 @app.post("/api/expeditions/<mission_id>/respond")
 def api_expedition_respond(mission_id: str):
-    return api_expedition_chat(mission_id)
+    return mission_api_routes.handle_expedition_respond(_ROUTE_API, mission_id)
 
 
 @app.get("/api/expeditions/<mission_id>/chat")
 def api_expedition_chat_get(mission_id: str):
-    try:
-        mission = normalize_mission_id(mission_id)
-    except Exception as exc:
-        return jsonify({
-            "ok": False,
-            "error": str(exc),
-        }), 400
-    if not _mission_exists(mission):
-        return jsonify({
-            "ok": False,
-            "error": "mission not found",
-        }), 404
-    return jsonify({
-        "ok": True,
-        "item": _build_expedition_detail(mission),
-        "messages": _mission_chat_messages(mission),
-        "source_root": _safe_relative_path(_mission_chat_path(mission).parent),
-    })
+    return mission_api_routes.handle_expedition_chat_get(_ROUTE_API, mission_id)
 
 
 @app.post("/api/expeditions/<mission_id>/chat")
 def api_expedition_chat(mission_id: str):
-    try:
-        mission = normalize_mission_id(mission_id)
-    except Exception as exc:
-        return jsonify({
-            "ok": False,
-            "error": str(exc),
-        }), 400
-    if not _mission_exists(mission):
-        return jsonify({
-            "ok": False,
-            "error": "mission not found",
-        }), 404
-    try:
-        data = request.get_json(force=True) or {}
-    except Exception:
-        data = {}
-
-    raw_text = str(data.get("text") or data.get("message") or data.get("content") or "").strip()
-    if raw_text.lower().startswith("save:"):
-        content = raw_text[len("save:"):].strip()
-        if not content:
-            return jsonify({
-                "ok": False,
-                "kind": "operator_save",
-                "message": "Empty save. Nothing written.",
-            }), 400
-        from mission_storage import write_operator_save_artifact
-
-        artifact_path = write_operator_save_artifact(
-            mission_id=mission,
-            text=content,
-        )
-        return jsonify({
-            "ok": True,
-            "kind": "operator_save",
-            "artifact_path": artifact_path,
-            "message": "Saved to mirror.",
-        })
-
-    content = raw_text
-    if not content:
-        return jsonify({
-            "ok": False,
-            "error": "content is required",
-        }), 400
-
-    quick_reply = str(data.get("quick_reply") or data.get("preset") or "").strip() or None
-    retrieval = _concierge_mirror_retrieval_result(mission, content, quick_reply)
-    if retrieval:
-        detail = _build_expedition_detail(mission)
-        assistant = {
-            "sender": "assistant",
-            "role": "concierge",
-            "tone": "info",
-            "message": str(retrieval.get("message") or "").strip(),
-            "kind": "concierge_mirror_retrieval",
-        }
-        user_item, assistant_item = _build_chat_exchange_items(mission, content, assistant)
-        current_messages = _mission_chat_messages(mission)
-        return jsonify({
-            "ok": True,
-            "kind": "concierge_mirror_retrieval",
-            "mission_id": str(retrieval.get("mission_id") or "").strip(),
-            "query": str(retrieval.get("query") or "").strip(),
-            "mode": str(retrieval.get("mode") or "").strip(),
-            "matches": retrieval.get("matches") if isinstance(retrieval.get("matches"), list) else [],
-            "message": str(retrieval.get("message") or "").strip(),
-            "item": detail,
-            "messages": [*current_messages, user_item, assistant_item],
-            "exchange": {
-                "messages": [user_item, assistant_item],
-                "path": "",
-                "summary": "",
-                "persisted": False,
-                "retrieval": retrieval,
-            },
-            "response": {
-                "kind": "concierge_mirror_retrieval",
-                "summary": str(retrieval.get("message") or "").strip(),
-                "answer": str(retrieval.get("message") or "").strip(),
-                "message": str(retrieval.get("message") or "").strip(),
-                "tone": "info",
-                "questions": [],
-                "artifact": "mirror_retrieval",
-                "mission_id": str(retrieval.get("mission_id") or "").strip(),
-                "query": str(retrieval.get("query") or "").strip(),
-                "mode": str(retrieval.get("mode") or "").strip(),
-                "matches": retrieval.get("matches") if isinstance(retrieval.get("matches"), list) else [],
-            },
-        })
-
-    exchange = _append_chat_exchange(mission, content, quick_reply=quick_reply)
-    assistant_message = ""
-    assistant_tone = "info"
-    if isinstance(exchange, dict):
-        messages = exchange.get("messages")
-        if isinstance(messages, list) and messages:
-            last = messages[-1]
-            if isinstance(last, dict):
-                assistant_message = str(last.get("message") or "")
-                assistant_tone = str(last.get("tone") or "info")
-    detail = _build_expedition_detail(mission)
-    working_memory = detail.get("working_memory") if isinstance(detail, dict) else {}
-    return jsonify({
-        "ok": True,
-        "item": detail,
-        "messages": _mission_chat_messages(mission),
-        "exchange": exchange,
-        "response": {
-            "kind": "chat",
-            "summary": assistant_message or "Mission chat updated.",
-            "answer": assistant_message,
-            "message": assistant_message,
-            "tone": assistant_tone,
-            "questions": _question_summary_lines(_dict_list(working_memory.get("open_questions"))) if isinstance(working_memory, dict) else [],
-            "artifact": "mission_chat",
-        },
-    })
+    return mission_api_routes.handle_expedition_chat(_ROUTE_API, mission_id)
 
 
 @app.get("/api/governance/return-all")

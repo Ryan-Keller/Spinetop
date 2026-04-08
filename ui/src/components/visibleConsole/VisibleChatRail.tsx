@@ -108,8 +108,8 @@ export default function VisibleChatRail(props: VisibleChatRailProps) {
 
       <section className="visible-chat-rail__advisories">
         <div className="visible-chat-rail__section-header">
-          <h3>Active objects</h3>
-          <span className="console-badge console-badge--soft">visible</span>
+          <h3>Live signals</h3>
+          <span className="console-badge console-badge--soft">now</span>
         </div>
         <div className="visible-chat-rail__advisory-list">
           {props.advisories.length ? (
@@ -128,7 +128,7 @@ export default function VisibleChatRail(props: VisibleChatRailProps) {
           ) : (
             <article className="advisory-card advisory-card--empty">
               <strong>Quiet</strong>
-              <p>No advisory surface is active.</p>
+              <p>No live retrieval or blocker is active.</p>
             </article>
           )}
         </div>
@@ -148,7 +148,7 @@ export default function VisibleChatRail(props: VisibleChatRailProps) {
         ) : (
           <div className="chat-message chat-message--empty">
             <strong>No thread yet</strong>
-            <p>The rail wakes when the mission speaks.</p>
+            <p>The rail stays quiet until the mission speaks.</p>
           </div>
         )}
       </div>

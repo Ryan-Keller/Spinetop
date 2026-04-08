@@ -111,9 +111,18 @@ const mirrorKindLabel = (value?: string) => {
 };
 
 const overlayHintLabel = (value: string) => {
-  if (value === "ghost_pressure") return "handoff pressure";
-  if (value === "replay_seam_ready") return "history seam ready";
+  if (value === "ghost_pressure") return "handoff";
+  if (value === "mirror_summary") return "mirror";
+  if (value === "replay_seam_ready") return "history";
   return value.replace(/_/g, " ");
+};
+
+const primarySourceLabel = (value: MirrorExpressionSpec["primary_source"]) => {
+  if (value === "mirror_note") return "mirror note";
+  if (value === "concierge_retrieval") return "retrieval";
+  if (value === "role_output") return "live role";
+  if (value === "blocker") return "blocker";
+  return "quiet";
 };
 
 export default function VisibleExpressionStage(props: VisibleExpressionStageProps) {
@@ -124,38 +133,57 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
   const hasActivityEmphasis = props.expressionSpec.emphasis.includes("activity");
   const hasContradictionEmphasis = props.expressionSpec.emphasis.includes("contradiction");
   const hasMemoryTension = props.expressionSpec.emphasis.includes("memory_tension");
+  const quietStage = props.expressionSpec.quiet;
   const visualStyle = {
     "--expression-intensity": `${props.expressionSpec.intensity}`,
     "--activity-prominence": hasActivityEmphasis ? "1" : "0.45",
     "--contradiction-prominence": hasContradictionEmphasis ? "1" : "0.35",
     "--tension-prominence": hasMemoryTension ? "1" : "0.4",
   } as CSSProperties;
+
   const [selectedMirrorNoteId, setSelectedMirrorNoteId] = useState<string>("");
+
   useEffect(() => {
     if (!visibleMirrorNotes.length) {
       setSelectedMirrorNoteId("");
       return;
     }
-    setSelectedMirrorNoteId((current) => (
-      current && visibleMirrorNotes.some((item) => item.artifact_id === current) ? current : visibleMirrorNotes[0].artifact_id
-    ));
+    setSelectedMirrorNoteId((current) =>
+      current && visibleMirrorNotes.some((item) => item.artifact_id === current) ? current : visibleMirrorNotes[0].artifact_id,
+    );
   }, [visibleMirrorNotes]);
+
   const activeMirrorNote = visibleMirrorNotes.find((item) => item.artifact_id === selectedMirrorNoteId) || visibleMirrorNotes[0] || null;
+  const blockerText = props.signals.item?.blocked?.reason || "";
+  const liveActivitySummary = props.signals.item?.activity?.summary || "";
+  const progressNotes = [
+    ...(props.timeline.item?.recent_agent_runs || []).slice(0, 2).map((item) => `${compactTime(item.created_at)}: ${item.role} ${item.summary || item.status}`),
+    ...(props.timeline.item?.recent_triggers || []).slice(0, 1).map((item) => `${compactTime(item.created_at)}: ${item.reason || item.status}`),
+  ];
+  const mirrorContextNotes = [...patterns.slice(0, 3), ...contradictions.slice(0, 2)].filter(Boolean);
+  const signalNotes = [liveActivitySummary, props.signals.item?.contradiction?.summary || "", blockerText || props.signals.item?.stall?.summary || ""].filter(Boolean);
+  const advisoryNotes = props.advisories
+    .slice(0, 2)
+    .map((item) => (item.kind === "expedition_intervention" ? item.instruction : item.suggestion) || "")
+    .filter(Boolean);
+
   const focusItems = useMemo(
     () => ({
       mirror: {
-        title: "Mirror summary",
-        summary: props.expressionSpec.summary,
-        related: [
-          ...patterns.slice(0, 2),
-          ...contradictions.slice(0, 2),
-          activeMirrorNote?.text || "",
-          props.signals.item?.activity?.summary || "",
-        ].filter(Boolean),
+        title: quietStage ? "Visible lane" : "Mirror lane",
+        summary: props.expressionSpec.secondary_summary,
+        related: quietStage
+          ? []
+          : [
+              ...patterns.slice(0, 2),
+              ...contradictions.slice(0, 2),
+              activeMirrorNote?.text || "",
+              props.signals.item?.activity?.summary || "",
+            ].filter(Boolean),
       },
       echoes: {
-        title: "Written echo",
-        summary: activeMirrorNote?.text || "Saved mission-local mirror notes will settle here when present.",
+        title: "Mirror notes",
+        summary: activeMirrorNote?.text || props.expressionSpec.secondary_summary,
         related: [
           activeMirrorNote ? `${mirrorKindLabel(activeMirrorNote.artifact_kind)} · ${compactTime(activeMirrorNote.created_at)}` : "",
           ...visibleMirrorNotes
@@ -165,7 +193,7 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
         ].filter(Boolean),
       },
       progress: {
-        title: "Expedition progress",
+        title: "Mission pulse",
         summary: `Phase ${props.progress.phase}, status ${props.progress.status}, confidence ${percent(props.progress.confidence)}.`,
         related: [
           props.timeline.item?.recent_agent_runs[0]?.summary || "",
@@ -174,8 +202,8 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
         ].filter(Boolean),
       },
       activity: {
-        title: "Activity channel",
-        summary: props.signals.item?.activity?.summary || "No live activity artifact is visible right now.",
+        title: "Live activity",
+        summary: props.signals.item?.activity?.summary || props.expressionSpec.secondary_summary,
         related: [
           props.signals.item?.activity?.kind || "",
           props.timeline.item?.recent_agent_runs[0]?.summary || "",
@@ -183,15 +211,15 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
         ].filter(Boolean),
       },
       contradictions: {
-        title: "Contradiction field",
-        summary: props.signals.item?.contradiction?.summary || "Contradiction indicators will surface here when present.",
+        title: blockerText ? "Blocker" : "Contradictions",
+        summary: blockerText || props.signals.item?.contradiction?.summary || props.expressionSpec.secondary_summary,
         related: [...contradictions.slice(0, 3), props.signals.item?.blocked?.reason || ""].filter(Boolean),
       },
       ghost: {
-        title: "Advisory seam",
+        title: "Handoff",
         summary: hasGhostPressure
-          ? "The advisory pressure indicator is visible as a read-only handoff cue."
-          : "The advisory seam is reserved without active pressure right now.",
+          ? `Active handoff cue for ${props.signals.item?.handoff?.target_role || "the selected role"}.`
+          : props.expressionSpec.secondary_summary,
         related: [
           props.signals.item?.handoff?.target_role || "",
           props.signals.item?.handoff?.reason || "",
@@ -201,8 +229,29 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
         ].filter(Boolean),
       },
     }),
-    [activeMirrorNote, contradictions, hasGhostPressure, patterns, props.expressionSpec.overlay_hints, props.expressionSpec.summary, props.progress.confidence, props.progress.phase, props.progress.status, props.signals.item?.activity?.kind, props.signals.item?.activity?.summary, props.signals.item?.blocked?.reason, props.signals.item?.contradiction?.summary, props.signals.item?.handoff?.reason, props.signals.item?.handoff?.target_role, props.timeline.item?.recent_agent_runs, props.timeline.item?.recent_triggers, visibleMirrorNotes],
+    [
+      activeMirrorNote,
+      blockerText,
+      contradictions,
+      hasGhostPressure,
+      patterns,
+      props.expressionSpec.overlay_hints,
+      props.expressionSpec.secondary_summary,
+      props.progress.confidence,
+      props.progress.phase,
+      props.progress.status,
+      props.signals.item?.activity?.kind,
+      props.signals.item?.activity?.summary,
+      props.signals.item?.contradiction?.summary,
+      props.signals.item?.handoff?.reason,
+      props.signals.item?.handoff?.target_role,
+      props.timeline.item?.recent_agent_runs,
+      props.timeline.item?.recent_triggers,
+      quietStage,
+      visibleMirrorNotes,
+    ],
   );
+
   const [focusKey, setFocusKey] = useState<keyof typeof focusItems>("mirror");
   const focus = focusItems[focusKey];
   const focusClass = (key: keyof typeof focusItems) => `stage-clickable${focusKey === key ? " stage-clickable--focused" : ""}`;
@@ -233,8 +282,7 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
             <span className="console-badge console-badge--accent">{props.state.item?.operator_posture || props.mission?.operator_posture || "observe"}</span>
             <span className="console-badge console-badge--ghost">{props.expressionSpec.lens}</span>
             <span className="console-badge console-badge--soft">mirror</span>
-            <span className="console-badge console-badge--soft">observer</span>
-            <span className="console-badge console-badge--soft">concierge</span>
+            <span className="console-badge console-badge--soft">{primarySourceLabel(props.expressionSpec.primary_source)}</span>
           </div>
         </div>
       </header>
@@ -255,7 +303,7 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
               <strong>{props.mission?.mission_id || "mission-pending"}</strong>
               <span className="console-badge">{props.mission?.status_badge || props.progress.status}</span>
             </div>
-            <p>{props.mission?.mission_summary?.summary || "Awaiting clearer signal."}</p>
+            <p>{props.expressionSpec.secondary_summary}</p>
           </div>
 
           <div className="stage-visual__header-meta">
@@ -273,7 +321,7 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
             </div>
             <div>
               <span>handoff</span>
-              <strong>{hasGhostPressure ? "pressure" : "idle"}</strong>
+              <strong>{hasGhostPressure ? "live" : "idle"}</strong>
             </div>
           </div>
         </div>
@@ -283,6 +331,7 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
             <button type="button" className={`stage-visual__summary ${focusClass("mirror")}`} onClick={() => setFocusKey("mirror")}>
               <h2>{props.expressionSpec.summary}</h2>
               <div className="stage-visual__chips">
+                <span className="expression-chip expression-chip--ghost">{primarySourceLabel(props.expressionSpec.primary_source)}</span>
                 {props.expressionSpec.emphasis.map((item) => (
                   <span key={item} className="expression-chip">
                     {item}
@@ -299,7 +348,7 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
             {visibleMirrorNotes.length ? (
               <section className="stage-echoes" aria-label="Mirror notes">
                 <div className="stage-echoes__header">
-                  <span>written echoes</span>
+                  <span>mirror notes</span>
                   <span>{visibleMirrorNotes.length}</span>
                 </div>
                 <div className="stage-echoes__list">
@@ -332,8 +381,8 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
           <div className="stage-visual__right-stack">
             <article className="stage-spec-card">
               <div className="stage-spec-card__header">
-                <h3>Mirror</h3>
-                <span className="console-badge console-badge--soft">spec</span>
+                <h3>Visible state</h3>
+                <span className="console-badge console-badge--soft">{primarySourceLabel(props.expressionSpec.primary_source)}</span>
               </div>
               <dl className="stage-spec-card__grid">
                 <div>
@@ -357,10 +406,10 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
 
             <button type="button" className={`stage-progress-card ${focusClass("progress")}`} onClick={() => setFocusKey("progress")}>
               <div className="stage-progress-card__header">
-                <h3>Expedition</h3>
+                <h3>Mission</h3>
                 <span className="console-badge console-badge--accent">{props.progress.phase}</span>
               </div>
-              <div className="stage-progress-card__bar" aria-label="Expedition progress">
+              <div className="stage-progress-card__bar" aria-label="Mission progress">
                 <div
                   className="stage-progress-card__bar-fill"
                   style={{ width: `${(props.progress.steps_completed / props.progress.steps_total) * 100}%` }}
@@ -384,92 +433,107 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
                 <div>
                   <span>update</span>
                   <strong>{compactTime(props.progress.last_update)}</strong>
-                  </div>
                 </div>
+              </div>
             </button>
           </div>
         </div>
 
-        <div className={`stage-visual__lower-rail stage-visual__lower-rail--${props.expressionSpec.lens}`}>
-          <section className="stage-rail-section stage-rail-section--dock">
-            <div className="stage-note-list">
-              <button type="button" className={`stage-note ${focusClass("activity")}`} onClick={() => setFocusKey("activity")}>
-                {props.signals.item?.activity?.summary || "No live activity artifact is visible right now."}
-              </button>
-              <button
-                type="button"
-                className={`stage-note ${focusClass("contradictions")}${hasContradictionEmphasis ? " stage-note--warning" : ""}`}
-                onClick={() => setFocusKey("contradictions")}
-              >
-                {props.signals.item?.contradiction?.summary || "Contradiction indicators will surface here when present."}
-              </button>
-              <button
-                type="button"
-                className={`stage-note ${focusClass("contradictions")}${hasMemoryTension ? " stage-note--warning" : ""}`}
-                onClick={() => setFocusKey("contradictions")}
-              >
-                {props.signals.item?.blocked?.reason || props.signals.item?.stall?.summary || "Memory tension remains low."}
-              </button>
-            </div>
+        {quietStage ? (
+          <section className="stage-quiet-state">
+            <span className="console-kicker">Quiet field</span>
+            <h3>Mirror is quiet.</h3>
+            <p>{props.expressionSpec.secondary_summary}</p>
           </section>
-
-          <section className="stage-rail-section stage-rail-section--dock">
-            <div className="stage-note-list">
-              {patterns.slice(0, 3).map((item) => (
-                <button key={item} type="button" className={`stage-note ${focusClass("mirror")}`} onClick={() => setFocusKey("mirror")}>
-                  {item}
-                </button>
-              ))}
-              {contradictions.slice(0, 2).map((item) => (
-                <button key={item} type="button" className={`stage-note ${focusClass("contradictions")} stage-note--warning`} onClick={() => setFocusKey("contradictions")}>
-                  {item}
-                </button>
-              ))}
-              {!patterns.length && !contradictions.length ? (
-                <div className="stage-note stage-note--muted">
-                  {props.interpretation.reason || "Mirror snippets appear only when a real interpretation artifact is present."}
+        ) : (
+          <div className={`stage-visual__lower-rail stage-visual__lower-rail--${props.expressionSpec.lens}`}>
+            {signalNotes.length ? (
+              <section className="stage-rail-section stage-rail-section--dock">
+                <div className="stage-note-list">
+                  {liveActivitySummary ? (
+                    <button type="button" className={`stage-note ${focusClass("activity")}`} onClick={() => setFocusKey("activity")}>
+                      {liveActivitySummary}
+                    </button>
+                  ) : null}
+                  {props.signals.item?.contradiction?.summary ? (
+                    <button
+                      type="button"
+                      className={`stage-note ${focusClass("contradictions")}${hasContradictionEmphasis ? " stage-note--warning" : ""}`}
+                      onClick={() => setFocusKey("contradictions")}
+                    >
+                      {props.signals.item.contradiction.summary}
+                    </button>
+                  ) : null}
+                  {blockerText || props.signals.item?.stall?.summary ? (
+                    <button
+                      type="button"
+                      className={`stage-note ${focusClass("contradictions")}${hasMemoryTension ? " stage-note--warning" : ""}`}
+                      onClick={() => setFocusKey("contradictions")}
+                    >
+                      {blockerText || props.signals.item?.stall?.summary}
+                    </button>
+                  ) : null}
                 </div>
-              ) : null}
-            </div>
-          </section>
+              </section>
+            ) : null}
 
-          <section className="stage-rail-section stage-rail-section--dock">
-            <div className="stage-note-list">
-              {props.timeline.item?.recent_agent_runs.slice(0, 2).map((item) => (
-                <button key={item.run_id} type="button" className={`stage-note ${focusClass("progress")}`} onClick={() => setFocusKey("progress")}>
-                  {compactTime(item.created_at)}: {item.role} {item.summary || item.status}
-                </button>
-              ))}
-              {props.timeline.item?.recent_triggers.slice(0, 1).map((item) => (
-                <button key={item.trigger_id} type="button" className={`stage-note ${focusClass("progress")}`} onClick={() => setFocusKey("progress")}>
-                  {compactTime(item.created_at)}: {item.trigger_kind} {item.reason || item.status}
-                </button>
-              ))}
-            </div>
-          </section>
+            {mirrorContextNotes.length ? (
+              <section className="stage-rail-section stage-rail-section--dock">
+                <div className="stage-note-list">
+                  {patterns.slice(0, 3).map((item) => (
+                    <button key={item} type="button" className={`stage-note ${focusClass("mirror")}`} onClick={() => setFocusKey("mirror")}>
+                      {item}
+                    </button>
+                  ))}
+                  {contradictions.slice(0, 2).map((item) => (
+                    <button key={item} type="button" className={`stage-note ${focusClass("contradictions")} stage-note--warning`} onClick={() => setFocusKey("contradictions")}>
+                      {item}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ) : null}
 
-          <section className="stage-rail-section stage-rail-section--dock">
-            <div className="stage-note-list">
-              <button
-                type="button"
-                className={`stage-note ${focusClass("ghost")}${hasGhostPressure ? " stage-note--ghost" : " stage-note--muted"}`}
-                onClick={() => setFocusKey("ghost")}
-              >
-                {hasGhostPressure ? "Advisory pressure seam is visible." : "Advisory seam is quiet."}
-              </button>
-              {props.advisories.slice(0, 2).map((item, index) => (
-                <button
-                  key={`${item.kind}-${index}`}
-                  type="button"
-                  className={`stage-note ${focusClass("ghost")}${item.kind === "expedition_intervention" ? " stage-note--warning" : ""}`}
-                  onClick={() => setFocusKey("ghost")}
-                >
-                  {item.kind === "expedition_intervention" ? item.instruction : item.suggestion}
-                </button>
-              ))}
-            </div>
-          </section>
-        </div>
+            {progressNotes.length ? (
+              <section className="stage-rail-section stage-rail-section--dock">
+                <div className="stage-note-list">
+                  {(props.timeline.item?.recent_agent_runs || []).slice(0, 2).map((item) => (
+                    <button key={item.run_id} type="button" className={`stage-note ${focusClass("progress")}`} onClick={() => setFocusKey("progress")}>
+                      {compactTime(item.created_at)}: {item.role} {item.summary || item.status}
+                    </button>
+                  ))}
+                  {(props.timeline.item?.recent_triggers || []).slice(0, 1).map((item) => (
+                    <button key={item.trigger_id} type="button" className={`stage-note ${focusClass("progress")}`} onClick={() => setFocusKey("progress")}>
+                      {compactTime(item.created_at)}: {item.reason || item.status}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
+            {(hasGhostPressure || advisoryNotes.length) ? (
+              <section className="stage-rail-section stage-rail-section--dock">
+                <div className="stage-note-list">
+                  {hasGhostPressure ? (
+                    <button type="button" className={`stage-note ${focusClass("ghost")} stage-note--ghost`} onClick={() => setFocusKey("ghost")}>
+                      {`Handoff cue for ${props.signals.item?.handoff?.target_role || "the selected role"}.`}
+                    </button>
+                  ) : null}
+                  {props.advisories.slice(0, 2).map((item, index) => (
+                    <button
+                      key={`${item.kind}-${index}`}
+                      type="button"
+                      className={`stage-note ${focusClass("ghost")}${item.kind === "expedition_intervention" ? " stage-note--warning" : ""}`}
+                      onClick={() => setFocusKey("ghost")}
+                    >
+                      {item.kind === "expedition_intervention" ? item.instruction : item.suggestion}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+          </div>
+        )}
 
         <section className="stage-focus-panel">
           <div className="stage-focus-panel__header">
@@ -485,7 +549,7 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
                 </div>
               ))
             ) : (
-              <div className="stage-focus-panel__related-item">Related evidence will appear here as stage artifacts accumulate.</div>
+              <div className="stage-focus-panel__related-item">{quietStage ? "Nothing else is active in the visible lane." : "No additional live evidence is visible."}</div>
             )}
           </div>
         </section>

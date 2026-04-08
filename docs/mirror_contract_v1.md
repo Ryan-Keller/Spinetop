@@ -1,34 +1,27 @@
 # Spinetop-Mirror v1 Contract
 
-Spinetop-Mirror v1 is the read-only memory interpretation role inside Spinetop. It is narrow, mission-local, and derived-output only.
+Spinetop-Mirror v1 is the passive mission-local mirror storage surface inside Spinetop. It is narrow, mission-local, and reflects only what the operator explicitly saves.
 
-If this document conflicts with [`state_machine_v1.md`](./state_machine_v1.md), the state machine wins.
+If this document conflicts with older governance-heavy or Honcho-first documentation, the active operator `save:` to mirror behavior described here wins for the live system.
 
 ## Purpose
 
 Mirror exists to:
 
-- inspect Honcho or Honcho-backed memory/query results
-- reflect on memory patterns
-- identify contradictions, gaps, repetitions, and stale assumptions
-- produce mission-local reflections
-- help the operator and other bounded roles understand what memory suggests
-
-Mirror thinks in:
-
-- patterns over time
-- contradictions
-- missing context
-- repeated signals
+- store mission-local data that the operator explicitly writes with `save:`
+- provide a passive reflection surface for that saved data
+- allow concierge retrieval of previously saved mirror notes
+- preserve saved content without promoting it into governance, dispatch, or collective truth
 
 Mirror does not exist to:
 
+- run continuously in the background
+- trigger itself or schedule operations
+- infer, interpret, validate, normalize, or approve content
+- decide what should be written
 - write to Honcho
-- mutate Honcho sessions, messages, or peers
-- write to collective truth
+- mutate collective truth
 - approve governance
-- submit directly to bridge
-- run open-ended loops
 - answer the task itself
 - behave like Sentinel review
 - behave like Expeditioner execution
@@ -37,84 +30,95 @@ Mirror does not exist to:
 
 Mirror is:
 
-- read-heavy
-- Honcho read-only
-- derived-output only
+- a passive storage surface
+- operator-written through `save:`
 - mission-local
+- read-only at retrieval time
+- exact-content preserving
 - not truth
 - not approval
 - not governance
+- not autonomous
 
-Mirror is a mirror, not a pen.
+Mirror is a surface, not an actor.
 
-## Allowed Actions
+## Write Model
 
-Mirror may read:
+Mirror is updated only when the operator explicitly uses the `save:` command.
 
-- Honcho query interfaces
-- Honcho-backed session, message, and peer results
-- mission-local workbench context
-- assumption ledgers and runner returns when useful for memory interpretation
+Mirror write path:
 
-Mirror may emit mission-local derived artifacts such as:
+- operator issues `save: <content>`
+- system writes the provided content to the mission-local mirror lane
+- no write occurs if nothing remains after `save:`
 
-- `mirror_reflection`
-- `memory_gap_report`
-- `contradiction_note`
-- `session_pattern_summary`
-
-Mirror output lane:
+Mirror storage lane:
 
 - `workbench/missions/<mission_id>/notes/mirror/`
 
-Preferred reflection output shape:
+Mirror does not:
 
-- `summary`
-- `patterns`
-- `contradictions`
-- `gaps`
-- `suggested_focus`
+- poll for new content
+- ingest background events
+- auto-save conversation state
+- interpret or validate the saved content before storing it
 
-## Forbidden Actions
+## Retrieval Model
+
+Mirror content is retrievable through concierge only after the operator has explicitly saved data to the mirror.
+
+Concierge retrieval is:
+
+- read-only
+- mission-local
+- limited to saved mirror notes
+- unable to create, rewrite, validate, or authorize mirror content
+
+If nothing has been saved, Mirror has nothing to return.
+
+## Forbidden Behavior
 
 Mirror must not:
 
+- run as an always-on process
+- self-schedule or trigger autonomous actions
+- activate roles automatically
+- validate, interpret, summarize, or govern saved content
 - write to Honcho
 - mutate Honcho sessions, messages, peers, or collections
 - write to `memory/collective/`
 - write to `memory/dispatch/approved/`
-- approve, promote, or govern
-- submit directly to bridge
-- mutate canonical mission state
 - create hidden background sweeps or mirror loops
+- mutate canonical mission state
 
 ## Invocation Model
 
 Mirror v1 is:
 
-- manual-first
+- save-driven
 - operator-triggered
+- passive until written to
+- read-only when retrieved
 - not always-on
 - not self-scheduling
 
-If the configured Mirror runtime is inactive, Mirror must fail closed:
+Adjacent role behavior remains explicit:
 
-- emit disabled status only
-- perform no model run
-- perform no Honcho write
-- perform no bridge submission
-- perform no truth or approval writes
+- roles activate only when explicitly invoked
+- Mirror does not auto-trigger any role
+- no background execution is implied by stored mirror data
 
 ## Distinct From Adjacent Roles
 
 Mirror is intentionally distinct from:
 
-- `Spinetop-Sentinel`, which performs review, watch, and anomaly work
-- `Spinetop-Expeditioner`, which performs mission-local task work
-- `Spinetop-helper_2b`, which provides bounded field-side tactical support
+- `Spinetop-Sentinel`, which performs review, watch, and anomaly work when invoked
+- `Spinetop-Expeditioner`, which performs mission-local task work when invoked
+- `Spinetop-helper_2b`, which provides bounded field-side tactical support when invoked
 
-Mirror output should sound reflective rather than operational:
+Mirror output is storage, not judgment:
 
-- summarize session-level meaning instead of producing task answers
-- name recurring signals instead of choosing actions
-- point at contradictions and gaps without impersonating governance or execution
+- it reflects saved data
+- it does not interpret saved data
+- it does not decide what matters
+- it does not grant authority to retrieved content

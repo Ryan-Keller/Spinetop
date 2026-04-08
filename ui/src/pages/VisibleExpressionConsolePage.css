@@ -443,6 +443,30 @@ button.stage-note {
   margin: 0 28px 28px;
 }
 
+.stage-quiet-state {
+  position: relative;
+  z-index: 1;
+  margin: 0 28px 24px;
+  padding: 22px 24px;
+  border-radius: 26px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0.05)),
+    radial-gradient(circle at top left, rgba(140, 205, 255, 0.08), transparent 34%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(24px);
+}
+
+.stage-quiet-state h3 {
+  margin: 6px 0 8px;
+  font-size: 1.2rem;
+  color: #f4fbff;
+}
+
+.stage-quiet-state p {
+  max-width: 38rem;
+  margin: 0;
+}
+
 .stage-focus-panel__summary {
   margin-bottom: 12px;
 }
@@ -570,7 +594,8 @@ button.stage-note {
   .stage-visual__header,
   .stage-visual__body,
   .stage-visual__lower-rail,
-  .stage-focus-panel {
+  .stage-focus-panel,
+  .stage-quiet-state {
     margin-left: 0;
     margin-right: 0;
     padding-left: 18px;
@@ -869,6 +894,13 @@ button.stage-echo:hover,
   transform: translateY(-10%);
 }
 
+.stage-quiet-state {
+  margin: 0 24px 24px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.05)),
+    radial-gradient(circle at 18% 18%, rgba(140, 205, 255, 0.08), transparent 34%);
+}
+
 .visible-chat-rail {
   padding: 14px;
   background: rgba(9, 12, 16, 0.72);
@@ -898,6 +930,10 @@ button.stage-echo:hover,
     top: auto;
     width: auto;
     transform: none;
+    margin: 0 20px 20px;
+  }
+
+  .stage-quiet-state {
     margin: 0 20px 20px;
   }
 }
