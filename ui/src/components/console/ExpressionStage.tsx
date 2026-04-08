@@ -191,7 +191,7 @@ export default function ExpressionStage(props: StageProps) {
             <span className="console-badge console-badge--soft">mission {props.mission?.mission_id || "none"}</span>
             <span className="console-badge">{props.mission?.current_state || "idle"}</span>
             <span className="console-badge console-badge--accent">{props.state.item?.operator_posture || "observe"}</span>
-            <span className="console-badge console-badge--ghost">lens future-ready</span>
+            <span className="console-badge console-badge--ghost">lens inspectable</span>
           </div>
         </div>
       </div>
@@ -265,10 +265,10 @@ export default function ExpressionStage(props: StageProps) {
 
           <article className="signal-card signal-card--handoff">
             <span className="signal-card__label">Role Surface</span>
-            <strong>{props.signals.item?.handoff?.target_role || "Observer / Concierge / Ghost seams"}</strong>
+            <strong>{props.signals.item?.handoff?.target_role || "Observer / concierge seam"}</strong>
             <p>
               {props.signals.item?.handoff?.allowed_action ||
-                "Visible placeholders keep future role wakes, Mirror sends, and proposal rituals inspectable."}
+                "Visible placeholders keep advisory and activation cues inspectable without adding hidden behavior."}
             </p>
             <small>{props.signals.item?.handoff?.status || "no active handoff"}</small>
           </article>
@@ -374,21 +374,21 @@ export default function ExpressionStage(props: StageProps) {
 
         <section className="detail-panel">
           <div className="detail-panel__header">
-            <h2>Future Surfaces</h2>
-            <span className="console-badge console-badge--ghost">extensible seams</span>
+            <h2>Reference Surfaces</h2>
+            <span className="console-badge console-badge--ghost">reserved views</span>
           </div>
           <div className="future-stack">
             <div className="future-card">
               <strong>Art observerbot</strong>
-              <p>Reserved for lightweight visual reporting from mission signals and replay frames.</p>
+              <p>Reserved for lightweight visual reporting from mission signals and historical frames.</p>
             </div>
             <div className="future-card">
               <strong>Concierge Gemma 4</strong>
-              <p>Reserved for conversational shaping, intent refinement, and expedition proposal setup.</p>
+              <p>Reserved for conversational shaping, intent refinement, and visible expedition guidance.</p>
             </div>
             <div className="future-card">
-              <strong>Ghost / Replay</strong>
-              <p>Reserved for ghost influence badges and replay visuals through the existing replay API seam.</p>
+              <strong>History / Advisory</strong>
+              <p>Reserved for advisory badges and history visuals through the existing API seam.</p>
             </div>
           </div>
         </section>

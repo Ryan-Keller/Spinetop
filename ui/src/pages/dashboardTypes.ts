@@ -524,27 +524,6 @@ export type WorkbenchSummary = {
   files: WorkbenchFile[];
 };
 
-export type PromptTranslation = {
-  translation_id: string;
-  created_at: string;
-  source_text: string;
-  target_type: "existing_mission" | "new_mission" | "unknown" | string;
-  target_mission_id?: string | null;
-  recommended_role: string;
-  recommended_mode: string;
-  scope: string;
-  sufficiency: {
-    can_proceed: boolean;
-    missing_requirements: string[];
-  };
-  recommended_safe_action: string;
-  requires_operator_confirmation: boolean;
-  translated_instruction: string;
-  notes?: string[];
-  derived_only?: boolean;
-  path?: string;
-};
-
 export type ExpeditionDetail = {
   mission_id: string;
   objective: string;
@@ -642,9 +621,6 @@ export type ExpeditionDetail = {
     parked_at?: string;
     wake_hint?: string;
   };
-  latest_prompt_translation?: PromptTranslation | null;
-  prompt_translation_count?: number;
-  prompt_translations?: PromptTranslation[];
   mission_inputs: MissionInputRecord[];
   mission_chat: MissionChatMessage[];
   workbench: WorkbenchSummary;

@@ -127,46 +127,6 @@ function App() {
             >
               Visible Console
             </button>
-            <button
-              type="button"
-              onClick={() => navigate("console")}
-              style={{
-                ...styles.button,
-                ...(page === "console" ? styles.buttonActive : null),
-              }}
-            >
-              Expression Console V1
-            </button>
-            <button
-              type="button"
-              onClick={() => navigate("honcho")}
-              style={{
-                ...styles.button,
-                ...(page === "honcho" ? styles.buttonActive : null),
-              }}
-            >
-              Honcho Item World
-            </button>
-            <button
-              type="button"
-              onClick={() => navigate("triad")}
-              style={{
-                ...styles.button,
-                ...(page === "triad" ? styles.buttonActive : null),
-              }}
-            >
-              Agent Memory Triad
-            </button>
-            <button
-              type="button"
-              onClick={() => navigate("emissary")}
-              style={{
-                ...styles.button,
-                ...(page === "emissary" ? styles.buttonActive : null),
-              }}
-            >
-              Emissary Return Gate
-            </button>
           </div>
         </div>
       </nav>

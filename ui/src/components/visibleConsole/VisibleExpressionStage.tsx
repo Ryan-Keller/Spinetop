@@ -110,6 +110,12 @@ const mirrorKindLabel = (value?: string) => {
   return normalized.replace(/_/g, " ");
 };
 
+const overlayHintLabel = (value: string) => {
+  if (value === "ghost_pressure") return "handoff pressure";
+  if (value === "replay_seam_ready") return "history seam ready";
+  return value.replace(/_/g, " ");
+};
+
 export default function VisibleExpressionStage(props: VisibleExpressionStageProps) {
   const contradictions = props.interpretation.item?.contradictions || [];
   const patterns = props.interpretation.item?.patterns || [];
@@ -182,14 +188,16 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
         related: [...contradictions.slice(0, 3), props.signals.item?.blocked?.reason || ""].filter(Boolean),
       },
       ghost: {
-        title: "Ghost seam",
+        title: "Advisory seam",
         summary: hasGhostPressure
-          ? "Ghost pressure indicator is visible as a placeholder seam for future wake and expectation surfaces."
-          : "Ghost seam is reserved without active pressure right now.",
+          ? "The advisory pressure indicator is visible as a read-only handoff cue."
+          : "The advisory seam is reserved without active pressure right now.",
         related: [
           props.signals.item?.handoff?.target_role || "",
           props.signals.item?.handoff?.reason || "",
-          ...props.expressionSpec.overlay_hints.filter((item) => item.includes("ghost") || item.includes("mirror")),
+          ...props.expressionSpec.overlay_hints
+            .filter((item) => item.includes("ghost") || item.includes("mirror"))
+            .map(overlayHintLabel),
         ].filter(Boolean),
       },
     }),
@@ -264,7 +272,7 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
               <strong>{props.state.item?.autonomy_state || "guarded"}</strong>
             </div>
             <div>
-              <span>ghost</span>
+              <span>handoff</span>
               <strong>{hasGhostPressure ? "pressure" : "idle"}</strong>
             </div>
           </div>
@@ -282,7 +290,7 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
                 ))}
                 {props.expressionSpec.overlay_hints.map((item) => (
                   <span key={item} className="expression-chip expression-chip--ghost">
-                    {item}
+                    {overlayHintLabel(item)}
                   </span>
                 ))}
               </div>
@@ -447,7 +455,7 @@ export default function VisibleExpressionStage(props: VisibleExpressionStageProp
                 className={`stage-note ${focusClass("ghost")}${hasGhostPressure ? " stage-note--ghost" : " stage-note--muted"}`}
                 onClick={() => setFocusKey("ghost")}
               >
-                {hasGhostPressure ? "Ghost pressure seam is visible." : "Ghost seam is quiet."}
+                {hasGhostPressure ? "Advisory pressure seam is visible." : "Advisory seam is quiet."}
               </button>
               {props.advisories.slice(0, 2).map((item, index) => (
                 <button

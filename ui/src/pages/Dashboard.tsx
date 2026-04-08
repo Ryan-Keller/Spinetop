@@ -532,27 +532,6 @@ type WorkbenchSummary = {
   files: WorkbenchFile[];
 };
 
-type PromptTranslation = {
-  translation_id: string;
-  created_at: string;
-  source_text: string;
-  target_type: "existing_mission" | "new_mission" | "unknown" | string;
-  target_mission_id?: string | null;
-  recommended_role: string;
-  recommended_mode: string;
-  scope: string;
-  sufficiency: {
-    can_proceed: boolean;
-    missing_requirements: string[];
-  };
-  recommended_safe_action: string;
-  requires_operator_confirmation: boolean;
-  translated_instruction: string;
-  notes?: string[];
-  derived_only?: boolean;
-  path?: string;
-};
-
 type ExpeditionDetail = {
   mission_id: string;
   objective: string;
@@ -650,9 +629,6 @@ type ExpeditionDetail = {
     parked_at?: string;
     wake_hint?: string;
   };
-  latest_prompt_translation?: PromptTranslation | null;
-  prompt_translation_count?: number;
-  prompt_translations?: PromptTranslation[];
   mission_inputs: MissionInputRecord[];
   mission_chat: MissionChatMessage[];
   workbench: WorkbenchSummary;
@@ -722,42 +698,34 @@ const fallbackData: StatusResponse = {
   events_recent: [
     {
       timestamp: "2026-04-02T21:21:07",
-      event_type: "hermes_write",
-      record_name: "hermes_20260402_212107.json",
+      event_type: "operator_intervention",
+      record_name: "mirror_note_20260402_212107.json",
       status: "created",
-      detail: "promotion_candidate=true",
+      detail: "operator save captured for the mission-local mirror lane",
       machine: "Spinetop",
     },
     {
       timestamp: "2026-04-02T21:21:10",
       event_type: "watcher_scan",
-      record_name: "hermes_20260402_212107.json",
-      status: "promotable",
-      detail: "starting promotion flow",
+      record_name: "mirror_note_20260402_212107.json",
+      status: "success",
+      detail: "mirror lane refreshed for the active mission",
       machine: "Spinetop",
     },
     {
       timestamp: "2026-04-02T21:21:11",
-      event_type: "promote",
-      record_name: "hermes_20260402_212107.json",
+      event_type: "operator_intervention",
+      record_name: "mirror_note_20260402_212107.json",
       status: "success",
-      detail: "Promoted to memory/promotion",
+      detail: "visible console rendered the newest mirror note",
       machine: "Spinetop",
     },
     {
       timestamp: "2026-04-02T21:21:12",
-      event_type: "approve",
-      record_name: "hermes_20260402_212107.json",
+      event_type: "operator_intervention",
+      record_name: "mission_chat_20260402_212112.json",
       status: "success",
-      detail: "Approved to memory/collective",
-      machine: "Spinetop",
-    },
-    {
-      timestamp: "2026-04-02T21:46:13",
-      event_type: "honcho_bridge",
-      record_name: "hermes_20260402_212107.json",
-      status: "success",
-      detail: "mirrored to honcho",
+      detail: "concierge returned a read-only mirror retrieval summary",
       machine: "Spinetop",
     },
   ],
@@ -836,21 +804,21 @@ const fallbackData: StatusResponse = {
   helper_2b_runtime: {
     available: true,
     configured: true,
-    enabled: false,
-    role_id: "spinetop_expeditioner",
-    execution_backend: "scripted",
+    enabled: true,
+    role_id: "spinetop-expeditioner",
+    execution_backend: "model_backed",
     provider_requirement: "local_only",
-    default_model_key: "",
-    fallback_model_key: "",
-    provider: "",
-    model: "",
+    default_model_key: "local_gemma4_e4b_4k",
+    fallback_model_key: "local_gemma4_e4b_4k",
+    provider: "ollama",
+    model: "gemma4:e4b-4k",
     mapped_helpers: ["retrieval_helper_2b", "runner_helper_2b"],
     role_description: "Spinetop-Expeditioner is the mission-local task worker for first-pass derived outputs.",
     liveness: "disabled_safe_inactive",
     notes: [
       "Mission work stays bounded to mission-local and workbench lanes.",
       "Spinetop-Expeditioner is not Sentinel, helper_2b, or Mirror.",
-      "Spinetop-Expeditioner does not approve, create truth, or bypass governance.",
+      "Spinetop-Expeditioner does not approve, create truth, or bypass activation gates.",
       "If runtime is inactive, the seam stays disabled-safe and returns structured receipts only.",
     ],
     authority_boundary: {
@@ -1454,9 +1422,6 @@ export default function Dashboard() {
   const [unifiedIntentDrafts, setUnifiedIntentDrafts] = useState<Record<string, string>>({});
   const [missionInputDrafts, setMissionInputDrafts] = useState<Record<string, string>>({});
   const [missionChatDrafts, setMissionChatDrafts] = useState<Record<string, string>>({});
-  const [translatorDrafts, setTranslatorDrafts] = useState<Record<string, string>>({});
-  const [translatorPreviewByMission, setTranslatorPreviewByMission] = useState<Record<string, PromptTranslation | null>>({});
-  const [dismissedTranslationByMission, setDismissedTranslationByMission] = useState<Record<string, string | null>>({});
   const [dismissedMissionBuckets, setDismissedMissionBuckets] = useState<Record<string, DismissBucket>>({});
   const [showDuplicateMissions, setShowDuplicateMissions] = useState(false);
   const [showArchiveCandidates, setShowArchiveCandidates] = useState(false);
@@ -1469,7 +1434,6 @@ export default function Dashboard() {
   const [uiNotice, setUiNotice] = useState<UiNotice | null>(null);
   const [returnToBaseCountdown, setReturnToBaseCountdown] = useState<number | null>(null);
   const [missionSaving, setMissionSaving] = useState(false);
-  const [translatorSaving, setTranslatorSaving] = useState(false);
   const [missionActionLabel, setMissionActionLabel] = useState("");
   const missionChatComposerRef = useRef<HTMLTextAreaElement | null>(null);
   const [calibrationAxes, setCalibrationAxes] = useState<CalibrationAxis[]>([
@@ -1477,13 +1441,12 @@ export default function Dashboard() {
     { key: "boundedness", label: "Boundedness", value: 84, hint: "how tightly the mission follows the ask" },
     { key: "respect", label: "User respect", value: 93, hint: "how carefully the mission handles operator input" },
     { key: "clarity", label: "Clarity", value: 79, hint: "how cleanly the mission reports back" },
-    { key: "governance", label: "Governance fidelity", value: 88, hint: "how strictly the mission honors the safe lanes" },
+    { key: "governance", label: "Boundary fidelity", value: 88, hint: "how strictly the mission honors the safe lanes" },
     { key: "uncertainty", label: "Uncertainty tolerance", value: 55, hint: "how boldly the mission handles fuzzy tasks" },
   ]);
   const [selectedRecord, setSelectedRecord] = useState<string | null>(null);
   const missionInputInFlightRef = useRef<string | null>(null);
   const missionChatInFlightRef = useRef<string | null>(null);
-  const autoTranslatedDraftRef = useRef<Record<string, string>>({});
   const autoReturnToBaseKeyRef = useRef<string | null>(null);
   const {
     data,
@@ -1540,24 +1503,6 @@ export default function Dashboard() {
     });
   }, [expeditions]);
 
-  useEffect(() => {
-    if (!composerEligibleMissionId) return;
-    const content = unifiedIntentText.trim();
-    if (!content) {
-      autoTranslatedDraftRef.current[composerEligibleMissionId] = "";
-      return;
-    }
-    if (autoTranslatedDraftRef.current[composerEligibleMissionId] === content) {
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      setTranslatorDrafts((prev) => ({ ...prev, [composerEligibleMissionId]: content }));
-      autoTranslatedDraftRef.current[composerEligibleMissionId] = content;
-      void translateMissionPrompt(content, composerEligibleMissionId, true);
-    }, 450);
-    return () => window.clearTimeout(timer);
-  }, [composerEligibleMissionId, unifiedIntentText]);
-
   const packets = useMemo(() => groupPackets(data.events_recent || []), [data.events_recent]);
 
   useEffect(() => {
@@ -1569,7 +1514,6 @@ export default function Dashboard() {
   const selectedPacket = packets.find((p) => p.recordName === selectedRecord) ?? packets[0] ?? null;
   const missionInputText = selectedMissionId ? missionInputDrafts[selectedMissionId] || "" : "";
   const missionChatText = selectedMissionId ? missionChatDrafts[selectedMissionId] || "" : "";
-  const translatorDraftText = selectedMissionId ? translatorDrafts[selectedMissionId] || "" : "";
 
   const setUnifiedIntentDraft = (value: string) => {
     setUnifiedIntentDrafts((prev) => ({ ...prev, [unifiedDraftKey]: value }));
@@ -1590,11 +1534,6 @@ export default function Dashboard() {
     setMissionChatDrafts((prev) => ({ ...prev, [selectedMissionId]: value }));
   };
 
-  const setTranslatorDraft = (value: string) => {
-    if (!selectedMissionId) return;
-    setTranslatorDrafts((prev) => ({ ...prev, [selectedMissionId]: value }));
-  };
-
   const clearMissionInputDraft = (missionId?: string | null) => {
     if (!missionId) return;
     setMissionInputDrafts((prev) => ({ ...prev, [missionId]: "" }));
@@ -1603,11 +1542,6 @@ export default function Dashboard() {
   const clearMissionChatDraft = (missionId?: string | null) => {
     if (!missionId) return;
     setMissionChatDrafts((prev) => ({ ...prev, [missionId]: "" }));
-  };
-
-  const clearTranslatorDraft = (missionId?: string | null) => {
-    if (!missionId) return;
-    setTranslatorDrafts((prev) => ({ ...prev, [missionId]: "" }));
   };
 
   const queueCounts = useMemo(() => deriveQueueCounts(data), [data]);
@@ -1684,15 +1618,6 @@ export default function Dashboard() {
   const latestDraft = selectedMission?.latest_draft ?? null;
   const latestClarificationPacket = selectedMission?.latest_clarification_packet ?? null;
   const latestRunnerReturn = selectedMission?.latest_runner_return ?? null;
-  const latestPromptTranslation = selectedMission?.latest_prompt_translation ?? null;
-  const promptTranslationCount = selectedMission?.prompt_translation_count ?? 0;
-  const dismissedTranslationId = selectedMissionId ? dismissedTranslationByMission[selectedMissionId] ?? null : null;
-  const promptTranslationPreview =
-    (selectedMissionId ? translatorPreviewByMission[selectedMissionId] ?? null : null) ||
-    (latestPromptTranslation && latestPromptTranslation.translation_id !== dismissedTranslationId ? latestPromptTranslation : null);
-  const composerPromptTranslationPreview =
-    (composerEligibleMissionId ? translatorPreviewByMission[composerEligibleMissionId] ?? null : null) ||
-    (composerEligibleMissionId === selectedMissionId ? promptTranslationPreview : null);
   const missionSummary = selectedMission?.mission_summary ?? null;
   const missionParkingStatus = selectedMission?.parking_status ?? null;
   const missionAutonomyStatus = selectedMission?.autonomy_status ?? null;
@@ -1852,32 +1777,6 @@ export default function Dashboard() {
     getRecordString(selectedMission?.manifest, "summary") ||
     selectedMission?.objective ||
     "No summary recorded yet.";
-  const localNewMissionTranslation: PromptTranslation | null = !composerEligibleMissionId && unifiedIntentText.trim()
-    ? {
-        translation_id: "local-new-mission",
-        created_at: new Date().toISOString(),
-        source_text: unifiedIntentText,
-        target_type: "new_mission",
-        target_mission_id: null,
-        recommended_role: "expeditioner",
-        recommended_mode: "first_pass",
-        scope: "mission_local",
-        sufficiency: {
-          can_proceed: true,
-          missing_requirements: [],
-        },
-        recommended_safe_action: "create new mission from explicit operator intent",
-        requires_operator_confirmation: true,
-        translated_instruction: unifiedIntentText.trim(),
-        notes: [
-          selectedMissionIsParked
-            ? "The focused mission is parked, so freeform input stays off that mission until you explicitly resume it."
-            : "No eligible active mission is focused, so this stays as a local start-mission draft until you confirm.",
-        ],
-        derived_only: true,
-      }
-    : null;
-  const activeTranslationPreview = composerPromptTranslationPreview || localNewMissionTranslation;
   const unifiedIntentLower = unifiedIntentText.trim().toLowerCase();
   const composerWantsQueueCleanup =
     !!unifiedIntentLower &&
@@ -1891,18 +1790,18 @@ export default function Dashboard() {
   const composerWantsFix = /(fix|retry|repair|clean|clear|resume|unblock|resolve)/i.test(unifiedIntentLower);
   const composerTargetLabel = composerWantsQueueCleanup
     ? "Existing mission"
-    : composerWantsNewMission || activeTranslationPreview?.target_type === "new_mission"
+    : composerWantsNewMission || !composerEligibleMissionId
       ? "New mission"
       : composerRetargetedFromParkedMission
         ? "Another active mission"
         : "Existing mission";
   const composerModeLabel = composerWantsQueueCleanup
     ? "Fix"
-    : composerWantsNewMission || activeTranslationPreview?.target_type === "new_mission"
+    : composerWantsNewMission || !composerEligibleMissionId
       ? "Create"
-      : composerWantsReview || activeTranslationPreview?.recommended_mode === "review"
+      : composerWantsReview
         ? "Review"
-        : composerWantsFix || ["retry", "resume"].includes(activeTranslationPreview?.recommended_mode || "")
+        : composerWantsFix
           ? "Fix"
           : "Continue";
   const composerInterpretation = (() => {
@@ -1911,25 +1810,22 @@ export default function Dashboard() {
     if (composerWantsNewMission) return compactIntentLabel(unifiedIntentText, "Start a new mission");
     if (composerWantsReview) return compactIntentLabel(unifiedIntentText, "Review the mission");
     if (composerModeLabel === "Fix") return compactIntentLabel(unifiedIntentText, "Fix the mission flow");
-    return compactIntentLabel(
-      activeTranslationPreview?.recommended_safe_action || unifiedIntentText,
-      composerEligibleMissionId ? "Continue the active mission" : "Start a mission"
-    );
+    return compactIntentLabel(unifiedIntentText, composerEligibleMissionId ? "Continue the active mission" : "Start a mission");
   })();
-  const composerRole = activeTranslationPreview?.recommended_role || (composerModeLabel === "Review" ? "sentinel" : "expeditioner");
-  const composerScope = activeTranslationPreview?.scope || "mission_local_only";
+  const composerRole = composerModeLabel === "Review" ? "sentinel" : "expeditioner";
+  const composerScope = "mission_local_only";
   const composerNotes = composerWantsQueueCleanup
     ? ["Queue cleanup stays inside the current mission feed and does not delete anything."]
-    : activeTranslationPreview?.notes?.length
-      ? activeTranslationPreview.notes
-      : [
-          composerRetargetedFromParkedMission
-            ? "The focused mission is parked, so the composer is routing to another eligible active mission until you explicitly resume it."
+    : [
+        composerRetargetedFromParkedMission
+          ? "The focused mission is parked, so the composer is routing to another eligible active mission until you explicitly resume it."
+          : !composerEligibleMissionId
+            ? "No active mission is eligible right now, so confirming this intent will start a new mission."
             : "The composer is using the current mission focus and bounded local heuristics.",
-        ];
+      ];
   const composerInstruction = composerWantsQueueCleanup
     ? "Apply safe feed cleanup: collapse duplicates, park blocked missions, and mark archive candidates without changing backend triggers."
-    : activeTranslationPreview?.translated_instruction || unifiedIntentText.trim();
+    : unifiedIntentText.trim();
   const composerPrimaryLabel =
     composerWantsNewMission || (!composerEligibleMissionId && !!unifiedIntentText.trim()) ? "Start mission" : "Do this";
   const composerNeedsText =
@@ -1940,7 +1836,6 @@ export default function Dashboard() {
     !latestDraftReviewPreview;
   const composerCanSubmit =
     !missionSaving &&
-    !translatorSaving &&
     !missionLoading &&
     !loading &&
     (!composerNeedsText || !!unifiedIntentText.trim());
@@ -2033,7 +1928,7 @@ export default function Dashboard() {
         selectedMissionStatusBadge: selectedMission?.status_badge,
         latestDraftReviewPreview,
         composerEligibleMissionId,
-        activeTranslationPreview,
+        composerWantsNewMission,
         composerRetargetedFromParkedMission,
         unifiedIntentText,
       }),
@@ -2044,7 +1939,7 @@ export default function Dashboard() {
       selectedMission?.status_badge,
       latestDraftReviewPreview,
       composerEligibleMissionId,
-      activeTranslationPreview,
+      composerWantsNewMission,
       composerRetargetedFromParkedMission,
       unifiedIntentText,
     ]
@@ -2053,12 +1948,7 @@ export default function Dashboard() {
     ? errorText
     : uiNotice
       ? `${uiNotice.title}. ${uiNotice.detail}`
-      : activeTranslationPreview
-        ? `${activeTranslationPreview.target_type === "new_mission"
-            ? "New mission"
-            : `Mission ${activeTranslationPreview.target_mission_id || composerEligibleMissionId || selectedMissionId || "selected"}`
-          }: ${activeTranslationPreview.recommended_safe_action || dominantAction.detail}`
-        : dominantAction.detail;
+      : dominantAction.detail;
 
   const expeditionStatusTone: Record<ExpeditionStatusBadge, StripTone> = deriveExpeditionStatusTone();
 
@@ -2214,7 +2104,6 @@ export default function Dashboard() {
     reviewAssumption,
     syncRunnerReturns,
     openReviewPreview,
-    translateMissionPrompt,
     sendMissionChat,
     runMissionQuickReply,
     setMissionParking,
@@ -2243,9 +2132,7 @@ export default function Dashboard() {
     unifiedIntentText,
     selectedMissionIsParked,
     composerEligibleMissionId,
-    activeTranslationPreview,
     missionInputText,
-    translatorDraftText,
     missionSummaryOperatorReason,
     missionSummaryBlockedReason,
     missionSummaryNextAnswer,
@@ -2253,7 +2140,6 @@ export default function Dashboard() {
     controlTowerSummary,
     selectedQueueHygiene,
     latestDraftPreviewPath,
-    promptTranslationPreview,
     duplicateFeedGroups,
     archiveFeedGroups,
     blockedQueueItems,
@@ -2261,18 +2147,14 @@ export default function Dashboard() {
     blockerType,
     missionSaving,
     setMissionSaving,
-    setTranslatorSaving,
     setMissionActionLabel,
     setUiNotice,
     setErrorText,
     clearUnifiedIntentDraft,
     clearMissionInputDraft,
     clearMissionChatDraft,
-    clearTranslatorDraft,
     setMissionInputDrafts,
     setMissionChatDrafts,
-    setTranslatorPreviewByMission,
-    setDismissedTranslationByMission,
     rememberDismissedMission,
     setTriageMode,
     setShowArchiveCandidates,
@@ -2282,81 +2164,6 @@ export default function Dashboard() {
     missionChatInFlightRef,
     missionChatComposerRef,
   });
-
-  const copyTranslatedInstruction = async () => {
-    const translation = promptTranslationPreview;
-    if (!translation) {
-      setErrorText("No translated instruction is available to copy");
-      return;
-    }
-    try {
-      if (!navigator.clipboard?.writeText) {
-        throw new Error("Clipboard is unavailable in this browser");
-      }
-      await navigator.clipboard.writeText(translation.translated_instruction || "");
-      setUiNotice({
-        tone: "good",
-        title: "Instruction copied",
-        detail: "The translated instruction was copied. It is still proposal-only.",
-      });
-    } catch (error) {
-      setErrorText(error instanceof Error ? error.message : "Copy failed");
-    }
-  };
-
-  const stageTranslatedInstructionForMissionInput = () => {
-    const translation = promptTranslationPreview;
-    const missionId = selectedMissionId;
-    if (!translation || !missionId) return;
-    setMissionInputDrafts((prev) => ({ ...prev, [missionId]: translation.translated_instruction || "" }));
-    setUiNotice({
-      tone: "info",
-      title: "Mission input draft staged",
-      detail: "The translated instruction was copied into the mission input draft. It was not sent.",
-    });
-  };
-
-  const stageTranslatedInstructionForChat = () => {
-    const translation = promptTranslationPreview;
-    const missionId = selectedMissionId;
-    if (!translation || !missionId) return;
-    setMissionChatDrafts((prev) => ({ ...prev, [missionId]: translation.translated_instruction || "" }));
-    missionChatComposerRef.current?.focus();
-    setUiNotice({
-      tone: "info",
-      title: "Chat draft staged",
-      detail: "The translated instruction was copied into mission chat draft only. It was not sent.",
-    });
-  };
-
-  const stageProposedMissionDraft = () => {
-    const translation = promptTranslationPreview;
-    if (!translation) return;
-    const objectiveSeed =
-      translation.target_type === "new_mission"
-        ? translation.source_text || translation.translated_instruction || ""
-        : translation.translated_instruction || translation.source_text || "";
-    setNewMissionObjective(objectiveSeed);
-    setUiNotice({
-      tone: "info",
-      title: "Proposed mission draft staged",
-      detail: "The new mission objective box was prefilled only. No mission was created.",
-    });
-  };
-
-  const discardPromptTranslation = () => {
-    const missionId = selectedMissionId;
-    if (!missionId) return;
-    const translationId = promptTranslationPreview?.translation_id ?? null;
-    clearTranslatorDraft(missionId);
-    setTranslatorPreviewByMission((prev) => ({ ...prev, [missionId]: null }));
-    setDismissedTranslationByMission((prev) => ({ ...prev, [missionId]: translationId }));
-    setUiNotice({
-      tone: "info",
-      title: "Translator draft cleared",
-      detail: "The current proposal was dismissed from view. Nothing was executed.",
-    });
-  };
 
   useEffect(() => {
     if (!shouldShowReturnToBase || !selectedMissionId) {
@@ -2502,7 +2309,7 @@ export default function Dashboard() {
                     <>
                       <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
                         <div style={styles.previewBox}>
-                          <div style={styles.subtleText}>Control Tower details</div>
+                          <div style={styles.subtleText}>Mission controls</div>
                           <div style={{ marginTop: 6, fontSize: 13, color: "#cbd5f5", lineHeight: 1.55 }}>{expandedMissionSummaryReason}</div>
                           <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" as const }}><span style={styles.badge}>{expandedControlTowerAutonomyState}</span><span style={styles.badge}>{expandedRetryRemaining} retry left</span></div>
                           <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
@@ -2578,7 +2385,7 @@ export default function Dashboard() {
         <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))" }}>
           {[
             ["Mission State", missionStateGauge, selectedMission?.objective || "No focused mission yet."],
-            ["Autonomy State", autonomyGauge, selectedMission ? compactLabel(controlTowerAutonomyState, "Ready") : "Awaiting mission focus."],
+            ["Activation State", autonomyGauge, selectedMission ? compactLabel(controlTowerAutonomyState, "Ready") : "Awaiting mission focus."],
             ["Confidence", confidenceGauge, `${missionSummaryConfidence} · ${confidenceTrend}`],
             ["Queue Pressure", queuePressure, `${queueSummary.total_queued ?? expeditions.length} queued across ${expeditions.length} missions`],
           ].map(([label, value, detail]) => (
@@ -2595,7 +2402,7 @@ export default function Dashboard() {
             <div style={styles.recordMetaRow}>
               <div>
                 <div style={{ fontSize: 16, fontWeight: 700, color: "#f8fafc" }}>System Signals</div>
-                <div style={styles.subtleText}>Compact nanny recommendations. Visible only when the system needs attention.</div>
+                <div style={styles.subtleText}>System recommendations. Visible only when the system needs attention.</div>
               </div>
               <span style={{ ...styles.badge, ...styles.badgeWarn }}>{systemSignals.length} active</span>
             </div>
@@ -2670,13 +2477,13 @@ export default function Dashboard() {
               <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>Details</summary>
               <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
                 <div style={styles.subtleText}>role: {composerRole}</div>
-                <div style={styles.subtleText}>mode: {activeTranslationPreview?.recommended_mode || composerModeLabel.toLowerCase()}</div>
+                <div style={styles.subtleText}>mode: {composerModeLabel.toLowerCase()}</div>
                 <div style={styles.subtleText}>scope: {composerScope}</div>
                 <div style={{ ...styles.subtleText, whiteSpace: "pre-wrap" as const }}>
                   notes: {composerNotes.join(" ")}
                 </div>
                 <div style={{ fontSize: 12, color: "#cbd5f5", lineHeight: 1.55, whiteSpace: "pre-wrap" as const }}>
-                  {composerInstruction || "No translated instruction yet."}
+                  {composerInstruction || "No confirmed instruction yet."}
                 </div>
               </div>
             </details>
@@ -2871,7 +2678,7 @@ export default function Dashboard() {
                 </div>
               ) : null}
 
-              <details style={styles.recordCard}><summary style={{ cursor: "pointer", fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Control Tower details</summary><div style={{ marginTop: 12, display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}><div style={styles.previewBox}><div style={styles.subtleText}>Autonomy</div><div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f8fafc" }}>{controlTowerAutonomyState}</div></div><div style={styles.previewBox}><div style={styles.subtleText}>Retry budget</div><div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f8fafc" }}>{controlTowerRetryRemaining} remaining</div></div><div style={styles.previewBox}><div style={styles.subtleText}>Attention reason</div><div style={{ marginTop: 4, fontSize: 12, color: "#cbd5f5" }}>{controlTowerSummary?.operator_attention_reason || missionSummaryReason}</div></div><div style={styles.previewBox}><div style={styles.subtleText}>Latest role activity</div><div style={{ marginTop: 4, fontSize: 12, color: "#cbd5f5" }}>{latestRoleActivityText}</div></div></div><div style={{ marginTop: 12, display: "grid", gap: 8 }}>{controlTowerExecutionLines.length ? controlTowerExecutionLines.map((line) => <div key={line} style={{ ...styles.previewBox, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>{line}</div>) : <div style={styles.subtleText}>No execution visibility summary yet.</div>}</div></details>
+              <details style={styles.recordCard}><summary style={{ cursor: "pointer", fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Mission controls</summary><div style={{ marginTop: 12, display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}><div style={styles.previewBox}><div style={styles.subtleText}>Activation</div><div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f8fafc" }}>{controlTowerAutonomyState}</div></div><div style={styles.previewBox}><div style={styles.subtleText}>Retry budget</div><div style={{ marginTop: 4, fontSize: 14, fontWeight: 700, color: "#f8fafc" }}>{controlTowerRetryRemaining} remaining</div></div><div style={styles.previewBox}><div style={styles.subtleText}>Attention reason</div><div style={{ marginTop: 4, fontSize: 12, color: "#cbd5f5" }}>{controlTowerSummary?.operator_attention_reason || missionSummaryReason}</div></div><div style={styles.previewBox}><div style={styles.subtleText}>Latest role activity</div><div style={{ marginTop: 4, fontSize: 12, color: "#cbd5f5" }}>{latestRoleActivityText}</div></div></div><div style={{ marginTop: 12, display: "grid", gap: 8 }}>{controlTowerExecutionLines.length ? controlTowerExecutionLines.map((line) => <div key={line} style={{ ...styles.previewBox, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>{line}</div>) : <div style={styles.subtleText}>No execution visibility summary yet.</div>}</div></details>
               <details style={styles.recordCard}><summary style={{ cursor: "pointer", fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Assumptions</summary><div style={{ marginTop: 12, display: "grid", gap: 8 }}><div style={{ ...styles.previewBox, fontSize: 12, color: "#cbd5f5" }}>{missionActiveAssumptionCount} active of {missionAssumptionCount} total. Derived only, mission-local only, never canonical truth.</div>{visibleMissionAssumptions.length ? visibleMissionAssumptions.map((assumption) => <div key={assumption.assumption_id} style={styles.recordCard}><div style={styles.recordMetaRow}><div style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>{assumption.text}</div><div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const }}><span style={assumptionStatusBadgeStyle(assumption.status)}>{assumption.status}</span><span style={assumptionOperatorBadgeStyle(assumption.confirmation?.operator_status || "unreviewed")}>{assumption.confirmation?.operator_status || "unreviewed"}</span></div></div><div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8" }}>{assumption.reason}</div><div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" as const }}><button type="button" onClick={() => void reviewAssumption(assumption.assumption_id, "confirm")} style={styles.secondaryButton}>Accept</button><button type="button" onClick={() => void reviewAssumption(assumption.assumption_id, "reject")} style={styles.secondaryButton}>Reject</button></div></div>) : <div style={styles.subtleText}>No assumptions are visible yet.</div>}</div></details>
               <details style={styles.recordCard}><summary style={{ cursor: "pointer", fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Runner returns</summary><div style={{ marginTop: 12, display: "grid", gap: 10 }}><div style={styles.previewBox}><div style={styles.subtleText}>Latest helper return</div><div style={{ marginTop: 4, fontSize: 13, color: "#cbd5f5" }}>{getRecordString(latestRunnerReturn, "summary") || "No helper return is linked to this mission yet."}</div></div><button type="button" onClick={() => void syncRunnerReturns()} style={styles.secondaryButton}>Sync helper returns</button></div></details>
               <details style={styles.recordCard}><summary style={{ cursor: "pointer", fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Mirror</summary><div style={styles.previewBox}><div style={styles.subtleText}>Mirror-door summary</div><div style={{ marginTop: 4, fontSize: 13, color: "#cbd5f5" }}>{mirrorDoorTest.available ? `${mirrorDoorBlocked} blocked correctly, ${mirrorDoorAccepted} accepted, ${mirrorDoorUnexpected} unexpected` : "Mirror-door summary not available."}</div></div></details>
@@ -2930,9 +2737,7 @@ export default function Dashboard() {
     missionChatText,
     setMissionInputDraft,
     setMissionChatDraft,
-    setTranslatorDraft,
     selectedMissionInputs,
-    promptTranslationCount,
     runnerReturnCount,
     missionAssumptionChanges,
     missionAssumptionsLastUpdated,
@@ -2955,11 +2760,6 @@ export default function Dashboard() {
     unsupportedControlActions,
     expeditionStatusTone,
     refreshAssumptions,
-    copyTranslatedInstruction,
-    stageTranslatedInstructionForMissionInput,
-    stageTranslatedInstructionForChat,
-    stageProposedMissionDraft,
-    discardPromptTranslation,
     runMissionQuickReply,
     runControlTowerAction,
   ];
@@ -3113,7 +2913,7 @@ export default function Dashboard() {
             <div>
               <h2 style={styles.sectionTitle}>Storage visibility</h2>
               <div style={styles.sectionSubtitle}>
-                Read-only disk usage from <span style={styles.mono}>memory/</span> and <span style={styles.mono}>logs/</span>, including governed collective records that made it through the door.
+                Read-only disk usage from <span style={styles.mono}>memory/</span> and <span style={styles.mono}>logs/</span>, including retained records that remain on disk.
               </div>
             </div>
             <span style={{ ...styles.badge, ...(storageOverview.available ? styles.badgeGood : styles.badgeWarn) }}>
@@ -3134,7 +2934,7 @@ export default function Dashboard() {
                 `${storageOverview.footprints.archive.total_files} files across ${storageOverview.footprints.archive.group_names.length} areas`,
               ],
               [
-                "Collective door admitted",
+                "Retained records",
                 storageOverview.collective_door.admitted_bytes_label,
                 `${storageOverview.collective_door.admitted_count} admitted, ${storageOverview.collective_door.blocked_count} blocked`,
               ],
@@ -3225,13 +3025,13 @@ export default function Dashboard() {
 
             <div>
               <div style={{ marginBottom: 10, fontSize: 16, fontWeight: 600, color: "#f5d0fe" }}>
-                Governed collective footprint
+                Retained disk footprint
               </div>
               <div style={styles.recordCard}>
                 <div style={styles.recordMetaRow}>
                   <div>
                     <div style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0" }}>memory/collective</div>
-                    <div style={styles.subtleText}>admitted records are measured through the same governance gate used by the mirror door</div>
+                    <div style={styles.subtleText}>retained records are measured through the same read-only accounting path used by mirror-door checks</div>
                   </div>
                   <span style={{ ...styles.badge, ...styles.badgeGood }}>
                     {Math.round((storageOverview.collective_door.admitted_ratio ?? 0) * 100)}% admitted
@@ -3933,7 +3733,7 @@ export default function Dashboard() {
                       : "Currently configured as a disabled-safe scripted seam rather than a live model-invoked mission worker. Retrieval and runner outputs remain bounded support paths."}
                   </div>
                   <div style={{ marginTop: 6, fontSize: 12, color: "#cbd5f5", lineHeight: 1.5 }}>
-                    Derived mission-local worker only. It does not approve, create truth, or bypass governance. External visible returns remain structured receipts.
+                    Derived mission-local worker only. It does not approve, create truth, or bypass activation gates. External visible returns remain structured receipts.
                   </div>
                   <div style={{ marginTop: 6, fontSize: 12, color: "#94a3b8", lineHeight: 1.5 }}>
                     Mapped helpers: {(helper2bRuntime.mapped_helpers || []).join(", ") || "none"}.

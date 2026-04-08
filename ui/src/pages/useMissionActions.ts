@@ -10,7 +10,6 @@ import type {
   ExpeditionSummary,
   MissionChatMessage,
   MissionInputRecord,
-  PromptTranslation,
   UiNotice,
 } from "./dashboardTypes";
 
@@ -33,9 +32,7 @@ type UseMissionActionsArgs = {
   unifiedIntentText: string;
   selectedMissionIsParked: boolean;
   composerEligibleMissionId: string | null;
-  activeTranslationPreview: PromptTranslation | null;
   missionInputText: string;
-  translatorDraftText: string;
   missionSummaryOperatorReason: string;
   missionSummaryBlockedReason: string;
   missionSummaryNextAnswer: string;
@@ -43,7 +40,6 @@ type UseMissionActionsArgs = {
   controlTowerSummary: ExpeditionDetail["control_tower_summary"] | null;
   selectedQueueHygiene: ExpeditionDetail["queue_hygiene"] | undefined;
   latestDraftPreviewPath: string;
-  promptTranslationPreview: PromptTranslation | null;
   duplicateFeedGroups: ExpeditionGroup[];
   archiveFeedGroups: ExpeditionGroup[];
   blockedQueueItems: ExpeditionSummary[];
@@ -51,18 +47,14 @@ type UseMissionActionsArgs = {
   blockerType: "HUMAN" | "SYSTEM" | "JUNK";
   missionSaving: boolean;
   setMissionSaving: Setter<boolean>;
-  setTranslatorSaving: Setter<boolean>;
   setMissionActionLabel: Setter<string>;
   setUiNotice: Setter<UiNotice | null>;
   setErrorText: Setter<string>;
   clearUnifiedIntentDraft: (draftKey?: string | null) => void;
   clearMissionInputDraft: (missionId?: string | null) => void;
   clearMissionChatDraft: (missionId?: string | null) => void;
-  clearTranslatorDraft: (missionId?: string | null) => void;
   setMissionInputDrafts: Setter<Record<string, string>>;
   setMissionChatDrafts: Setter<Record<string, string>>;
-  setTranslatorPreviewByMission: Setter<Record<string, PromptTranslation | null>>;
-  setDismissedTranslationByMission: Setter<Record<string, string | null>>;
   rememberDismissedMission: (missionId: string, bucket: DismissBucket) => void;
   setTriageMode: Setter<boolean>;
   setShowArchiveCandidates: Setter<boolean>;
@@ -239,7 +231,6 @@ export function useMissionActions(args: UseMissionActionsArgs) {
       const payload = (await res.json()) as {
         ok?: boolean;
         item?: MissionInputRecord;
-        translation?: PromptTranslation;
         mission?: ExpeditionDetail;
         error?: string;
       };
@@ -247,10 +238,6 @@ export function useMissionActions(args: UseMissionActionsArgs) {
       args.clearMissionInputDraft(missionId);
       if (!contentOverride) args.clearUnifiedIntentDraft(missionId);
       if (payload.mission) args.setSelectedMission(payload.mission);
-      if (payload.translation) {
-        args.setTranslatorPreviewByMission((prev) => ({ ...prev, [missionId]: payload.translation ?? null }));
-        args.setDismissedTranslationByMission((prev) => ({ ...prev, [missionId]: null }));
-      }
       args.setUiNotice({
         tone: "good",
         title: "Mission updated",
@@ -263,40 +250,6 @@ export function useMissionActions(args: UseMissionActionsArgs) {
       args.missionInputInFlightRef.current = null;
       args.setMissionSaving(false);
       args.setMissionActionLabel("");
-    }
-  };
-
-  const translateMissionPrompt = async (contentOverride?: string, missionIdOverride?: string, silent = false) => {
-    const missionId = missionIdOverride || args.selectedMissionId;
-    if (!missionId) {
-      args.setErrorText("Select an expedition first");
-      return;
-    }
-    const content = (contentOverride ?? args.translatorDraftText).trim();
-    if (!content) {
-      args.setErrorText("Prompt translator input cannot be empty");
-      return;
-    }
-    try {
-      args.setTranslatorSaving(true);
-      const res = await fetch(`${args.apiBase}/expeditions/${missionId}/translate-prompt`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
-      });
-      const payload = (await res.json()) as { ok?: boolean; translation?: PromptTranslation; mission?: ExpeditionDetail; error?: string };
-      if (!res.ok || !payload.ok || !payload.translation) throw new Error(payload.error || `HTTP ${res.status}`);
-      if (payload.mission) args.setSelectedMission(payload.mission);
-      args.setTranslatorPreviewByMission((prev) => ({ ...prev, [missionId]: payload.translation ?? null }));
-      args.setDismissedTranslationByMission((prev) => ({ ...prev, [missionId]: null }));
-      if (!silent) {
-        args.setUiNotice({ tone: "info", title: "Prompt translated", detail: "Proposal saved for review only. Nothing was executed." });
-      }
-      await args.load();
-    } catch (error) {
-      args.setErrorText(error instanceof Error ? error.message : "Prompt translation failed");
-    } finally {
-      args.setTranslatorSaving(false);
     }
   };
 
@@ -582,10 +535,10 @@ export function useMissionActions(args: UseMissionActionsArgs) {
       args.setUiNotice({ tone: "watch", title: "No intent to confirm", detail: "Add intent in the top field before running an explicit action." });
       return;
     }
+    const lower = text.toLowerCase();
     const targetMissionId = missionIdOverride ?? args.composerEligibleMissionId ?? null;
-    const hasExistingTarget = !!targetMissionId && args.activeTranslationPreview?.target_type !== "new_mission";
-    const safeAction = (args.activeTranslationPreview?.recommended_safe_action || "").toLowerCase();
-    const resolvedMode = mode || (!hasExistingTarget ? "create" : /chat|answer|reply/.test(safeAction) ? "chat" : "input");
+    const hasExistingTarget = !!targetMissionId;
+    const resolvedMode = mode || (!hasExistingTarget ? "create" : /chat|answer|reply/.test(lower) ? "chat" : "input");
 
     if (resolvedMode === "create") return void (await createMission(text));
     if (resolvedMode === "chat") {
@@ -688,7 +641,6 @@ export function useMissionActions(args: UseMissionActionsArgs) {
     openReviewPreview,
     createMission,
     sendMissionInput,
-    translateMissionPrompt,
     sendMissionChat,
     runMissionQuickReply,
     setMissionParking,

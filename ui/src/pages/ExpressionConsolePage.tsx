@@ -18,10 +18,10 @@ export default function ExpressionConsolePage() {
       <div className="expression-console-shell">
         <header className="console-topbar">
           <div>
-            <span className="console-kicker">New Surface</span>
+            <span className="console-kicker">Reference Surface</span>
             <h1>Live expression console</h1>
             <p>
-              Built as a new inspectable page for visual mission expression, chat-driven exploration, and future observer, concierge, Mirror, ghost, and replay layers.
+              Inspect visual mission expression, chat-driven exploration, and read-only stage overlays from the current mission APIs.
             </p>
           </div>
           <div className="console-topbar__status">

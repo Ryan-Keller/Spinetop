@@ -78,19 +78,19 @@ def main() -> int:
         _assert(sentinel["output"]["role"] == "spinetop-sentinel", f"unexpected sentinel role output: {sentinel}")
         _assert((workbench_root / "notes" / "agent_runs").exists(), "agent_runs directory should be created")
 
-        expeditioner = agent_invocation.invoke_role(
-            "spinetop-expeditioner",
+        mirror = agent_invocation.invoke_role(
+            "spinetop-mirror",
             mission_id,
-            {"trigger_reason": "smoke_test_first_pass", "input": "produce a bounded first pass"},
+            {"trigger_reason": "smoke_test_mirror_review", "input": "review the mission-local notes in bounded read-only mode"},
         )
-        _assert(expeditioner["ok"] is False, "inactive expeditioner should stay disabled-safe")
-        _assert(expeditioner["status"] == "inactive", f"expected inactive status: {expeditioner}")
-        _assert(expeditioner["output"]["derived_only"] is True, "disabled-safe output must stay derived-only")
+        _assert(mirror["ok"] is False, "inactive mirror should stay disabled-safe")
+        _assert(mirror["status"] == "inactive", f"expected inactive status: {mirror}")
+        _assert(mirror["output"]["derived_only"] is True, "disabled-safe output must stay derived-only")
 
         detail = dashboard_api._build_expedition_detail(mission_id)
         latest_role_activity = ((detail.get("control_tower_summary") or {}) if isinstance(detail, dict) else {}).get("latest_role_activity") or {}
         _assert(str(latest_role_activity.get("kind") or "") == "agent_run", f"latest role activity should come from agent runs: {latest_role_activity}")
-        _assert(str(latest_role_activity.get("role") or "") in {"Sentinel", "Expeditioner"}, f"unexpected latest role label: {latest_role_activity}")
+        _assert(str(latest_role_activity.get("role") or "") in {"Sentinel", "Mirror"}, f"unexpected latest role label: {latest_role_activity}")
         _assert(int(detail.get("agent_run_count") or 0) >= 2, f"expected two agent runs in detail: {detail.get('agent_run_count')}")
 
         print(f"mission_id={mission_id}")

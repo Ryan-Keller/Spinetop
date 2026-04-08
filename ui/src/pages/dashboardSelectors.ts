@@ -6,7 +6,6 @@ import type {
   ExpeditionSummary,
   FeedState,
   MissionAttentionItem,
-  PromptTranslation,
   QueueSummary,
   StatusResponse,
   StripTone,
@@ -308,7 +307,7 @@ export function derivePrimaryAction(args: {
   selectedMissionStatusBadge?: ExpeditionStatusBadge;
   latestDraftReviewPreview: Record<string, unknown> | null;
   composerEligibleMissionId: string | null;
-  activeTranslationPreview: PromptTranslation | null;
+  composerWantsNewMission: boolean;
   composerRetargetedFromParkedMission: boolean;
   unifiedIntentText: string;
 }) {
@@ -324,7 +323,7 @@ export function derivePrimaryAction(args: {
   if (args.selectedMissionStatusBadge === "ready_for_review" || !!args.latestDraftReviewPreview) {
     return { label: "Review mission", detail: "Open the latest review-ready material without changing backend behavior.", action: "review" as const };
   }
-  if (!args.composerEligibleMissionId || args.activeTranslationPreview?.target_type === "new_mission") {
+  if (!args.composerEligibleMissionId || args.composerWantsNewMission) {
     return { label: "Start mission", detail: "Create a new mission from the confirmed intent in the top input.", action: "start" as const };
   }
   return {

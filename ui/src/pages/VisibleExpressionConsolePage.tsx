@@ -19,12 +19,12 @@ export default function VisibleExpressionConsolePage() {
         <header className="visible-expression-console-topbar">
           <div className="visible-expression-console-topbar__brand">
             <span className="console-kicker">Expression Console</span>
-            <h1>Visible intelligence</h1>
+            <h1>Visible mission console</h1>
           </div>
           <div className="visible-expression-console-topbar__status">
             <span className="console-badge console-badge--soft">live surfaces</span>
             <span className="console-badge">{relativeTime(consoleData.refreshTick)}</span>
-            <span className="console-badge console-badge--ghost">replay</span>
+            <span className="console-badge console-badge--ghost">history</span>
             {consoleData.error ? <span className="console-badge console-badge--warning">{consoleData.error}</span> : null}
           </div>
         </header>

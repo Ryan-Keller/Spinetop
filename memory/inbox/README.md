@@ -1,16 +1,14 @@
 # Inbox System
 
-This folder receives incoming results from Spinelab and expert agents.
+This folder holds structured incoming results and drafts that are not part of the live mirror loop.
 
 ## Rules
 
 - All entries must be structured JSON
-- No direct writes to collective memory
-- Entries must include summary, findings, and recommendation
-- Each file represents one completed task or experiment
-- Inbox records are candidates, not truth
-- Promotion does not mean acceptance into collective
+- Inbox records are review material, not truth
+- Mission-local mirror notes do not route through this folder
+- Keep entries bounded, attributable, and easy to inspect
 
-## Flow
+## Note
 
-`inbox -> promotion -> dispatch review -> collective or archive`
+Older promotion and dispatch flows are still documented elsewhere for reference, but they are not the primary active path for operator `save:` or mirror retrieval.

@@ -19,9 +19,9 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def main() -> int:
     profile = helper_model_runtime.load_helper_runtime_profile("spinetop_expeditioner")
-    _assert(profile.role_id == "spinetop_expeditioner", "role id mismatch")
-    _assert(profile.active is True, "spinetop_expeditioner should stay active unless workers are shut down")
-    _assert(profile.execution_backend == "model_backed", "spinetop_expeditioner should be model_backed")
+    _assert(profile.role_id == "spinetop-expeditioner", "role id mismatch")
+    _assert(profile.active is True, "spinetop-expeditioner should stay active unless workers are shut down")
+    _assert(profile.execution_backend == "model_backed", "spinetop-expeditioner should be model_backed")
     _assert(profile.inactive_behavior == "disabled_safe", "Expeditioner runtime should stay disabled-safe when inactive")
     _assert(
         profile.mapped_helpers == ["retrieval_helper_2b", "runner_helper_2b"],
@@ -32,20 +32,16 @@ def main() -> int:
         "role description should identify the Expeditioner lane",
     )
     _assert(
-        "local_onboarding_gemma4_e4b_4k" in profile.allowed_model_keys,
-        "expected onboarding local model in Expeditioner allowed_model_keys",
+        "local_gemma4_e4b_4k" in profile.allowed_model_keys,
+        "expected configured local model in Expeditioner allowed_model_keys",
     )
     _assert(
-        "local_production_qwen2_5_coder_14b" in profile.allowed_model_keys,
-        "expected production local model in Expeditioner allowed_model_keys",
+        profile.default_model_key == "local_gemma4_e4b_4k",
+        "Expeditioner should resolve the configured local model by default",
     )
     _assert(
-        profile.default_model_key == "local_production_qwen2_5_coder_14b",
-        "Expeditioner should resolve the production local model by default",
-    )
-    _assert(
-        profile.fallback_model_key == "local_production_qwen2_5_coder_14b",
-        "Expeditioner should expose the production local fallback model key",
+        profile.fallback_model_key == "local_gemma4_e4b_4k",
+        "Expeditioner should expose the configured local fallback model key",
     )
     _assert(profile.authority_boundary.get("derived_outputs_only") is True, "Expeditioner role should stay derived-only")
     _assert(
@@ -86,12 +82,12 @@ def main() -> int:
     )
 
     helper_profile = helper_model_runtime.load_helper_runtime_profile("spinetop-helper_2b")
-    _assert(helper_profile.role_id == "spinetop-helper_2b", "helper role id mismatch")
-    _assert(helper_profile.active is True, "spinetop-helper_2b should stay active unless workers are shut down")
-    _assert(helper_profile.execution_backend == "model_backed", "spinetop-helper_2b should use the model seam")
+    _assert(helper_profile.role_id == "spinetop-helper-2b", "helper role id mismatch")
+    _assert(helper_profile.active is True, "spinetop-helper-2b should stay active unless workers are shut down")
+    _assert(helper_profile.execution_backend == "model_backed", "spinetop-helper-2b should use the model seam")
     _assert(
         helper_profile.inactive_behavior == "disabled_safe",
-        "Spinetop-helper_2b runtime should stay disabled-safe when inactive",
+        "Spinetop-helper-2b runtime should stay disabled-safe when inactive",
     )
     _assert(
         helper_profile.role_description.startswith("Spinetop-helper_2b is the field-side mini brain"),
@@ -99,23 +95,23 @@ def main() -> int:
     )
     _assert(
         "mission-local context under workbench/missions/" in helper_profile.authority_boundary.get("may_read", []),
-        "Spinetop-helper_2b should allow mission-local workbench reads",
+        "Spinetop-helper-2b should allow mission-local workbench reads",
     )
     _assert(
         "write to memory/collective" in helper_profile.authority_boundary.get("may_not", []),
-        "Spinetop-helper_2b should forbid collective writes",
+        "Spinetop-helper-2b should forbid collective writes",
     )
     _assert(
         helper_profile.behavior_contract.get("thinking_style") == ["short horizon", "local context", "tactical suggestions"],
-        "Spinetop-helper_2b should expose the tactical helper thinking style",
+        "Spinetop-helper-2b should expose the tactical helper thinking style",
     )
     _assert(
-        helper_profile.default_model_key == "local_production_qwen2_5_coder_14b",
-        "Spinetop-helper_2b should bind to the production local model by default",
+        helper_profile.default_model_key == "local_granite3_3_2b_q2k",
+        "Spinetop-helper-2b should bind to the configured local model by default",
     )
     _assert(
-        helper_profile.fallback_model_key == "local_production_qwen2_5_coder_14b",
-        "Spinetop-helper_2b should expose the production local fallback key",
+        helper_profile.fallback_model_key == "local_granite3_3_2b_q2k",
+        "Spinetop-helper-2b should expose the configured local fallback key",
     )
     _assert(
         helper_profile.behavior_contract.get("output_structure") == [
@@ -124,11 +120,11 @@ def main() -> int:
             "possible next steps",
             "open questions",
         ],
-        "Spinetop-helper_2b should expose the small structured output layout",
+        "Spinetop-helper-2b should expose the small structured output layout",
     )
     _assert(
         helper_profile.behavior_contract.get("separation_rule") == "helper_2b internal reasoning stays separate from runner-return external receipts",
-        "Spinetop-helper_2b should keep internal reasoning distinct from runner returns",
+        "Spinetop-helper-2b should keep internal reasoning distinct from runner returns",
     )
 
     mirror_profile = helper_model_runtime.load_helper_runtime_profile("spinetop-mirror")
@@ -153,12 +149,12 @@ def main() -> int:
         "Mirror should write only to the mission-local mirror lane",
     )
     _assert(
-        mirror_profile.default_model_key == "local_production_qwen2_5_coder_14b",
-        "Mirror should bind to the production local model by default",
+        mirror_profile.default_model_key == "local_granite3_3_2b_q2k",
+        "Mirror should bind to the configured local model by default",
     )
     _assert(
-        mirror_profile.fallback_model_key == "local_production_qwen2_5_coder_14b",
-        "Mirror should expose the production local fallback key",
+        mirror_profile.fallback_model_key == "local_granite3_3_2b_q2k",
+        "Mirror should expose the configured local fallback key",
     )
 
     temp_root = Path(tempfile.mkdtemp(prefix="helper_model_runtime_"))
@@ -168,10 +164,10 @@ def main() -> int:
         temp_model_registry,
         {
             "models": {
-                "local_onboarding_gemma4_e4b_4k": {"provider": "ollama", "model": "gemma4:e4b-4k"},
-                "local_production_qwen2_5_coder_14b": {
+                "local_gemma4_e4b_4k": {"provider": "ollama", "model": "gemma4:e4b-4k"},
+                "local_granite3_3_2b_q2k": {
                     "provider": "ollama",
-                    "model": "qwen2.5-coder:14b",
+                    "model": "granite3.3:2b",
                     "ollama_options": {"num_ctx": 8192},
                 },
             }
@@ -181,16 +177,15 @@ def main() -> int:
         temp_helper_registry,
         {
             "roles": {
-                "spinetop_expeditioner": {
+                "spinetop-expeditioner": {
                     "role_description": "Spinetop-Expeditioner is the mission-doing worker for first-pass derived outputs inside mission-local and workbench lanes.",
                     "active": True,
                     "execution_backend": "model_backed",
                     "allowed_model_keys": [
-                        "local_onboarding_gemma4_e4b_4k",
-                        "local_production_qwen2_5_coder_14b",
+                        "local_gemma4_e4b_4k",
                     ],
-                    "default_model_key": "local_production_qwen2_5_coder_14b",
-                    "fallback_model_key": "local_production_qwen2_5_coder_14b",
+                    "default_model_key": "local_gemma4_e4b_4k",
+                    "fallback_model_key": "local_gemma4_e4b_4k",
                     "provider_requirement": "local_only",
                     "mapped_helpers": ["retrieval_helper_2b", "runner_helper_2b"],
                     "context_refs": ["workbench/missions/ notes and mission-local artifacts", "expeditions/active/ mission briefs and mission inputs"],
@@ -215,16 +210,15 @@ def main() -> int:
                         "may_not": ["write truth", "submit", "write to memory/collective"],
                     },
                 },
-                "spinetop-helper_2b": {
+                "spinetop-helper-2b": {
                     "role_description": "Spinetop-helper_2b is the field-side mini brain for short-horizon expedition support and bounded runner-return preparation.",
                     "active": True,
                     "execution_backend": "model_backed",
                     "allowed_model_keys": [
-                        "local_onboarding_gemma4_e4b_4k",
-                        "local_production_qwen2_5_coder_14b",
+                        "local_granite3_3_2b_q2k",
                     ],
-                    "default_model_key": "local_production_qwen2_5_coder_14b",
-                    "fallback_model_key": "local_production_qwen2_5_coder_14b",
+                    "default_model_key": "local_granite3_3_2b_q2k",
+                    "fallback_model_key": "local_granite3_3_2b_q2k",
                     "provider_requirement": "local_only",
                     "mapped_helpers": ["retrieval_helper_2b", "runner_helper_2b"],
                     "context_refs": ["workbench/missions/ notes and mission-local helper context", "expeditions/active/ mission-local artifacts"],
@@ -251,11 +245,10 @@ def main() -> int:
                     "active": False,
                     "execution_backend": "model_backed",
                     "allowed_model_keys": [
-                        "local_onboarding_gemma4_e4b_4k",
-                        "local_production_qwen2_5_coder_14b",
+                        "local_granite3_3_2b_q2k",
                     ],
-                    "default_model_key": "local_production_qwen2_5_coder_14b",
-                    "fallback_model_key": "local_production_qwen2_5_coder_14b",
+                    "default_model_key": "local_granite3_3_2b_q2k",
+                    "fallback_model_key": "local_granite3_3_2b_q2k",
                     "provider_requirement": "local_only",
                     "mapped_helpers": [],
                     "context_refs": ["Honcho query interfaces and Honcho-backed read results", "workbench/missions/*/notes/mirror/"],
@@ -296,14 +289,14 @@ def main() -> int:
     _assert(configured.execution_backend == "model_backed", "configured Expeditioner role should load model_backed")
     _assert(configured.active is True, "configured Expeditioner role should preserve explicit activation")
     _assert(
-        configured.default_model_key == "local_production_qwen2_5_coder_14b",
+        configured.default_model_key == "local_gemma4_e4b_4k",
         "configured Expeditioner default model key mismatch",
     )
     _assert(
-        configured.fallback_model_key == "local_production_qwen2_5_coder_14b",
+        configured.fallback_model_key == "local_gemma4_e4b_4k",
         "configured Expeditioner fallback model key mismatch",
     )
-    _assert(helper_configured.role_id == "spinetop-helper_2b", "configured helper role should load")
+    _assert(helper_configured.role_id == "spinetop-helper-2b", "configured helper role should load")
     _assert(helper_configured.active is True, "configured helper role should preserve default-active behavior")
     _assert(helper_configured.execution_backend == "model_backed", "configured helper role should stay model_backed")
     _assert(
@@ -312,7 +305,7 @@ def main() -> int:
     )
     _assert(mirror_configured.role_id == "spinetop-mirror", "configured mirror role should load")
     _assert(
-        mirror_configured.default_model_key == "local_production_qwen2_5_coder_14b",
+        mirror_configured.default_model_key == "local_granite3_3_2b_q2k",
         "configured Mirror default model key mismatch",
     )
     _assert(mirror_configured.active is False, "configured Mirror role should preserve inactive flag")
