@@ -1,5 +1,5 @@
 ﻿{
-    "updated_at":  "2026-04-07T21:06:55.5163629-07:00",
+    "updated_at":  "2026-04-09T20:17:07.5067558-07:00",
     "repo_root":  "D:\\spine_desk\\Spinetop",
     "ui_root":  "D:\\spine_desk\\Spinetop\\ui",
     "wsl_distro":  "Ubuntu-24.04",
@@ -14,23 +14,7 @@
                      "frontend_api_base":  "/api",
                      "frontend_bind_address":  "0.0.0.0",
                      "lan_ui_reachable":  null,
-                     "lan_firewall_state":  {
-                                                "is_admin":  true,
-                                                "ensured":  true,
-                                                "listen_address":  "192.168.0.150",
-                                                "rules":  [
-                                                              {
-                                                                  "port":  5173,
-                                                                  "rule_name":  "Spinetop Launcher LAN 5173",
-                                                                  "state":  "enabled"
-                                                              },
-                                                              {
-                                                                  "port":  5051,
-                                                                  "rule_name":  "Spinetop Launcher LAN 5051",
-                                                                  "state":  "enabled"
-                                                              }
-                                                          ]
-                                            }
+                     "lan_firewall_state":  null
                  },
     "lan_proxy":  {
                       "name":  "frontend-lan-proxy",
@@ -45,16 +29,16 @@
                       "target_address":  "127.0.0.1",
                       "target_port":  5173
                   },
-    "note":  "launcher start failed",
+    "note":  "launcher stopped",
     "backend":  {
                     "name":  "backend",
                     "pid_file":  "D:\\spine_desk\\Spinetop\\services\\launcher\\state\\backend.pid",
                     "pid":  null,
                     "platform":  "unknown",
                     "port":  5051,
-                    "port_open":  true,
-                    "state":  "external",
-                    "detail":  "port open without a live launcher pid"
+                    "port_open":  false,
+                    "state":  "stopped",
+                    "detail":  "not running"
                 },
     "frontend":  {
                      "name":  "frontend",

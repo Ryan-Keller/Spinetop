@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import type { ExpeditionSummary, MissionChatMessage } from "./dashboardTypes";
-import { groupExpeditions, isMissionParked } from "./dashboardSelectors";
+import { groupExpeditions, isMissionParked, missionFeedState } from "./dashboardSelectors";
 import { useExpressionConsoleData } from "./useExpressionConsoleData";
 
 const API_BASE = (import.meta.env.VITE_SPINETOP_API_BASE as string | undefined)?.trim() || "/api";
@@ -103,6 +103,9 @@ const derivePhase = (rawState: string, blocked: boolean, handoff: boolean, inter
 };
 
 const LEGACY_COACHING_FRAGMENTS = [
+  "continue cautiously",
+  "next steps",
+  "add context if it would reduce uncertainty",
   "continue cautiously and add context if it would reduce uncertainty",
   "proceed with the current assumptions and add more context only if it will improve confidence",
   "continue under the current assumptions and answer the top question when ready",
@@ -150,15 +153,17 @@ const isMeaningfulVisibleText = (value?: string | null) => {
 
 const isVisibleMissionCandidate = (item: ExpeditionSummary) =>
   !isMissionParked(item) &&
+  ["ACTIVE", "RETURNED"].includes(missionFeedState(item)) &&
   !item.queue_hygiene?.archive_candidate &&
   !item.queue_hygiene?.duplicate_candidate &&
   !item.queue_hygiene?.junk_pattern &&
+  !item.queue_hygiene?.stale_candidate &&
   !item.queue_hygiene?.superseded_by_newer_similar;
 
 const visibleExpeditionList = (items: ExpeditionSummary[], selectedMissionId: string) => {
   const { allGroups } = groupExpeditions(items, selectedMissionId);
   const preferred = allGroups.filter((group) => isVisibleMissionCandidate(group.primary));
-  return (preferred.length ? preferred : allGroups).map((group) => group.primary);
+  return preferred.map((group) => group.primary);
 };
 
 const isVisibleRoleRun = (item: VisibleAgentRun) => normalizedLower(item.status) === "success" && isMeaningfulVisibleText(item.summary);
@@ -167,9 +172,7 @@ const isVisibleTrigger = (item: VisibleTrigger) =>
   normalizedLower(item.status) === "blocked" && isMeaningfulVisibleText(firstString(item.blocked_reason || "", item.reason || ""));
 
 const isVisibleIntervention = (item: VisibleIntervention) => {
-  const normalizedAction = normalizedLower(item.action);
-  if (includesAny(normalizedAction, ["archive", "park", "duplicate", "translator", "proposal"])) return false;
-  return isMeaningfulVisibleText(firstString(item.blocked_reason || "", item.reason || "", item.action || ""));
+  return normalizedLower(item.status) === "blocked" && isMeaningfulVisibleText(firstString(item.blocked_reason || "", item.reason || ""));
 };
 
 const isConciergeRetrievalMessage = (message: MissionChatMessage) => normalizedLower(message.kind) === "concierge_mirror_retrieval";
@@ -180,20 +183,6 @@ const isVisibleChatMessage = (message: MissionChatMessage) => {
   const role = normalizedLower(`${message.role} ${message.kind}`);
   if (role.includes("system") || role.includes("intervention")) return false;
   return isMeaningfulVisibleText(message.message);
-};
-
-const advisoryFromMessage = (message: MissionChatMessage): AdvisorySurface | null => {
-  if (isConciergeRetrievalMessage(message)) {
-    return {
-      kind: "expedition_advisory",
-      suggestion: message.message,
-      reason: "Read-only concierge retrieval from saved mirror notes",
-      strength: "low",
-      created_at: message.created_at,
-      source: "chat",
-    };
-  }
-  return null;
 };
 
 export function useVisibleExpressionConsoleData() {
@@ -334,31 +323,17 @@ export function useVisibleExpressionConsoleData() {
       handoff ? "handoff_edge" : "",
     ].filter(Boolean);
 
-    const advisories: AdvisorySurface[] = [];
-    if (latestRetrievalMessage) {
-      const advisory = advisoryFromMessage(latestRetrievalMessage);
-      if (advisory) advisories.push(advisory);
-    }
-    if (blockerText) {
-      advisories.push({
-        kind: "expedition_intervention",
-        instruction: `Blocked: ${blockerText}`,
-        reason: "Selected mission needs operator resolution before it can move cleanly.",
-        strength: "high",
-        source: "signals",
-      });
-    } else {
-      visibleInterventions.forEach((item) => {
-        advisories.push({
-          kind: "expedition_intervention",
-          instruction: firstString(item.blocked_reason || "", item.reason || "", item.action || ""),
-          reason: "Visible mission intervention",
-          strength: "high",
-          created_at: item.created_at,
-          source: "timeline",
-        });
-      });
-    }
+    const advisories: AdvisorySurface[] = blockerText
+      ? [
+          {
+            kind: "expedition_intervention",
+            instruction: `Blocked: ${blockerText}`,
+            reason: "Selected mission needs operator resolution before it can move cleanly.",
+            strength: "high",
+            source: "signals",
+          },
+        ]
+      : [];
 
     const progress: DerivedExpeditionProgress = {
       phase,
@@ -378,7 +353,6 @@ export function useVisibleExpressionConsoleData() {
       motion_style: blocked ? "hold" : activity ? "pulse" : "drift",
       overlay_hints: [
         data.signals.item?.stall?.present && blocked ? "stall_trace" : "",
-        handoff ? "ghost_pressure" : "",
         latestMirrorNote ? "mirror_summary" : "",
       ].filter(Boolean),
       summary:
@@ -386,7 +360,7 @@ export function useVisibleExpressionConsoleData() {
         latestRetrievalMessage?.message ||
         latestVisibleRun?.summary ||
         liveActivitySummary ||
-        (blockerText ? `Blocked: ${blockerText}` : "Mirror is quiet."),
+        (blockerText ? `Blocked: ${blockerText}` : ""),
       secondary_summary:
         primarySource === "mirror_note"
           ? "Latest mission-local mirror note."
@@ -396,7 +370,7 @@ export function useVisibleExpressionConsoleData() {
               ? `Latest active role output from ${firstString(latestVisibleRun?.role, "the active role")}.`
               : primarySource === "blocker"
                 ? "The visible lane only surfaces blockers when the mission cannot continue cleanly."
-                : "No recent mirror note, retrieval, active role output, or blocker is visible for this mission.",
+                : "",
       primary_source: primarySource,
       quiet,
     };
@@ -412,7 +386,7 @@ export function useVisibleExpressionConsoleData() {
         ...timelineItem,
         recent_agent_runs: visibleAgentRuns,
         recent_triggers: blockerText ? visibleTriggers : [],
-        recent_interventions: visibleInterventions,
+        recent_interventions: blockerText ? visibleInterventions : [],
       },
     };
     const filteredInterpretation = {

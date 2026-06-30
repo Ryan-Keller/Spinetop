@@ -31,6 +31,32 @@ export function isMissionParked(
   );
 }
 
+const FEED_NOISE_FRAGMENTS = [
+  "continue cautiously",
+  "next steps",
+  "add context if it would reduce uncertainty",
+  "proceed with the current assumptions",
+  "continue under the current assumptions",
+  "operator intervention",
+  "refresh mission detail for the latest state",
+];
+
+function normalizedText(value?: string | null): string {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function isFeedNoiseText(value?: string | null): boolean {
+  const normalized = normalizedText(value).toLowerCase();
+  return normalized ? FEED_NOISE_FRAGMENTS.some((fragment) => normalized.includes(fragment)) : false;
+}
+
+function firstMeaningfulMissionText(...values: Array<string | undefined | null>): string {
+  return values.find((value) => {
+    const text = normalizedText(value);
+    return text && !isFeedNoiseText(text);
+  })?.trim() || "";
+}
+
 function expeditionPriority(expedition: ExpeditionSummary, selectedMissionId?: string | null): number {
   if (expedition.mission_id === selectedMissionId) return 0;
   if (isMissionParked(expedition)) return 4;
@@ -116,14 +142,40 @@ export function missionConfidenceLabel(expedition: ExpeditionSummary): "LOW" | "
 }
 
 export function missionFeedSummary(expedition: ExpeditionSummary): string {
-  return (
-    expedition.mission_summary?.latest_summary ||
-    expedition.mission_summary?.summary ||
-    expedition.summary ||
-    expedition.operator_posture_reason ||
-    expedition.queue_action_reason ||
-    "No compressed mission summary yet."
+  if (missionFeedState(expedition) === "BLOCKED") {
+    return firstMeaningfulMissionText(
+      expedition.mission_summary?.blocked_reason,
+      expedition.mission_summary?.blocking_questions?.[0],
+      expedition.mission_summary?.clarification_reason,
+      expedition.mission_summary?.next_question,
+      expedition.operator_posture_reason,
+      expedition.mission_summary?.latest_summary,
+      expedition.mission_summary?.summary,
+      expedition.summary
+    );
+  }
+
+  return firstMeaningfulMissionText(
+    expedition.mission_summary?.latest_summary,
+    expedition.mission_summary?.summary,
+    expedition.summary,
+    expedition.mission_summary?.recommended_next_step,
+    expedition.queue_action_reason
   );
+}
+
+function isMainFeedCandidate(group: ExpeditionGroup): boolean {
+  const expedition = group.primary;
+  const state = missionFeedState(expedition);
+  if (isMissionParked(expedition)) return false;
+  if (group.duplicate_count > 1) return false;
+  if (expedition.queue_hygiene?.archive_candidate) return false;
+  if (expedition.queue_hygiene?.duplicate_candidate) return false;
+  if (expedition.queue_hygiene?.superseded_by_newer_similar) return false;
+  if (expedition.queue_hygiene?.junk_pattern) return false;
+  if (expedition.queue_hygiene?.stale_candidate) return false;
+  if (state === "BLOCKED") return Boolean(missionFeedSummary(expedition));
+  return state === "ACTIVE" || state === "RETURNED";
 }
 
 export function missionPrimaryActionLabel(expedition: ExpeditionSummary): string {
@@ -279,10 +331,7 @@ export function deriveFeedBuckets(args: {
   const mainFeedGroups = allExpeditionGroups.filter((group) => {
     const missionId = group.primary.mission_id;
     if (args.dismissedMissionBuckets[missionId]) return false;
-    const state = missionFeedState(group.primary);
-    if (group.primary.queue_hygiene?.archive_candidate) return false;
-    if (state === "PARKED") return false;
-    return true;
+    return isMainFeedCandidate(group);
   });
   const parkedFeedGroups = allExpeditionGroups.filter((group) => {
     const missionId = group.primary.mission_id;

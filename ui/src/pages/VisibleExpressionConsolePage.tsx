@@ -48,7 +48,6 @@ export default function VisibleExpressionConsolePage() {
           <VisibleChatRail
             missionId={consoleData.selectedMissionId}
             messages={consoleData.messages}
-            advisories={consoleData.advisories}
             sending={consoleData.sending}
             onSend={consoleData.sendMessage}
             onReturnToBase={() => {

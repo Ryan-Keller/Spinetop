@@ -1425,7 +1425,7 @@ export default function Dashboard() {
   const [dismissedMissionBuckets, setDismissedMissionBuckets] = useState<Record<string, DismissBucket>>({});
   const [showDuplicateMissions, setShowDuplicateMissions] = useState(false);
   const [showArchiveCandidates, setShowArchiveCandidates] = useState(false);
-  const [showParkedMissions, setShowParkedMissions] = useState(true);
+  const [showParkedMissions, setShowParkedMissions] = useState(false);
   const [expandedMissionIds, setExpandedMissionIds] = useState<Record<string, boolean>>({});
   const [triageMode, setTriageMode] = useState(false);
   const [workbenchFolder, setWorkbenchFolder] = useState("intake");
@@ -2109,9 +2109,6 @@ export default function Dashboard() {
     setMissionParking,
     runLoggedControlTowerIntervention,
     dismissMissionGroup,
-    collapseDuplicateGroups,
-    markArchiveCandidates,
-    parkBlockedMissions,
     runControlTowerAction,
     submitMissionComposer,
     runReturnToBaseOption,
@@ -2197,7 +2194,7 @@ export default function Dashboard() {
       <div style={styles.sectionTitleRow}>
         <div>
           <h2 style={styles.sectionTitle}>Mission Feed</h2>
-          <div style={styles.sectionSubtitle}>Collapsed by default, expanded inline, swipe-or-tap dismiss, and less visual noise.</div>
+          <div style={styles.sectionSubtitle}>Active and ready missions only. Parked, archived, duplicate, and superseded work stays out of the main feed.</div>
         </div>
         <div style={styles.pillRow}>
           <span style={{ ...styles.badge, ...styles.badgeGood }}>{mainFeedGroups.length} in feed</span>
@@ -2205,36 +2202,18 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", marginBottom: 16 }}>
-        <div style={styles.previewBox}><div style={styles.subtleText}>Active</div><div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#f8fafc" }}>{mainFeedGroups.filter((group) => missionFeedState(group.primary) === "ACTIVE").length}</div></div>
-        <div style={styles.previewBox}><div style={styles.subtleText}>Blocked</div><div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#f8fafc" }}>{mainFeedGroups.filter((group) => missionFeedState(group.primary) === "BLOCKED").length}</div></div>
-        <div style={styles.previewBox}><div style={styles.subtleText}>Returned</div><div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#f8fafc" }}>{mainFeedGroups.filter((group) => missionFeedState(group.primary) === "RETURNED").length}</div></div>
-        <div style={styles.previewBox}><div style={styles.subtleText}>Hidden by default</div><div style={{ marginTop: 4, fontSize: 18, fontWeight: 700, color: "#f8fafc" }}>{archiveFeedGroups.length + parkedFeedGroups.length + duplicateFeedGroups.length}</div></div>
-      </div>
-
-      <div style={{ ...styles.recordCard, marginBottom: 16 }}>
-        <div style={styles.recordMetaRow}>
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Queue actions in feed</div>
-            <div style={styles.subtleText}>No deletion. No truth-lane writes. Mission-local notes only when needed.</div>
-          </div>
+      {archiveFeedGroups.length || parkedFeedGroups.length || duplicateFeedGroups.length ? (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+          {archiveFeedGroups.length ? <button type="button" onClick={() => setShowArchiveCandidates((prev) => !prev)} style={styles.trayToggle}>{showArchiveCandidates ? "Hide archived" : `Show archived (${archiveFeedGroups.length})`}</button> : null}
+          {parkedFeedGroups.length ? <button type="button" onClick={() => setShowParkedMissions((prev) => !prev)} style={styles.trayToggle}>{showParkedMissions ? "Hide parked" : `Show parked (${parkedFeedGroups.length})`}</button> : null}
+          {duplicateFeedGroups.length ? <button type="button" onClick={() => setShowDuplicateMissions((prev) => !prev)} style={styles.trayToggle}>{showDuplicateMissions ? "Hide duplicates" : `Show duplicates (${duplicateFeedGroups.length})`}</button> : null}
         </div>
-        <div style={{ marginTop: 12, display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
-          <div style={styles.previewBox}><div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>Duplicates</div><div style={{ marginTop: 6, ...styles.subtleText }}>{duplicateFeedGroups.length} duplicate group{duplicateFeedGroups.length === 1 ? "" : "s"} ready to collapse.</div><button type="button" onClick={() => void collapseDuplicateGroups()} disabled={!duplicateFeedGroups.length} style={{ ...styles.secondaryButton, marginTop: 10 }}>Collapse duplicates</button></div>
-          <div style={styles.previewBox}><div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>Archive</div><div style={{ marginTop: 6, ...styles.subtleText }}>{archiveFeedGroups.length} mission{archiveFeedGroups.length === 1 ? "" : "s"} can be moved out of the main feed.</div><button type="button" onClick={() => void markArchiveCandidates()} disabled={!archiveFeedGroups.length} style={{ ...styles.secondaryButton, marginTop: 10 }}>Mark archive candidates</button></div>
-          <div style={styles.previewBox}><div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>Blocked</div><div style={{ marginTop: 6, ...styles.subtleText }}>{blockedQueueItems.length} blocked mission{blockedQueueItems.length === 1 ? "" : "s"} can be parked.</div><button type="button" onClick={() => void parkBlockedMissions()} disabled={!blockedQueueItems.length} style={{ ...styles.secondaryButton, marginTop: 10 }}>Park blocked</button></div>
-        </div>
-      </div>
-
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
-        <button type="button" onClick={() => setShowArchiveCandidates((prev) => !prev)} style={styles.trayToggle}>{showArchiveCandidates ? "Hide archive candidates" : `Archive candidates (${archiveFeedGroups.length})`}</button>
-        <button type="button" onClick={() => setShowParkedMissions((prev) => !prev)} style={styles.trayToggle}>{showParkedMissions ? "Hide parked" : `Parked (${parkedFeedGroups.length})`}</button>
-        <button type="button" onClick={() => setShowDuplicateMissions((prev) => !prev)} style={styles.trayToggle}>{showDuplicateMissions ? "Hide duplicates" : `Duplicates (${duplicateFeedGroups.length})`}</button>
-      </div>
+      ) : null}
 
       <div style={styles.expeditionList}>
         {mainFeedGroups.length ? mainFeedGroups.map((group) => {
           const expedition = group.primary;
+          const feedSummary = missionFeedSummary(expedition);
           const isExpanded = !!expandedMissionIds[expedition.mission_id];
           const isFocused = selectedMissionId === expedition.mission_id;
           const feedState = missionFeedState(expedition);
@@ -2242,28 +2221,10 @@ export default function Dashboard() {
           const expandedMission =
             missionDetailsById[expedition.mission_id] ??
             (selectedMission?.mission_id === expedition.mission_id ? selectedMission : null);
-          const expandedMissionSummary = expandedMission?.mission_summary ?? expedition.mission_summary ?? null;
           const expandedControlTowerSummary = expandedMission?.control_tower_summary ?? expedition.control_tower_summary ?? null;
           const expandedRunnerReturn = expandedMission?.latest_runner_return ?? null;
           const expandedLatestAgentRun = expandedMission?.latest_agent_run ?? null;
           const expandedLatestRoleActivity = expandedControlTowerSummary?.latest_role_activity ?? null;
-          const expandedExecutionVisibility = expandedControlTowerSummary?.execution_visibility ?? null;
-          const expandedExecutionLines = (expandedExecutionVisibility?.summary_lines ?? []).filter(Boolean);
-          const expandedMissionSummaryReason =
-            expandedControlTowerSummary?.operator_attention_reason ||
-            expandedMissionSummary?.operator_posture_reason ||
-            expandedMission?.operator_posture_reason ||
-            expandedMissionSummary?.clarification_reason ||
-            expandedMissionSummary?.blocked_reason ||
-            expedition.operator_posture_reason ||
-            expedition.summary ||
-            "No control tower summary yet.";
-          const expandedControlTowerAutonomyState =
-            expandedControlTowerSummary?.autonomy_state || expandedMission?.autonomy_status?.autonomy_status || "ready";
-          const expandedRetryRemaining = Math.max(
-            0,
-            (expandedControlTowerSummary?.retry_budget ?? 0) - (expandedControlTowerSummary?.retry_used ?? 0)
-          );
           const expandedAssumptions = expandedMission?.assumptions ?? [];
           const expandedAssumptionCount = expandedMission?.assumption_count ?? expandedAssumptions.length;
           const expandedActiveAssumptionCount =
@@ -2291,7 +2252,7 @@ export default function Dashboard() {
                       <span style={styles.badge}>{confidence}</span>
                       {group.duplicate_count > 1 ? <span style={{ ...styles.badge, ...styles.badgeOutline }}>{group.duplicate_count} similar</span> : null}
                     </div>
-                    <div style={{ marginTop: 10, fontSize: 13, color: "#cbd5f5", lineHeight: 1.5 }}>{missionFeedSummary(expedition)}</div>
+                    {feedSummary ? <div style={{ marginTop: 10, fontSize: 13, color: "#cbd5f5", lineHeight: 1.5 }}>{feedSummary}</div> : null}
                   </div>
                   <div style={{ display: "flex", flexDirection: "column" as const, gap: 8, alignItems: "flex-end", flexShrink: 0 }}>
                     <button type="button" onClick={(event) => { event.stopPropagation(); toggleMissionExpansion(expedition.mission_id, missionFeedSummary(expedition)); }} style={styles.feedActionButton}>{isExpanded ? "Collapse" : "Expand"}</button>
@@ -2308,20 +2269,6 @@ export default function Dashboard() {
                   {expandedMission ? (
                     <>
                       <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
-                        <div style={styles.previewBox}>
-                          <div style={styles.subtleText}>Mission controls</div>
-                          <div style={{ marginTop: 6, fontSize: 13, color: "#cbd5f5", lineHeight: 1.55 }}>{expandedMissionSummaryReason}</div>
-                          <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" as const }}><span style={styles.badge}>{expandedControlTowerAutonomyState}</span><span style={styles.badge}>{expandedRetryRemaining} retry left</span></div>
-                          <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
-                            {expandedExecutionLines.length
-                              ? expandedExecutionLines.map((line) => (
-                                  <div key={`${expedition.mission_id}-${line}`} style={{ fontSize: 12, color: "#94a3b8", lineHeight: 1.5 }}>
-                                    {line}
-                                  </div>
-                                ))
-                              : <div style={styles.subtleText}>No execution visibility summary yet.</div>}
-                          </div>
-                        </div>
                         <div style={styles.previewBox}>
                           <div style={styles.subtleText}>Assumptions</div>
                           <div style={{ marginTop: 6, fontSize: 13, color: "#cbd5f5", lineHeight: 1.55 }}>{expandedActiveAssumptionCount} active of {expandedAssumptionCount} total. Derived only and mission-local.</div>
@@ -2344,31 +2291,18 @@ export default function Dashboard() {
                           </div>
                         </div>
                       </div>
-                      {!isFocused ? (
-                        <div style={{ ...styles.previewBox, marginTop: 0 }}>
-                          <div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>Focused mission tools stay separate</div>
-                          <div style={{ marginTop: 6, ...styles.subtleText }}>This card can stay expanded without changing the focused mission. Use Focus if you want the main mission console to follow this card.</div>
-                        </div>
-                      ) : null}
-                      {isFocused && shouldShowReturnToBase ? (
-                        <div style={{ ...styles.previewBox, borderColor: "rgba(251,191,36,0.35)", background: "rgba(120,53,15,0.16)", marginTop: 0 }}>
-                          <div style={{ fontSize: 14, fontWeight: 800, color: "#fde68a" }}>Returned to base options</div>
-                          <div style={{ marginTop: 8, display: "grid", gap: 8 }}>{returnToBaseOptions.map((option) => <button key={option.key} type="button" onClick={() => void runReturnToBaseOption(option.key)} style={{ ...styles.secondaryButton, textAlign: "left" }}>{option.label}</button>)}</div>
-                          {returnToBaseCountdown != null ? <div style={{ marginTop: 8, ...styles.subtleText }}>Option 1 auto-runs in {returnToBaseCountdown}s.</div> : null}
-                        </div>
-                      ) : null}
                     </>
                   ) : <div style={styles.previewBox}>Loading mission details...</div>}
                 </div>
               ) : null}
             </motion.div>
           );
-        }) : <div style={styles.recordCard}>No missions are in the main feed right now. Hidden items remain retrievable below.</div>}
+        }) : <div style={styles.recordCard}>No active or ready missions are in the feed right now.</div>}
       </div>
 
-      {showArchiveCandidates ? <div style={{ ...styles.recordCard, marginTop: 16 }}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Archive candidates</div><div style={styles.subtleText}>Dismissed or quiet missions stay here with their data intact.</div></div></div><div style={{ marginTop: 12, display: "grid", gap: 8 }}>{archiveFeedGroups.length ? archiveFeedGroups.map((group) => <div key={`archive-${group.group_key}`} style={styles.previewBox}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>{group.primary.objective || group.primary.mission_id}</div><div style={styles.subtleText}>{missionFeedSummary(group.primary)}</div></div><button type="button" onClick={() => restoreDismissedMission(group.primary.mission_id)} style={styles.secondaryButton}>View</button></div></div>) : <div style={styles.subtleText}>No archive candidates are hidden.</div>}</div></div> : null}
-      {showParkedMissions ? <div style={{ ...styles.recordCard, marginTop: 16 }}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Parked missions</div><div style={styles.subtleText}>Parked missions are quiet, retrievable, and never deleted.</div></div></div><div style={{ marginTop: 12, display: "grid", gap: 8 }}>{parkedFeedGroups.length ? parkedFeedGroups.map((group) => <div key={`parked-${group.group_key}`} style={styles.previewBox}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>{group.primary.objective || group.primary.mission_id}</div><div style={styles.subtleText}>{group.primary.operator_posture_reason || missionFeedSummary(group.primary)}</div></div><button type="button" onClick={() => void setMissionParking("active", group.primary.mission_id)} style={styles.secondaryButton}>Resume</button></div></div>) : <div style={styles.subtleText}>No parked missions are hidden.</div>}</div></div> : null}
-      {showDuplicateMissions ? <div style={{ ...styles.recordCard, marginTop: 16 }}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Duplicates</div><div style={styles.subtleText}>Collapsed duplicates stay grouped here so the main feed stays quiet.</div></div></div><div style={{ marginTop: 12, display: "grid", gap: 8 }}>{duplicateFeedGroups.length ? duplicateFeedGroups.map((group) => <div key={`duplicate-${group.group_key}`} style={styles.previewBox}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>{group.primary.objective || group.primary.mission_id}</div><div style={styles.subtleText}>{group.duplicate_count} related mission{group.duplicate_count === 1 ? "" : "s"}</div></div><button type="button" onClick={() => restoreDismissedMission(group.primary.mission_id)} style={styles.secondaryButton}>View</button></div></div>) : <div style={styles.subtleText}>No duplicate groups are hidden.</div>}</div></div> : null}
+      {showArchiveCandidates ? <div style={{ ...styles.recordCard, marginTop: 16 }}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Archived from feed</div><div style={styles.subtleText}>Shown only when you explicitly open archived missions.</div></div></div><div style={{ marginTop: 12, display: "grid", gap: 8 }}>{archiveFeedGroups.length ? archiveFeedGroups.map((group) => <div key={`archive-${group.group_key}`} style={styles.previewBox}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>{group.primary.objective || group.primary.mission_id}</div><div style={styles.subtleText}>{missionFeedSummary(group.primary) || "No live feed summary."}</div></div><button type="button" onClick={() => restoreDismissedMission(group.primary.mission_id)} style={styles.secondaryButton}>View</button></div></div>) : <div style={styles.subtleText}>No archived missions are hidden.</div>}</div></div> : null}
+      {showParkedMissions ? <div style={{ ...styles.recordCard, marginTop: 16 }}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Parked missions</div><div style={styles.subtleText}>Shown only when you explicitly open parked missions.</div></div></div><div style={{ marginTop: 12, display: "grid", gap: 8 }}>{parkedFeedGroups.length ? parkedFeedGroups.map((group) => <div key={`parked-${group.group_key}`} style={styles.previewBox}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>{group.primary.objective || group.primary.mission_id}</div><div style={styles.subtleText}>{missionFeedSummary(group.primary) || "Quiet parked mission."}</div></div><button type="button" onClick={() => void setMissionParking("active", group.primary.mission_id)} style={styles.secondaryButton}>Resume</button></div></div>) : <div style={styles.subtleText}>No parked missions are hidden.</div>}</div></div> : null}
+      {showDuplicateMissions ? <div style={{ ...styles.recordCard, marginTop: 16 }}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 15, fontWeight: 700, color: "#f8fafc" }}>Duplicate groups</div><div style={styles.subtleText}>Shown only when you explicitly open duplicate groups.</div></div></div><div style={{ marginTop: 12, display: "grid", gap: 8 }}>{duplicateFeedGroups.length ? duplicateFeedGroups.map((group) => <div key={`duplicate-${group.group_key}`} style={styles.previewBox}><div style={styles.recordMetaRow}><div><div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc" }}>{group.primary.objective || group.primary.mission_id}</div><div style={styles.subtleText}>{group.duplicate_count} related mission{group.duplicate_count === 1 ? "" : "s"}</div></div><button type="button" onClick={() => restoreDismissedMission(group.primary.mission_id)} style={styles.secondaryButton}>View</button></div></div>) : <div style={styles.subtleText}>No duplicate groups are hidden.</div>}</div></div> : null}
     </div>
   );
 
