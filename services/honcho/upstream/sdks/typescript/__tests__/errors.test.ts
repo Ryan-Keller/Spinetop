@@ -304,7 +304,7 @@ describe('Error Handling (integration)', () => {
   test('invalid API key returns 401 (if auth enabled)', async () => {
     const badClient = new Honcho({
       baseURL: TEST_CONFIG.baseURL,
-      apiKey: 'invalid-key-12345',
+      apiKey: 'not-a-real-secret',
       workspaceId: 'test-bad-auth',
     })
 

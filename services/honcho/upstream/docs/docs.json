@@ -578,7 +578,7 @@
   },
   "integrations": {
     "posthog": {
-      "apiKey": "phc_1yrzzcgywqXGcerkkI4g7C0YfyPMcAKNOOvGcjTCiUk"
+      "apiKey": "not-a-real-secret"
     }
   }
 }
